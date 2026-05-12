@@ -360,7 +360,8 @@ def _parse_mtr(output: str) -> list:
     if json_start == -1:
         return []
     try:
-        data = json.loads(output[json_start:])
+        decoder = json.JSONDecoder()
+        data, _ = decoder.raw_decode(output[json_start:])
         hops = []
         for hub in data.get("report", {}).get("hubs", []):
             hops.append({

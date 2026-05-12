@@ -68,6 +68,10 @@ class ThroughputRunner:
         return self._parse_output(raw_output, p)
 
     def _start_server(self, dst_ssh: SSHManager, port: int):
+        # Extra kill pass before starting — ensures any daemon from
+        # a previous test (e.g. jitter) is fully gone before we start
+        dst_ssh.run("pkill -9 -f iperf3 2>/dev/null || true", timeout=10)
+        time.sleep(1.0)
         _start_iperf3_server(dst_ssh, port)
 
     def _build_client_command(self, dst_host: str, p: ThroughputParams) -> str:
