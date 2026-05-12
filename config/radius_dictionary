@@ -1,0 +1,7 @@
+ATTRIBUTE User-Name 1 string
+ATTRIBUTE User-Password 2 string
+ATTRIBUTE NAS-IP-Address 4 ipaddr
+ATTRIBUTE NAS-Identifier 32 string
+ATTRIBUTE Service-Type 6 integer
+ATTRIBUTE Reply-Message 18 string
+VALUE Service-Type Login-User 1

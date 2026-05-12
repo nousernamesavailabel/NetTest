@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTest - Login</title>
+<style>
+:root {
+  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --bdr:#2a3040; --bdr2:#3a4458;
+  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8; --cy:#06b6d4; --rd:#ef4444;
+  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--fn);font-size:13px;min-height:100vh;
+     display:grid;place-items:center;padding:20px}
+.login{width:100%;max-width:360px;background:var(--surf);border:1px solid var(--bdr);border-radius:6px;overflow:hidden}
+.header{padding:16px;border-bottom:1px solid var(--bdr)}
+.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
+.logo span{color:var(--cy)}
+.sub{margin-top:4px;color:var(--mt);font-size:11px}
+form{padding:16px;display:flex;flex-direction:column;gap:12px}
+label{font-size:11px;color:var(--mt2)}
+input{background:var(--bg);border:1px solid var(--bdr2);border-radius:4px;color:var(--tx);
+      font-family:var(--fn);font-size:12px;padding:8px 10px;width:100%;outline:none}
+input:focus{border-color:var(--cy)}
+.field{display:flex;flex-direction:column;gap:5px}
+.error{display:none;color:var(--rd);border:1px solid #4d1a1a;background:#2a0a0a;border-radius:4px;padding:8px 10px;font-size:11px}
+.error:not(:empty){display:block}
+button{display:inline-flex;justify-content:center;align-items:center;padding:8px 14px;border-radius:4px;
+       font-size:11px;font-family:var(--fn);cursor:pointer;border:1px solid #1a3a5c;
+       background:#0d1f3c;color:var(--cy)}
+button:hover{background:#1a3a5c}
+</style>
+</head>
+<body>
+  <div class="login">
+    <div class="header">
+      <div class="logo">NET<span>TEST</span></div>
+      <div class="sub">RADIUS authentication</div>
+    </div>
+    <form method="post" action="/login" autocomplete="on">
+      <input type="hidden" name="next" value="{{next}}">
+      <input type="hidden" name="csrf_token" value="{{csrf_token}}">
+      <div class="error">{{error}}</div>
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" maxlength="128" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+      </div>
+      <button type="submit">Log In</button>
+    </form>
+  </div>
+</body>
+</html>

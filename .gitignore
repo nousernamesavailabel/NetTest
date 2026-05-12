@@ -1,0 +1,39 @@
+# Keep this repo scoped to the NetTest project even though it currently lives
+# in a home directory.
+.*
+!.gitignore
+
+# Local environment and dependency installs
+venv/
+.venv/
+env/
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime output
+logs/
+results/
+*.log
+
+# Local/private configuration
+config/config.yaml
+config/*.local.yaml
+
+# Secrets and machine-specific SSH material
+.ssh/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Editor and OS noise
+*.swp
+*~
+.DS_Store
+

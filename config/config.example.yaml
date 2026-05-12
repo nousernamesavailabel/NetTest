@@ -1,0 +1,84 @@
+controller:
+  name: NetTest Controller
+  results_dir: results
+  log_dir: logs
+  log_level: INFO
+
+auth:
+  enabled: false
+  radius_server: ""
+  radius_port: 1812
+  radius_secret: ""
+  radius_timeout: 5
+  session_secret: "replace-with-a-random-secret"
+  session_lifetime_minutes: 480
+  login_max_attempts: 5
+  login_window_seconds: 300
+  login_lockout_seconds: 900
+  cookie_secure: false
+
+ssh_defaults:
+  username: nettest
+  password: ""
+  key_file: ~/.ssh/nettest_key
+  port: 22
+  timeout: 30
+
+agents:
+  - id: branch_a
+    label: Branch A
+    host: 10.1.1.10
+    type: endpoint
+  - id: branch_b
+    label: Branch B
+    host: 10.2.1.10
+    type: endpoint
+
+paths:
+  - id: branch_a_to_branch_b
+    label: Branch A to Branch B
+    source: branch_a
+    destination: branch_b
+    tests:
+      - latency
+      - jitter
+      - mtu
+      - throughput
+      - latency_under_load
+
+test_params:
+  throughput:
+    duration_sec: 30
+    parallel_streams: 8
+    bidirectional: true
+    protocol: tcp
+    iperf3_port: 5201
+  latency:
+    packet_count: 100
+    interval_ms: 10
+    packet_size_bytes: 64
+  latency_under_load:
+    ping_count: 50
+    ping_interval_ms: 200
+    mtr_cycles: 20
+  jitter:
+    packet_count: 1000
+    interval_ms: 10
+    packet_size_bytes: 172
+    iperf3_port: 5201
+    protocol: udp
+    bandwidth_kbps: 1000
+  mtu:
+    max_size: 9000
+    min_size: 576
+    step: 10
+
+schedule:
+  full_test_interval_minutes: 60
+  latency_only_interval_minutes: 30
+  business_hours_only: false
+  business_hours_start: "08:00"
+  business_hours_end: "18:00"
+  timezone: America/Chicago
+  stagger_seconds: 100
+

@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTest — Config Editor</title>
+<style>
+:root {
+  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
+  --bdr:#2a3040; --bdr2:#3a4458;
+  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
+  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --cy:#06b6d4; --bl:#3b82f6;
+  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--fn);font-size:13px;min-height:100vh}
+a{color:var(--cy);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ── Layout ── */
+.shell{display:grid;grid-template-rows:48px 1fr;height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;
+        padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf)}
+.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
+.logo span{color:var(--cy)}
+.topbar-right{display:flex;align-items:center;gap:12px;font-size:11px;color:var(--mt)}
+.body{display:grid;grid-template-columns:200px 1fr;overflow:hidden}
+.sidebar{background:var(--surf);border-right:1px solid var(--bdr);padding:12px 0;overflow-y:auto}
+.content{overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:24px}
+
+/* ── Sidebar tabs ── */
+.tab{display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;
+     color:var(--mt);border-left:2px solid transparent;font-size:12px;transition:all .15s}
+.tab:hover{background:var(--surf2);color:var(--tx)}
+.tab.active{background:var(--surf2);color:var(--tx);border-left-color:var(--cy)}
+.tab-icon{font-size:14px;width:18px;text-align:center}
+
+/* ── Section panels ── */
+.panel{background:var(--surf);border:1px solid var(--bdr);border-radius:6px;overflow:hidden}
+.panel-header{display:flex;align-items:center;justify-content:space-between;
+              padding:12px 16px;border-bottom:1px solid var(--bdr)}
+.panel-title{font-size:11px;font-weight:700;text-transform:uppercase;
+             letter-spacing:.8px;color:var(--mt)}
+.panel-body{padding:16px;display:flex;flex-direction:column;gap:12px}
+
+/* ── Cards (agent/path items) ── */
+.card{background:var(--surf2);border:1px solid var(--bdr);border-radius:5px;overflow:hidden}
+.card-header{display:flex;align-items:center;justify-content:space-between;
+             padding:10px 14px;cursor:pointer;user-select:none}
+.card-header:hover{background:var(--surf3)}
+.card-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600}
+.card-actions{display:flex;gap:6px}
+.card-body{padding:14px;border-top:1px solid var(--bdr);display:flex;flex-direction:column;gap:10px}
+.card-body.hidden{display:none}
+.card-chevron{color:var(--mt);font-size:10px;transition:transform .2s}
+.card-chevron.open{transform:rotate(90deg)}
+
+/* ── Type badges ── */
+.badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:700;
+       text-transform:uppercase;letter-spacing:.5px}
+.badge-endpoint  {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
+.badge-svi       {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
+.badge-source    {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
+.badge-dest      {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
+
+/* ── Form fields ── */
+.form-row{display:grid;grid-template-columns:140px 1fr;align-items:center;gap:10px}
+.form-row.tall{align-items:start;padding-top:4px}
+label{font-size:11px;color:var(--mt2)}
+input,select{background:var(--bg);border:1px solid var(--bdr2);border-radius:4px;
+             color:var(--tx);font-family:var(--fn);font-size:12px;
+             padding:6px 10px;width:100%;outline:none;transition:border-color .15s}
+input:focus,select:focus{border-color:var(--cy)}
+input.err{border-color:var(--rd)}
+select option{background:var(--bg)}
+
+/* ── Checkboxes (test type toggles) ── */
+.test-toggles{display:flex;flex-wrap:wrap;gap:6px}
+.test-toggle{display:flex;align-items:center;gap:5px;padding:4px 10px;
+             border-radius:4px;border:1px solid var(--bdr2);cursor:pointer;
+             font-size:11px;color:var(--mt);transition:all .15s;user-select:none}
+.test-toggle.on{background:#0f1f30;border-color:var(--cy);color:var(--cy)}
+.test-toggle input{display:none}
+
+/* ── Path flow viz ── */
+.path-flow{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:12px}
+.path-node{background:var(--surf3);border:1px solid var(--bdr2);border-radius:4px;
+           padding:4px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.path-arrow{color:var(--cy);font-size:16px;flex-shrink:0}
+
+/* ── Buttons ── */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:4px;
+     font-size:11px;font-family:var(--fn);cursor:pointer;border:1px solid var(--bdr2);
+     transition:all .15s;white-space:nowrap}
+.btn-primary{background:#0d1f3c;color:var(--cy);border-color:#1a3a5c}
+.btn-primary:hover{background:#1a3a5c}
+.btn-success{background:#0f3320;color:var(--gn);border-color:#1a4d30}
+.btn-success:hover{background:#1a4d30}
+.btn-danger{background:#2a0a0a;color:var(--rd);border-color:#4d1a1a}
+.btn-danger:hover{background:#3a1010}
+.btn-ghost{background:transparent;color:var(--mt);border-color:transparent}
+.btn-ghost:hover{background:var(--surf3);color:var(--tx)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── Save bar ── */
+.save-bar{position:sticky;bottom:0;background:var(--surf);border-top:1px solid var(--bdr);
+          padding:12px 24px;display:flex;align-items:center;justify-content:space-between;
+          margin:0 -24px -24px}
+.save-status{font-size:11px}
+.save-ok  {color:var(--gn)}
+.save-err {color:var(--rd)}
+.save-pending{color:var(--yw)}
+
+/* ── Connectivity test ── */
+.ping-result{font-size:11px;padding:4px 8px;border-radius:3px;margin-top:4px}
+.ping-ok {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
+.ping-err{background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a}
+.ping-pending{background:#1a1a00;color:var(--yw);border:1px solid #3a3a00}
+
+/* ── Empty state ── */
+.empty-state{text-align:center;padding:32px;color:var(--mt);font-size:12px}
+.empty-state .big{font-size:28px;margin-bottom:8px}
+
+/* ── Toast ── */
+#toast{position:fixed;bottom:24px;right:24px;padding:10px 16px;border-radius:5px;
+       font-size:12px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
+#toast.show{opacity:1}
+#toast.ok {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
+#toast.err{background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a}
+
+/* ── Section visibility ── */
+.section{display:none}
+.section.active{display:flex;flex-direction:column;gap:24px}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:3px}
+
+  /* ── Onboard wizard ── */
+  .wizard-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);
+                  z-index:1000;align-items:center;justify-content:center;}
+  .wizard-overlay.open{display:flex;}
+  .wizard{background:var(--surf);border:1px solid var(--bdr2);border-radius:8px;
+          width:500px;max-width:95vw;overflow:hidden;}
+  .wizard-header{display:flex;align-items:center;justify-content:space-between;
+                 padding:14px 18px;border-bottom:1px solid var(--bdr);}
+  .wizard-title{font-size:13px;font-weight:700;}
+  .wizard-close{background:none;border:none;color:var(--mt);cursor:pointer;
+                font-size:18px;padding:0;font-family:var(--fn);}
+  .wizard-body{padding:18px;display:flex;flex-direction:column;gap:12px;}
+  .wizard-footer{padding:12px 18px;border-top:1px solid var(--bdr);
+                 display:flex;justify-content:flex-end;gap:8px;align-items:center;}
+  .wizard-log{background:#080a0d;border:1px solid var(--bdr);border-radius:4px;
+              height:220px;overflow-y:auto;padding:10px 12px;
+              font-size:11px;font-family:var(--fn);line-height:1.6;}
+  .wlog-info{color:#94a3b8;} .wlog-ok{color:var(--gn);} .wlog-err{color:var(--rd);}
+  .wlog-warn{color:var(--yw);} .wlog-step{color:var(--cy);font-weight:700;}
+  .wlog-dim{color:#475569;}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- Topbar -->
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:16px">
+    <span class="logo">NET<span>TEST</span></span>
+    <span style="color:var(--bdr2)">|</span>
+    <span style="color:var(--mt);font-size:12px">Config Editor</span>
+  </div>
+  <div class="topbar-right">
+    <a href="/">← Back to Dashboard</a>
+    <span style="color:var(--bdr2)">|</span>
+    <a href="/logout">Logout</a>
+  </div>
+</div>
+
+<div class="body">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="tab active" onclick="showSection('agents',this)">
+      <span class="tab-icon">⬡</span> Agents
+    </div>
+    <div class="tab" onclick="showSection('paths',this)">
+      <span class="tab-icon">→</span> Paths
+    </div>
+    <div class="tab" onclick="showSection('schedule',this)">
+      <span class="tab-icon">⏱</span> Schedule
+    </div>
+    <div class="tab" onclick="showSection('ssh',this)">
+      <span class="tab-icon">🔑</span> SSH
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- ── Agents ── -->
+    <div class="section active" id="section-agents">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Agents <span id="agent-count" style="color:var(--mt);font-weight:400">(0)</span></span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-success" onclick="openWizard()">+ Onboard New Agent</button>
+            <button class="btn btn-primary" onclick="addAgent()">+ Add Manually</button>
+          </div>
+        </div>
+        <div class="panel-body" id="agents-list">
+          <div class="empty-state"><div class="big">⬡</div>No agents yet — add one above</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Paths ── -->
+    <div class="section" id="section-paths">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Test Paths <span id="path-count" style="color:var(--mt);font-weight:400">(0)</span></span>
+          <button class="btn btn-primary" onclick="addPath()">+ Add Path</button>
+        </div>
+        <div class="panel-body" id="paths-list">
+          <div class="empty-state"><div class="big">→</div>No paths yet — add one above</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Schedule ── -->
+    <div class="section" id="section-schedule">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Schedule</span>
+        </div>
+        <div class="panel-body" id="schedule-form">
+          <div class="form-row">
+            <label>Full test interval</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="sch-full" min="5" max="1440" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">minutes</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Latency-only interval</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="sch-lat" min="1" max="60" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">minutes</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Stagger between paths</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="sch-stagger" min="0" max="120" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">seconds</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Business hours only</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="sch-biz" style="width:auto;accent-color:var(--cy)">
+              <span style="color:var(--mt);font-size:11px">restrict full tests to business hours</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Hours (start – end)</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="time" id="sch-start" style="width:120px">
+              <span style="color:var(--mt)">–</span>
+              <input type="time" id="sch-end" style="width:120px">
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Timezone</label>
+            <input type="text" id="sch-tz" placeholder="America/Chicago">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SSH ── -->
+    <div class="section" id="section-ssh">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">SSH Defaults</span>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Username</label>
+            <input type="text" id="ssh-user" placeholder="nettest">
+          </div>
+          <div class="form-row">
+            <label>Key file</label>
+            <input type="text" id="ssh-key" placeholder="~/.ssh/nettest_key">
+          </div>
+          <div class="form-row">
+            <label>Port</label>
+            <input type="number" id="ssh-port" style="width:80px" min="1" max="65535">
+          </div>
+          <div class="form-row">
+            <label>Timeout (sec)</label>
+            <input type="number" id="ssh-timeout" style="width:80px" min="5" max="120">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Save bar (always visible) ── -->
+    <div class="save-bar">
+      <span class="save-status" id="save-status"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" onclick="loadConfig()">↺ Reload</button>
+        <button class="btn btn-success" onclick="saveConfig()" id="save-btn">💾 Save Config</button>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /body -->
+</div><!-- /shell -->
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────
+let agents   = [];
+let paths    = [];
+let schedule = {};
+let sshDefs  = {};
+
+const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu'];
+const TEST_LABELS = {
+  throughput:          'Throughput',
+  latency:             'Latency',
+  latency_under_load:  'Latency Under Load',
+  jitter:              'Jitter',
+  mtu:                 'MTU',
+};
+
+// ── Boot ───────────────────────────────────────────────────
+async function boot() {
+  await loadConfig();
+}
+
+async function loadConfig() {
+  try {
+    const raw = await apiFetch('/api/config');
+    agents   = raw.agents   || [];
+    paths    = raw.paths    || [];
+    schedule = raw.schedule || {};
+    sshDefs  = raw.ssh_defaults || {};
+    renderAll();
+    setStatus('');
+  } catch(e) {
+    toast('Failed to load config: ' + e.message, 'err');
+  }
+}
+
+// ── Section switching ──────────────────────────────────────
+function showSection(name, el) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('section-' + name).classList.add('active');
+  el.classList.add('active');
+}
+
+// ── Render all ─────────────────────────────────────────────
+function renderAll() {
+  renderAgents();
+  renderPaths();
+  renderSchedule();
+  renderSSH();
+}
+
+// ── Agents ─────────────────────────────────────────────────
+function renderAgents() {
+  const list = document.getElementById('agents-list');
+  document.getElementById('agent-count').textContent = '(' + agents.length + ')';
+
+  if (!agents.length) {
+    list.innerHTML = '<div class="empty-state"><div class="big">⬡</div>No agents yet — add one above</div>';
+    return;
+  }
+
+  list.innerHTML = agents.map((a, i) => `
+    <div class="card" id="agent-card-${i}">
+      <div class="card-header" onclick="toggleCard('agent-body-${i}','agent-chev-${i}')">
+        <div class="card-title">
+          <span class="card-chevron" id="agent-chev-${i}">▶</span>
+          <span>${escHtml(a.label || a.id || 'Agent ' + (i+1))}</span>
+          <span class="badge ${a.type === 'svi_adjacent' ? 'badge-svi' : 'badge-endpoint'}">
+            ${a.type === 'svi_adjacent' ? 'SVI' : 'endpoint'}
+          </span>
+          <span style="color:var(--mt);font-size:11px">${escHtml(a.host || '')}</span>
+        </div>
+        <div class="card-actions" onclick="event.stopPropagation()">
+          <button class="btn btn-ghost" style="font-size:10px;padding:3px 8px"
+            onclick="testAgent(${i})">⚡ Test</button>
+          <button class="btn btn-danger" style="font-size:10px;padding:3px 8px"
+            onclick="removeAgent(${i})">✕</button>
+        </div>
+      </div>
+      <div class="card-body hidden" id="agent-body-${i}">
+        <div class="form-row">
+          <label>ID <span style="color:var(--rd)">*</span></label>
+          <input type="text" value="${escHtml(a.id||'')}" placeholder="branch_a"
+            oninput="agents[${i}].id=this.value;updateAgentHeader(${i});renderPaths();markDirty()"
+            title="Unique identifier, no spaces">
+        </div>
+        <div class="form-row">
+          <label>Label</label>
+          <input type="text" value="${escHtml(a.label||'')}" placeholder="Branch A - Chicago"
+            oninput="agents[${i}].label=this.value;updateAgentHeader(${i});updatePathsForAgent(${i});markDirty()">
+        </div>
+        <div class="form-row">
+          <label>Host / IP <span style="color:var(--rd)">*</span></label>
+          <input type="text" value="${escHtml(a.host||'')}" placeholder="10.1.1.10"
+            oninput="agents[${i}].host=this.value;updateAgentHeader(${i});markDirty()" id="agent-host-${i}">
+        </div>
+        <div class="form-row">
+          <label>Type</label>
+          <select onchange="agents[${i}].type=this.value;updateAgentHeader(${i});markDirty()">
+            <option value="endpoint"    ${a.type!=='svi_adjacent'?'selected':''}>endpoint</option>
+            <option value="svi_adjacent"${a.type==='svi_adjacent'?'selected':''}>svi_adjacent</option>
+          </select>
+        </div>
+        <div id="agent-ping-${i}"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addAgent() {
+  agents.push({ id: '', label: '', host: '', type: 'endpoint' });
+  renderAgents();
+  // Auto-expand the new card
+  const i = agents.length - 1;
+  toggleCard('agent-body-' + i, 'agent-chev-' + i);
+  markDirty();
+}
+
+function removeAgent(i) {
+  const a = agents[i];
+  if (!confirm(`Remove agent "${a.label || a.id || 'Agent ' + (i+1)}"?\nAny paths using this agent will also need updating.`)) return;
+  agents.splice(i, 1);
+  renderAgents();
+  renderPaths();
+  markDirty();
+}
+
+async function testAgent(i) {
+  collectSSH();
+  const a   = agents[i];
+  const div = document.getElementById('agent-ping-' + i);
+  if (!a.host) { div.innerHTML = '<div class="ping-result ping-err">No host IP set</div>'; return; }
+  div.innerHTML = '<div class="ping-result ping-pending">⟳ Testing SSH connectivity to ' + escHtml(a.host) + '...</div>';
+  try {
+    const res = await apiFetch('/api/config/test-agent', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ host: a.host, username: sshDefs.username, key_file: sshDefs.key_file, port: sshDefs.port })
+    });
+    if (res.ok) {
+      div.innerHTML = `<div class="ping-result ping-ok">✓ Connected — hostname: ${escHtml(res.hostname)} | ${escHtml(res.iperf3)}</div>`;
+    } else {
+      div.innerHTML = `<div class="ping-result ping-err">✗ ${escHtml(res.error)}</div>`;
+    }
+  } catch(e) {
+    div.innerHTML = `<div class="ping-result ping-err">✗ ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ── Paths ──────────────────────────────────────────────────
+function renderPaths() {
+  const list = document.getElementById('paths-list');
+  document.getElementById('path-count').textContent = '(' + paths.length + ')';
+
+  if (!paths.length) {
+    list.innerHTML = '<div class="empty-state"><div class="big">→</div>No paths yet — add one above</div>';
+    return;
+  }
+
+  list.innerHTML = paths.map((p, i) => {
+    const srcAgent  = agents.find(a => a.id === p.source);
+    const dstAgent  = agents.find(a => a.id === p.destination);
+    const srcLabel  = srcAgent ? (srcAgent.label || srcAgent.id) : (p.source || '?');
+    const dstLabel  = dstAgent ? (dstAgent.label || dstAgent.id) : (p.destination || '?');
+    const tests     = p.tests || [];
+
+    return `
+    <div class="card" id="path-card-${i}">
+      <div class="card-header" onclick="toggleCard('path-body-${i}','path-chev-${i}')">
+        <div class="card-title">
+          <span class="card-chevron" id="path-chev-${i}">▶</span>
+          <span>${escHtml(p.label || p.id || 'Path ' + (i+1))}</span>
+          <span style="color:var(--mt);font-size:11px">${tests.length} tests</span>
+        </div>
+        <div class="card-actions" onclick="event.stopPropagation()">
+          <button class="btn btn-danger" style="font-size:10px;padding:3px 8px"
+            onclick="removePath(${i})">✕</button>
+        </div>
+      </div>
+      <div class="card-body hidden" id="path-body-${i}">
+
+        <!-- Flow preview -->
+        <div class="path-flow">
+          <div class="path-node badge-source" style="background:#0d1f3c;border:1px solid #1a3a5c;border-radius:4px;padding:4px 10px">
+            ${escHtml(srcLabel)}
+          </div>
+          <div class="path-arrow">→</div>
+          <div class="path-node badge-dest" style="background:#1a1000;border:1px solid #3a2500;border-radius:4px;padding:4px 10px">
+            ${escHtml(dstLabel)}
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label>ID <span style="color:var(--rd)">*</span></label>
+          <input type="text" value="${escHtml(p.id||'')}" placeholder="branch_a_to_hub"
+            oninput="paths[${i}].id=this.value;markDirty()">
+        </div>
+        <div class="form-row">
+          <label>Label</label>
+          <input type="text" value="${escHtml(p.label||'')}" placeholder="Branch A → Hub DC"
+            oninput="paths[${i}].label=this.value;updatePathHeader(${i});markDirty()">
+        </div>
+        <div class="form-row">
+          <label>Source <span style="color:var(--rd)">*</span></label>
+          <select onchange="paths[${i}].source=this.value;updatePathFlow(${i});markDirty()">
+            <option value="">— select agent —</option>
+            ${agents.map(a => `<option value="${escHtml(a.id)}" ${p.source===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Destination <span style="color:var(--rd)">*</span></label>
+          <select onchange="paths[${i}].destination=this.value;updatePathFlow(${i});markDirty()">
+            <option value="">— select agent —</option>
+            ${agents.map(a => `<option value="${escHtml(a.id)}" ${p.destination===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row tall">
+          <label>Tests</label>
+          <div class="test-toggles">
+            ${ALL_TESTS.map(t => `
+              <label class="test-toggle ${tests.includes(t)?'on':''}">
+                <input type="checkbox" ${tests.includes(t)?'checked':''}
+                  onchange="toggleTest(${i},'${t}',this.checked)">
+                ${TEST_LABELS[t]}
+              </label>
+            `).join('')}
+          </div>
+        </div>
+
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function addPath() {
+  paths.push({ id: '', label: '', source: '', destination: '', tests: ['latency','jitter'] });
+  renderPaths();
+  const i = paths.length - 1;
+  toggleCard('path-body-' + i, 'path-chev-' + i);
+  markDirty();
+}
+
+function removePath(i) {
+  const p = paths[i];
+  if (!confirm(`Remove path "${p.label || p.id || 'Path ' + (i+1)}"?`)) return;
+  paths.splice(i, 1);
+  renderPaths();
+  markDirty();
+}
+
+function toggleTest(pathIdx, testName, checked) {
+  const p = paths[pathIdx];
+  if (!p.tests) p.tests = [];
+  if (checked && !p.tests.includes(testName)) {
+    p.tests.push(testName);
+  } else if (!checked) {
+    p.tests = p.tests.filter(t => t !== testName);
+  }
+  // Update toggle visual without full re-render
+  const label = event.target.closest('.test-toggle');
+  if (label) label.classList.toggle('on', checked);
+  // Update just the test count in the header
+  updatePathHeader(pathIdx);
+  markDirty();
+}
+
+// ── Schedule ───────────────────────────────────────────────
+function renderSchedule() {
+  const s = schedule;
+  setVal('sch-full',    s.full_test_interval_minutes    || 60);
+  setVal('sch-lat',     s.latency_only_interval_minutes || 5);
+  setVal('sch-stagger', s.stagger_seconds               || 15);
+  setVal('sch-tz',      s.timezone                      || 'America/Chicago');
+  setVal('sch-start',   s.business_hours_start          || '08:00');
+  setVal('sch-end',     s.business_hours_end            || '18:00');
+  document.getElementById('sch-biz').checked = !!s.business_hours_only;
+
+  ['sch-full','sch-lat','sch-stagger','sch-tz','sch-start','sch-end'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+      collectSchedule(); markDirty();
+    });
+  });
+  document.getElementById('sch-biz').addEventListener('change', () => {
+    collectSchedule(); markDirty();
+  });
+}
+
+function collectSchedule() {
+  schedule = {
+    full_test_interval_minutes:    parseInt(getVal('sch-full'))    || 60,
+    latency_only_interval_minutes: parseInt(getVal('sch-lat'))     || 5,
+    stagger_seconds:               parseInt(getVal('sch-stagger')) || 15,
+    timezone:                      getVal('sch-tz')                || 'America/Chicago',
+    business_hours_only:           document.getElementById('sch-biz').checked,
+    business_hours_start:          getVal('sch-start')             || '08:00',
+    business_hours_end:            getVal('sch-end')               || '18:00',
+  };
+}
+
+// ── SSH ────────────────────────────────────────────────────
+function renderSSH() {
+  setVal('ssh-user',    sshDefs.username || 'nettest');
+  setVal('ssh-key',     sshDefs.key_file || '~/.ssh/nettest_key');
+  setVal('ssh-port',    sshDefs.port     || 22);
+  setVal('ssh-timeout', sshDefs.timeout  || 30);
+
+  ['ssh-user','ssh-key','ssh-port','ssh-timeout'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+      collectSSH(); markDirty();
+    });
+  });
+}
+
+function collectSSH() {
+  sshDefs = {
+    username: getVal('ssh-user')    || 'nettest',
+    key_file: getVal('ssh-key')     || '~/.ssh/nettest_key',
+    password: sshDefs.password      || '',
+    port:     parseInt(getVal('ssh-port'))    || 22,
+    timeout:  parseInt(getVal('ssh-timeout')) || 30,
+  };
+}
+
+// ── Save ───────────────────────────────────────────────────
+function markDirty() {
+  setStatus('Unsaved changes', 'pending');
+}
+
+async function saveConfig() {
+  collectSchedule();
+  collectSSH();
+
+  // Validate
+  const errs = [];
+  agents.forEach((a, i) => {
+    if (!a.id)   errs.push(`Agent ${i+1}: ID is required`);
+    if (!a.host) errs.push(`Agent ${i+1} (${a.id||'?'}): Host IP is required`);
+  });
+  paths.forEach((p, i) => {
+    if (!p.id)          errs.push(`Path ${i+1}: ID is required`);
+    if (!p.source)      errs.push(`Path ${i+1} (${p.id||'?'}): Source agent is required`);
+    if (!p.destination) errs.push(`Path ${i+1} (${p.id||'?'}): Destination agent is required`);
+    if (!p.tests || !p.tests.length) errs.push(`Path ${i+1} (${p.id||'?'}): At least one test required`);
+  });
+
+  if (errs.length) {
+    toast('Fix errors before saving:\n• ' + errs.join('\n• '), 'err');
+    return;
+  }
+
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true; btn.textContent = '…';
+
+  try {
+    const res = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ agents, paths, schedule, ssh_defaults: sshDefs }),
+    });
+    if (res.ok) {
+      setStatus(`Saved — ${res.agents} agents, ${res.paths} paths`, 'ok');
+      toast('Config saved and reloaded ✓', 'ok');
+    } else {
+      setStatus('Save failed: ' + res.error, 'err');
+      toast('Save failed: ' + res.error, 'err');
+    }
+  } catch(e) {
+    setStatus('Save error: ' + e.message, 'err');
+    toast('Save error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '💾 Save Config';
+  }
+}
+
+// ── UI helpers ─────────────────────────────────────────────
+function toggleCard(bodyId, chevId) {
+  const body = document.getElementById(bodyId);
+  const chev = document.getElementById(chevId);
+  if (!body) return;
+  const open = !body.classList.contains('hidden');
+  body.classList.toggle('hidden', open);
+  if (chev) chev.classList.toggle('open', !open);
+}
+
+function setStatus(msg, type) {
+  const el = document.getElementById('save-status');
+  el.textContent = msg;
+  el.className = 'save-status' + (type ? ' save-' + type : '');
+}
+
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + (type || 'ok');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+function setVal(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.value = val;
+}
+function getVal(id) {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : '';
+}
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function apiFetch(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+
+function updateAgentHeader(i) {
+  const a = agents[i];
+  const titleEl = document.querySelector(`#agent-card-${i} .card-title`);
+  if (!titleEl) return;
+  titleEl.innerHTML = `
+    <span class="card-chevron open" id="agent-chev-${i}">▶</span>
+    <span>${escHtml(a.label || a.id || 'Agent ' + (i+1))}</span>
+    <span class="badge ${a.type === 'svi_adjacent' ? 'badge-svi' : 'badge-endpoint'}">
+      ${a.type === 'svi_adjacent' ? 'SVI' : 'endpoint'}
+    </span>
+    <span style="color:var(--mt);font-size:11px">${escHtml(a.host || '')}</span>
+  `;
+  // Also update agent count
+  document.getElementById('agent-count').textContent = '(' + agents.length + ')';
+}
+
+function updatePathHeader(i) {
+  const p = paths[i];
+  const titleEl = document.querySelector(`#path-card-${i} .card-title`);
+  if (!titleEl) return;
+  titleEl.innerHTML = `
+    <span class="card-chevron open" id="path-chev-${i}">▶</span>
+    <span>${escHtml(p.label || p.id || 'Path ' + (i+1))}</span>
+    <span style="color:var(--mt);font-size:11px">${(p.tests||[]).length} tests</span>
+  `;
+}
+
+
+function updatePathFlow(i) {
+  const p = paths[i];
+  // Update the flow preview nodes
+  const card = document.getElementById('path-card-' + i);
+  if (!card) return;
+  const nodes = card.querySelectorAll('.path-node');
+  const srcAgent = agents.find(a => a.id === p.source);
+  const dstAgent = agents.find(a => a.id === p.destination);
+  if (nodes[0]) nodes[0].textContent = srcAgent ? (srcAgent.label || srcAgent.id) : (p.source || '?');
+  if (nodes[1]) nodes[1].textContent = dstAgent ? (dstAgent.label || dstAgent.id) : (p.destination || '?');
+  updatePathHeader(i);
+}
+
+function updatePathsForAgent(agentIdx) {
+  const agent = agents[agentIdx];
+  if (!agent) return;
+  paths.forEach((p, i) => {
+    if (p.source === agent.id || p.destination === agent.id) {
+      updatePathFlow(i);
+    }
+  });
+}
+
+boot();
+</script>
+
+<!-- ── Onboarding Wizard ── -->
+<div class="wizard-overlay" id="wizard-overlay">
+  <div class="wizard">
+    <div class="wizard-header">
+      <span class="wizard-title">⬡ Onboard New Agent</span>
+      <button class="wizard-close" onclick="closeWizard()">✕</button>
+    </div>
+
+    <!-- Step 1: Details form -->
+    <div id="wizard-form">
+      <div class="wizard-body">
+        <div class="form-row">
+          <label>Agent IP <span style="color:var(--rd)">*</span></label>
+          <input type="text" id="ob-ip" placeholder="10.5.1.10">
+        </div>
+        <div class="form-row">
+          <label>Label</label>
+          <input type="text" id="ob-label" placeholder="Branch E - Seattle">
+        </div>
+        <div class="form-row">
+          <label>ID</label>
+          <input type="text" id="ob-id" placeholder="branch_e (auto-generated if blank)">
+        </div>
+        <div class="form-row">
+          <label>Type</label>
+          <select id="ob-type">
+            <option value="endpoint">endpoint</option>
+            <option value="svi_adjacent">svi_adjacent</option>
+          </select>
+        </div>
+        <div style="border-top:1px solid var(--bdr);padding-top:12px;margin-top:4px">
+          <div class="form-row">
+            <label>Admin Username <span style="color:var(--rd)">*</span></label>
+            <input type="text" id="ob-user" placeholder="jared">
+          </div>
+          <div class="form-row">
+            <label>Admin Password <span style="color:var(--rd)">*</span></label>
+            <input type="password" id="ob-pass" placeholder="admin password">
+          </div>
+          <div class="form-row">
+            <label>SSH Port</label>
+            <input type="number" id="ob-port" value="22" style="width:80px">
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--mt);padding:4px 0">
+          The controller will SSH in with these admin credentials, install tools,
+          create the nettest user, deploy the SSH key, and add the agent to config.
+        </div>
+      </div>
+      <div class="wizard-footer">
+        <button class="btn btn-ghost" onclick="closeWizard()">Cancel</button>
+        <button class="btn btn-success" onclick="startOnboard()">▶ Start Onboarding</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Live progress -->
+    <div id="wizard-progress" style="display:none">
+      <div class="wizard-body">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <span style="font-size:12px;font-weight:700" id="ob-progress-label">Onboarding...</span>
+          <span class="log-badge" id="ob-status-badge" style="font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--border)">running</span>
+        </div>
+        <div class="wizard-log" id="ob-log">
+          <div class="wlog-dim">Connecting to agent...</div>
+        </div>
+      </div>
+      <div class="wizard-footer" id="ob-footer-progress">
+        <span style="font-size:11px;color:var(--mt)" id="ob-footer-msg">Please wait...</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Onboarding wizard ──────────────────────────────────────
+let _obStream = null;
+
+function openWizard() {
+  document.getElementById('wizard-overlay').classList.add('open');
+  document.getElementById('wizard-form').style.display = '';
+  document.getElementById('wizard-progress').style.display = 'none';
+}
+
+function closeWizard() {
+  if (_obStream) { _obStream.close(); _obStream = null; }
+  document.getElementById('wizard-overlay').classList.remove('open');
+  // Reset form
+  ['ob-ip','ob-label','ob-id','ob-user','ob-pass'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('ob-port').value = '22';
+}
+
+async function startOnboard() {
+  const ip    = document.getElementById('ob-ip').value.trim();
+  const label = document.getElementById('ob-label').value.trim();
+  const id    = document.getElementById('ob-id').value.trim();
+  const type  = document.getElementById('ob-type').value;
+  const user  = document.getElementById('ob-user').value.trim();
+  const pass  = document.getElementById('ob-pass').value;
+  const port  = parseInt(document.getElementById('ob-port').value) || 22;
+
+  if (!ip)   { alert('Agent IP is required'); return; }
+  if (!user) { alert('Admin username is required'); return; }
+  if (!pass) { alert('Admin password is required'); return; }
+
+  // Switch to progress view
+  document.getElementById('wizard-form').style.display = 'none';
+  document.getElementById('wizard-progress').style.display = '';
+  document.getElementById('ob-progress-label').textContent =
+    'Onboarding ' + (label || ip) + '...';
+  document.getElementById('ob-log').innerHTML = '';
+
+  const badge = document.getElementById('ob-status-badge');
+  badge.textContent = '⟳ running';
+  badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#2a2000;color:var(--yw);border:1px solid #4a3800;animation:pulse 1.5s infinite';
+
+  try {
+    const resp = await fetch('/api/onboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_ip:ip, agent_label:label, agent_id:id,
+                             agent_type:type, admin_user:user, admin_pass:pass,
+                             admin_port:port })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      obLog(data.error, 'wlog-err');
+      return;
+    }
+    streamOnboard(data.job_id, label || ip);
+  } catch(e) {
+    obLog('Failed to start onboarding: ' + e.message, 'wlog-err');
+  }
+}
+
+function streamOnboard(jobId, label) {
+  if (_obStream) { _obStream.close(); }
+  const es = new EventSource('/api/jobs/' + jobId + '/stream');
+  _obStream = es;
+
+  es.onmessage = (e) => {
+    const text = e.data;
+    if (text === '[STREAM END]') {
+      es.close(); _obStream = null;
+      // Stream ended cleanly — check final job status
+      setTimeout(async () => {
+        const badge  = document.getElementById('ob-status-badge');
+        const footer = document.getElementById('ob-footer-msg');
+        let job = null;
+        for (let i = 0; i < 6; i++) {
+          try { job = await (await fetch('/api/jobs/' + jobId)).json(); } catch(e) {}
+          if (job && (job.status === 'done' || job.status === 'error')) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        if (job && job.status === 'done') {
+          badge.textContent = '✓ complete';
+          badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#0f3320;color:var(--gn);border:1px solid #1a4d30;animation:none';
+          footer.innerHTML = '<span style="color:var(--gn);margin-right:8px">Agent onboarded successfully.</span><button class="btn btn-success" onclick="closeWizard();loadConfig()">View in Config Editor</button>';
+        } else {
+          const errMsg = job ? (job.error || 'Check output above') : 'Could not get status';
+          badge.textContent = '✗ failed';
+          badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a;animation:none';
+          footer.innerHTML = `<span style="color:var(--rd);margin-right:8px">${errMsg}</span><button class="btn btn-ghost" onclick="document.getElementById('wizard-form').style.display='';document.getElementById('wizard-progress').style.display='none';">← Try Again</button>`;
+        }
+      }, 300);
+      return;
+    }
+    if (text === '[STREAM TIMEOUT]') {
+      obLog('Stream timed out', 'wlog-warn'); es.close(); return;
+    }
+
+    let cls = 'wlog-info';
+    if (text.includes('✓') || text.includes('complete') || text.includes('PASSED'))
+      cls = 'wlog-ok';
+    else if (text.includes('✗') || text.includes('ERROR') || text.includes('failed') || text.includes('FAILED'))
+      cls = 'wlog-err';
+    else if (text.includes('!') || text.includes('WARNING') || text.includes('warn'))
+      cls = 'wlog-warn';
+    else if (text.match(/\[\d+\/\d+\]/))
+      cls = 'wlog-step';
+    else if (text === '' || text.startsWith('=') || text.startsWith('-'))
+      cls = 'wlog-dim';
+
+    obLog(text, cls);
+  };
+
+  es.onerror = async () => {
+    es.close(); _obStream = null;
+    const badge = document.getElementById('ob-status-badge');
+    const footer = document.getElementById('ob-footer-msg');
+    // Poll job status with retries since the job may still be writing its final state
+    let job = null;
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try { job = await (await fetch('/api/jobs/' + jobId)).json(); } catch(e) {}
+      if (job && (job.status === 'done' || job.status === 'error')) break;
+    }
+    if (job && job.status === 'done') {
+      badge.textContent = '✓ complete';
+      badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#0f3320;color:var(--gn);border:1px solid #1a4d30;animation:none';
+      footer.innerHTML = '<span style="color:var(--gn);margin-right:8px">Agent onboarded successfully.</span><button class="btn btn-success" onclick="closeWizard();loadConfig()">View in Config Editor</button>';
+    } else {
+      badge.textContent = '✗ failed';
+      badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a;animation:none';
+      const errMsg = job ? (job.error || 'Check output above') : 'Could not get status';
+      footer.innerHTML = `<span style="color:var(--rd);margin-right:8px">Failed: ${errMsg}</span><button class="btn btn-ghost" onclick="document.getElementById('wizard-form').style.display='';document.getElementById('wizard-progress').style.display='none';">← Try Again</button>`;
+    }
+  };
+}
+
+function obLog(text, cls) {
+  const log = document.getElementById('ob-log');
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+</script>
+</body>
+</html>

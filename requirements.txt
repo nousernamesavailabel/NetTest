@@ -1,0 +1,20 @@
+# Network Test Controller — Python Dependencies
+
+# SSH connectivity to agents
+netmiko>=4.3.0
+
+# Config file parsing
+PyYAML>=6.0
+
+# Timezone support for business hours scheduling
+pytz>=2024.1
+
+# Terminal UI
+rich>=13.7.0
+
+# Web dashboard
+flask>=3.0.0
+pyrad>=2.4
+
+# --- Future: uncomment when adding InfluxDB integration ---
+# influxdb-client>=1.40.0

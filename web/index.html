@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTest — Network Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --bg:        #0d0f12;
+    --surface:   #151820;
+    --surface2:  #1c2130;
+    --border:    #2a3040;
+    --border2:   #3a4458;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --green:     #22c55e;
+    --yellow:    #eab308;
+    --red:       #ef4444;
+    --blue:      #3b82f6;
+    --cyan:      #06b6d4;
+    --font:      'JetBrains Mono', 'Fira Mono', 'Consolas', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font);
+         font-size: 13px; line-height: 1.5; min-height: 100vh; }
+
+  /* ── Layout ── */
+  .shell { display: grid; grid-template-rows: 48px 1fr; height: 100vh; }
+  .topbar { display: flex; align-items: center; justify-content: space-between;
+            padding: 0 20px; border-bottom: 1px solid var(--border);
+            background: var(--surface); }
+  .topbar-left { display: flex; align-items: center; gap: 16px; }
+  .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.5px; color: var(--text); }
+  .logo span { color: var(--cyan); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+                box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .topbar-right { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; }
+  #clock { font-variant-numeric: tabular-nums; }
+
+  .main { display: grid; grid-template-columns: 220px 1fr 340px; overflow: hidden; }
+  .sidebar { border-right: 1px solid var(--border); overflow-y: auto;
+             background: var(--surface); padding: 12px 0; }
+  .content { overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+
+  /* ── Sidebar ── */
+  .sidebar-section { padding: 4px 0 8px; }
+  .sidebar-label { font-size: 10px; font-weight: 700; letter-spacing: 1px;
+                   color: var(--muted); padding: 0 16px 4px; text-transform: uppercase; }
+  .nav-item { display: flex; align-items: center; justify-content: space-between;
+              padding: 6px 16px; cursor: pointer; color: var(--muted);
+              border-left: 2px solid transparent; transition: all .15s; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--surface2); color: var(--text);
+                     border-left-color: var(--cyan); }
+  .nav-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                    max-width: 160px; font-size: 12px; }
+  .nav-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px;
+               background: var(--surface); border: 1px solid var(--border); }
+  .badge-ok   { border-color: var(--green); color: var(--green); }
+  .badge-warn { border-color: var(--yellow); color: var(--yellow); }
+  .badge-crit { border-color: var(--red); color: var(--red); }
+  .badge-dim  { color: var(--muted); }
+
+  /* ── Stat cards ── */
+  .stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border);
+               border-radius: 6px; padding: 14px 16px; }
+  .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+                color: var(--muted); margin-bottom: 6px; }
+  .stat-value { font-size: 22px; font-weight: 700; letter-spacing: -1px; }
+  .stat-sub   { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .c-green  { color: var(--green); }
+  .c-yellow { color: var(--yellow); }
+  .c-red    { color: var(--red); }
+  .c-blue   { color: var(--blue); }
+  .c-cyan   { color: var(--cyan); }
+  .c-muted  { color: var(--muted); }
+
+  /* ── Section panels ── */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  .panel-header { display: flex; align-items: center; justify-content: space-between;
+                  padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .panel-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: .8px; color: var(--muted); }
+  .panel-body  { padding: 0; }
+
+  /* ── Chart grid ── */
+  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .chart-panel { background: var(--surface); border: 1px solid var(--border);
+                 border-radius: 6px; padding: 14px 16px; }
+  .chart-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: .8px; color: var(--muted); margin-bottom: 12px; }
+  .chart-wrap  { position: relative; height: 180px; }
+
+  /* ── Results table ── */
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th { font-size: 10px; font-weight: 700; text-transform: uppercase;
+             letter-spacing: .6px; color: var(--muted); text-align: right;
+             padding: 8px 14px; border-bottom: 1px solid var(--border);
+             white-space: nowrap; }
+  thead th:first-child { text-align: left; }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+  tbody tr:hover { background: var(--surface2); }
+  tbody tr:last-child { border-bottom: none; }
+  td { padding: 7px 14px; text-align: right; white-space: nowrap;
+       font-variant-numeric: tabular-nums; }
+  td:first-child { text-align: left; }
+  .td-path { font-size: 12px; color: var(--text); max-width: 220px;
+             overflow: hidden; text-overflow: ellipsis; }
+  .td-time { color: var(--muted); font-size: 11px; }
+  .ok-dot   { color: var(--green); }
+  .fail-dot { color: var(--red); }
+
+  /* ── Hop table ── */
+  .hop-bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .hop-bar { height: 6px; border-radius: 3px; min-width: 2px; transition: width .3s; }
+
+  /* ── MTR detail section ── */
+  .hop-grid { display: grid; grid-template-columns: 40px 1fr 80px 80px 80px 80px 80px;
+              gap: 0; }
+  .hop-grid > div { padding: 6px 14px; font-size: 12px; }
+  .hop-header { background: var(--surface2); font-size: 10px; text-transform: uppercase;
+                letter-spacing: .6px; color: var(--muted); font-weight: 700;
+                border-bottom: 1px solid var(--border); }
+  .hop-row { border-bottom: 1px solid var(--border); }
+  .hop-row:last-child { border-bottom: none; }
+  .hop-row:hover > div { background: var(--surface2); }
+
+  /* ── Day selector ── */
+  .day-tabs { display: flex; gap: 4px; }
+  .day-tab { padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;
+             color: var(--muted); border: 1px solid transparent; }
+  .day-tab:hover { background: var(--surface2); }
+  .day-tab.active { background: var(--surface2); border-color: var(--border2); color: var(--text); }
+
+  /* ── Loading / empty states ── */
+  .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
+  .loading { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
+
+  /* ── Buttons ── */
+  .btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px;
+         border-radius: 4px; font-size: 11px; font-family: var(--font);
+         cursor: pointer; border: 1px solid var(--border2); transition: all .15s; }
+  .btn-run  { background: #0f3320; color: var(--green); border-color: #1a4d30; }
+  .btn-run:hover  { background: #1a4d30; }
+  .btn-run:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-run-all { background: #0d1f3c; color: var(--cyan); border-color: #1a3a5c; }
+  .btn-run-all:hover { background: #1a3a5c; }
+  .btn-run-all:disabled { opacity: .4; cursor: not-allowed; }
+  .nav-run-btn { font-size: 10px; padding: 2px 7px; border-radius: 3px; cursor: pointer;
+                 border: 1px solid #1a4d30; background: #0f3320; color: var(--green);
+                 font-family: var(--font); transition: all .15s; white-space: nowrap; }
+  .nav-run-btn:hover { background: #1a4d30; }
+  .nav-run-btn.running { border-color: var(--yellow); color: var(--yellow);
+                         background: #2a2000; animation: pulse 1s infinite; }
+  .job-row { display: grid; grid-template-columns: 70px 1fr 80px 80px;
+             padding: 6px 14px; border-bottom: 1px solid var(--border);
+             font-size: 11px; align-items: center; gap: 8px; }
+  .job-row:last-child { border-bottom: none; }
+  .job-queued  { color: var(--muted); }
+  .job-running { color: var(--yellow); animation: pulse 1s infinite; }
+  .job-done    { color: var(--green); }
+  .job-error   { color: var(--red); }
+
+  /* ── Live log panel ── */
+  .log-panel { background: var(--surface); border-left: 1px solid var(--border);
+               display: flex; flex-direction: column; overflow: hidden; }
+  .log-header { display: flex; align-items: center; justify-content: space-between;
+                padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .log-title  { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                letter-spacing: .8px; color: var(--muted); }
+  .log-body   { background: #080a0d; padding: 12px 16px; flex: 1;
+                overflow-y: auto; font-size: 11px; line-height: 1.6;
+                font-family: var(--font); }
+  .log-line   { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
+  .log-info   { color: #94a3b8; }
+  .log-warn   { color: var(--yellow); }
+  .log-error  { color: var(--red); }
+  .log-ok     { color: var(--green); }
+  .log-dim    { color: #475569; }
+  .log-active { animation: pulse 1.5s infinite; }
+  .log-badge  { display: inline-flex; align-items: center; gap: 4px; font-size: 10px;
+                padding: 2px 8px; border-radius: 3px; }
+  .log-badge-running { background: #2a2000; color: var(--yellow);
+                       border: 1px solid #4a3800; animation: pulse 1.5s infinite; }
+  .log-badge-done    { background: #0f3320; color: var(--green); border: 1px solid #1a4d30; }
+  .log-badge-error   { background: #2a0a0a; color: var(--red);   border: 1px solid #4d1a1a; }
+  .log-badge-idle    { color: var(--muted); border: 1px solid var(--border); }
+
+  /* ── Sparkline grid (all-paths overview) ── */
+  .sparkline-grid { display: flex; flex-direction: column; gap: 2px; }
+  .spark-row { display: grid; grid-template-columns: 180px 1fr 90px 90px 90px 90px 70px 60px;
+               align-items: center; gap: 0;
+               border-bottom: 1px solid var(--border); padding: 0; }
+  .spark-row:last-child { border-bottom: none; }
+  .spark-row:hover { background: var(--surface2); }
+  .spark-row.spark-header { background: var(--surface2); font-size: 9px; font-weight: 700;
+                             text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .spark-cell { padding: 6px 10px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .spark-cell-chart { padding: 4px 6px; }
+  .spark-path { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                cursor: pointer; }
+  .spark-path:hover { color: var(--cyan); }
+  .spark-val { text-align: right; }
+  .spark-canvas-wrap { position: relative; height: 32px; }
+  .spark-canvas-wrap canvas { position: absolute; inset: 0; }
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="logo">NET<span>TEST</span></span>
+      <div class="status-dot" id="status-dot"></div>
+      <span style="color:var(--muted);font-size:11px;" id="status-text">connecting...</span>
+    </div>
+    <div class="topbar-right">
+      <button class="btn btn-run-all" id="btn-run-all" onclick="runAll()">▶ Run All</button>
+      <button class="btn btn-run-all" id="btn-run-latency" onclick="runAll(['latency','jitter'])" style="margin-left:4px">▶ Latency Only</button>
+      <span style="margin:0 4px;color:var(--border2)">|</span>
+      <button onclick="exportResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#0d1f3c;color:var(--cyan);border:1px solid #1a3a5c;transition:all .15s;" onmouseover="this.style.background='#1a3a5c'" onmouseout="this.style.background='#0d1f3c'">Export CSV</button>
+      <button onclick="clearResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#2a0a0a;color:var(--red);border:1px solid #4d1a1a;transition:all .15s;" onmouseover="this.style.background='#3a1010'" onmouseout="this.style.background='#2a0a0a'">Clear Results</button>
+      <span style="margin:0 4px;color:var(--border2)">|</span>
+      <a href="/config" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Config Editor">⚙ Config</a>
+      <span style="margin:0 4px;color:var(--border2)">|</span>
+      <a href="/logout" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Logout">Logout</a>
+      <span style="margin:0 4px;color:var(--border2)">|</span>
+      <span id="clock-local"></span><span style="color:var(--border2)">·</span><span id="clock"></span>
+      <span>|</span>
+      <span id="last-update" style="color:var(--muted)">—</span>
+    </div>
+  </div>
+
+  <!-- Main grid -->
+  <div class="main">
+
+    <!-- Sidebar: path list -->
+    <nav class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-label">Overview</div>
+        <div class="nav-item active" data-path="all" onclick="selectPath('all', this)">
+          <span class="nav-item-label">All paths</span>
+          <span class="nav-badge badge-dim" id="badge-all">—</span>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Paths</div>
+        <div id="path-nav"></div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Jobs</div>
+        <div id="jobs-sidebar" style="padding:0 16px 8px;font-size:11px;color:var(--muted)">No jobs yet</div>
+      </div>
+    </nav>
+
+    <!-- Content area -->
+    <div class="content" id="content">
+
+      <!-- Stat row -->
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card"><div class="stat-label">Next Run</div><div class="stat-value c-muted" id="s-nextrun">—</div><div class="stat-sub" id="s-nextrun-sub">scheduled</div></div>
+        <div class="stat-card"><div class="stat-label">Avg Latency</div><div class="stat-value c-muted" id="s-lat">—</div><div class="stat-sub">ms RTT avg</div></div>
+        <div class="stat-card"><div class="stat-label">Avg TX</div><div class="stat-value c-muted" id="s-tput-tx">—</div><div class="stat-sub">Mbps</div></div>
+        <div class="stat-card"><div class="stat-label">Avg RX</div><div class="stat-value c-muted" id="s-tput-rx">—</div><div class="stat-sub">Mbps</div></div>
+        <div class="stat-card"><div class="stat-label">Avg Jitter</div><div class="stat-value c-muted" id="s-jitter">—</div><div class="stat-sub">ms</div></div>
+        <div class="stat-card"><div class="stat-label">Failed Runs</div><div class="stat-value c-muted" id="s-fail">—</div></div>
+      </div>
+
+      <!-- Overview: sparkline grid (shown when all paths selected) -->
+      <div id="overview-sparklines" style="display:none">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Path Overview</span>
+            <span style="font-size:10px;color:var(--muted)">latest value per path — click path name to drill in</span>
+          </div>
+          <div class="panel-body" style="padding:0">
+            <div class="sparkline-grid" id="spark-grid"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-path charts (shown when a single path is selected) -->
+      <div id="path-charts">
+        <div class="chart-grid">
+          <div class="chart-panel">
+            <div class="chart-title">Latency — RTT avg (ms)</div>
+            <div class="chart-wrap"><canvas id="chart-latency" role="img" aria-label="Latency over time"></canvas></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">Throughput TX (Mbps)</div>
+            <div class="chart-wrap"><canvas id="chart-tput" role="img" aria-label="Throughput over time"></canvas></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">Jitter (ms)</div>
+            <div class="chart-wrap"><canvas id="chart-jitter" role="img" aria-label="Jitter over time"></canvas></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">Bufferbloat Δ — idle vs loaded (ms)</div>
+            <div class="chart-wrap"><canvas id="chart-bb" role="img" aria-label="Bufferbloat delta over time"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results table -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Recent results</span>
+          <div class="day-tabs">
+            <div class="day-tab active" onclick="setDays(1,this)">Today</div>
+            <div class="day-tab" onclick="setDays(3,this)">3 days</div>
+            <div class="day-tab" onclick="setDays(7,this)">7 days</div>
+          </div>
+        </div>
+        <div class="panel-body tbl-wrap">
+          <table>
+            <thead><tr>
+              <th style="text-align:left">Path</th>
+              <th>Time</th>
+              <th>Status</th>
+              <th>TX Mbps</th>
+              <th>RX Mbps</th>
+              <th>RTT avg</th>
+              <th>RTT max</th>
+              <th>Loss %</th>
+              <th>Jitter</th>
+              <th>Δ Loaded</th>
+              <th>MTU</th>
+              <th>Retr</th>
+            </tr></thead>
+            <tbody id="results-body"><tr><td colspan="12" class="loading">Loading results...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- MTR hop detail -->
+      <div class="panel" id="hops-panel">
+        <div class="panel-header">
+          <span class="panel-title" id="hops-title">MTR hop detail</span>
+          <span style="font-size:11px;color:var(--muted)">most recent latency-under-load run</span>
+        </div>
+        <div class="panel-body" id="hops-body">
+          <div class="empty">Select a path with latency_under_load tests to see per-hop breakdown.</div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+
+    <!-- Live log — always visible right panel -->
+    <div class="log-panel" id="log-panel">
+      <div class="log-header" style="padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+        <span class="log-title">Live Output</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="log-badge log-badge-idle" id="log-status">idle</span>
+          <button class="day-tab" onclick="clearLog()" style="padding:2px 8px;font-size:10px">Clear</button>
+        </div>
+      </div>
+      <div class="log-body" id="log-body">
+        <div class="log-line log-dim">── Ready ──</div>
+        <div class="log-line log-dim">Click ▶ on any path</div>
+        <div class="log-line log-dim">to stream live output.</div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /shell -->
+
+<script>
+// ── State ──────────────────────────────────────────────────
+let currentPath = 'all';
+let currentDays = 1;
+let paths       = [];
+let latestMap   = {};
+let charts      = {};
+let refreshTimer;
+let jobPollTimer;
+let activeJobs  = {};   // job_id -> job object
+const REFRESH_MS  = 15000;
+const JOB_POLL_MS = 2000;
+
+// ── Thresholds ─────────────────────────────────────────────
+const T = {
+  latWarn:15, latCrit:50,
+  lossWarn:1, lossCrit:5,
+  jitWarn:5,  jitCrit:20,
+  tputWarn:10,tputCrit:2,
+  bbWarn:30,  bbCrit:100,
+};
+
+function health(v, warn, crit, invert=true) {
+  if (v == null) return 'c-muted';
+  if (invert) {
+    if (v >= crit) return 'c-red';
+    if (v >= warn) return 'c-yellow';
+    return 'c-green';
+  } else {
+    if (v <= crit) return 'c-red';
+    if (v <= warn) return 'c-yellow';
+    return 'c-green';
+  }
+}
+
+function cssColour(cls) {
+  return cls === 'c-green' ? '#22c55e'
+       : cls === 'c-yellow'? '#eab308'
+       : cls === 'c-red'   ? '#ef4444'
+       : '#64748b';
+}
+
+function fmt(v, unit='', dec=1) {
+  if (v == null || v === undefined) return '—';
+  return Number(v).toFixed(dec) + unit;
+}
+
+// ── Clock ──────────────────────────────────────────────────
+function tickClock() {
+  const now = new Date();
+  // UTC time
+  document.getElementById('clock').textContent =
+    now.toUTCString().slice(17, 25) + ' UTC';
+  // Local time with timezone abbreviation
+  const localTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().replace('_',' ');
+  document.getElementById('clock-local').textContent = localTime + ' ' + tz;
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+// ── API helpers ────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+
+// ── Live log streaming ─────────────────────────────────────
+let _activeStream = null;
+
+function openLogStream(jobId, label) {
+  // Close any existing stream
+  if (_activeStream) { _activeStream.close(); _activeStream = null; }
+  localStorage.setItem('nettest.activeLogJob', jobId);
+
+  const body   = document.getElementById('log-body');
+  const status = document.getElementById('log-status');
+
+  body.innerHTML = `<div class="log-line log-dim">── ${label} ──</div>`;
+  status.textContent = '⟳ running';
+  status.className = 'log-badge log-badge-running';
+
+  // Scroll log to bottom helper
+  const scrollBottom = () => { body.scrollTop = body.scrollHeight; };
+
+  const es = new EventSource('/api/jobs/' + jobId + '/stream');
+  _activeStream = es;
+
+  es.onmessage = (e) => {
+    const text = e.data;
+
+    if (text === '[STREAM END]') {
+      with_job_status(jobId, (job) => {
+        if (job && job.status === 'done') {
+          status.textContent = '✓ done';
+          status.className = 'log-badge log-badge-done';
+        } else if (job && job.status === 'error') {
+          status.textContent = '✗ error';
+          status.className = 'log-badge log-badge-error';
+        } else {
+          status.textContent = 'idle';
+          status.className = 'log-badge log-badge-idle';
+        }
+      });
+      es.close(); _activeStream = null; return;
+    }
+    if (text === '[STREAM TIMEOUT]') {
+      appendLog('⚠ Stream timed out', 'warn');
+      es.close(); _activeStream = null;
+      status.textContent = 'timed out';
+      status.className = 'log-badge log-badge-error';
+      return;
+    }
+
+    // Classify line for colouring
+    let cls = 'log-info';
+    if (text.includes('[ERROR]') || text.includes('✗') || text.includes('FAILED'))
+      cls = 'log-error';
+    else if (text.includes('[WARNING]') || text.includes('Timeout') || text.includes('attempt'))
+      cls = 'log-warn';
+    else if (text.includes('✓') || text.includes('successfully') || text.includes('complete in'))
+      cls = 'log-ok';
+    else if (text.startsWith('──') || text === '')
+      cls = 'log-dim';
+
+    appendLog(text, cls);
+    scrollBottom();
+  };
+
+  es.onerror = () => {
+    // Connection closed — check final job status
+    with_job_status(jobId, (job) => {
+      if (job && job.status === 'done') {
+        status.textContent = '✓ done';
+        status.className = 'log-badge log-badge-done';
+      } else if (job && job.status === 'error') {
+        status.textContent = '✗ error';
+        status.className = 'log-badge log-badge-error';
+      }
+    });
+    es.close(); _activeStream = null;
+  };
+}
+
+async function with_job_status(jobId, cb) {
+  try { cb(await api('/api/jobs/' + jobId)); } catch(e) {}
+}
+
+function appendLog(text, cls) {
+  const body = document.getElementById('log-body');
+  const div  = document.createElement('div');
+  div.className = 'log-line ' + cls;
+  div.textContent = text;
+  body.appendChild(div);
+  // Cap at 500 lines
+  while (body.children.length > 500) body.removeChild(body.firstChild);
+}
+
+function clearLog() {
+  if (_activeStream) { _activeStream.close(); _activeStream = null; }
+  localStorage.removeItem('nettest.activeLogJob');
+  document.getElementById('log-body').innerHTML =
+    '<div class="log-line log-dim">Cleared. Trigger a test to see live output...</div>';
+  document.getElementById('log-status').textContent = 'idle';
+  document.getElementById('log-status').className = 'log-badge log-badge-idle';
+}
+
+
+// ── Next run countdown ─────────────────────────────────────
+let _nextRunTimer = null;
+
+async function updateNextRun() {
+  try {
+    const cfg = await api('/api/config');
+    const schedule = cfg.schedule || {};
+    const intervalMin = schedule.full_test_interval_minutes || 60;
+    const staggerSec  = (schedule.stagger_seconds || 0) * (paths.length || 1);
+    const totalCycleSec = intervalMin * 60 + staggerSec;
+
+    // Get the most recent result timestamp across all paths
+    const latest = Object.values(latestMap);
+    if (!latest.length) {
+      el('s-nextrun').textContent = '—';
+      el('s-nextrun-sub').textContent = 'no runs yet';
+      el('s-nextrun').className = 'stat-value c-muted';
+      return;
+    }
+
+    const lastRunTs = Math.max(
+      ...latest.map(r => r.timestamp_utc ? Date.parse(r.timestamp_utc) : 0)
+    );
+    const nextRunTs = lastRunTs + totalCycleSec * 1000;
+
+    // Clear previous ticker
+    if (_nextRunTimer) clearInterval(_nextRunTimer);
+
+    function tick() {
+      const nowMs = Date.now();
+      const diffSec = Math.round((nextRunTs - nowMs) / 1000);
+
+      const card = el('s-nextrun');
+      const sub  = el('s-nextrun-sub');
+
+      if (diffSec <= 0) {
+        card.textContent = 'now';
+        card.className   = 'stat-value c-cyan';
+        sub.textContent  = 'running or overdue';
+        return;
+      }
+
+      if (diffSec < 60) {
+        card.textContent = `${diffSec}s`;
+        card.className   = 'stat-value c-green';
+      } else {
+        const m = Math.floor(diffSec / 60);
+        const s = diffSec % 60;
+        card.textContent = s > 0 ? `${m}m ${s}s` : `${m}m`;
+        card.className   = diffSec < 300 ? 'stat-value c-yellow' : 'stat-value c-muted';
+      }
+      sub.textContent = `every ${intervalMin}m`;
+    }
+
+    tick();
+    _nextRunTimer = setInterval(tick, 1000);
+
+  } catch(e) {
+    el('s-nextrun').textContent = '—';
+    el('s-nextrun-sub').textContent = 'schedule unknown';
+  }
+}
+
+// ── Boot ───────────────────────────────────────────────────
+async function boot() {
+  paths = await api('/api/paths');
+  renderNav();
+  initCharts();
+  await restoreJobs();
+  await refresh();
+  refreshTimer  = setInterval(refresh, REFRESH_MS);
+  jobPollTimer  = setInterval(pollJobs, JOB_POLL_MS);
+}
+
+// ── Run triggers ───────────────────────────────────────────
+async function runPath(pathId) {
+  const btn = document.getElementById('run-btn-' + pathId);
+  if (btn) { btn.textContent = '…'; btn.classList.add('running'); btn.disabled = true; }
+  try {
+    const resp = await fetch('/api/run/' + pathId, { method: 'POST',
+      headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) });
+    const job = await resp.json();
+    activeJobs[job.job_id] = job;
+    updateJobsSidebar();
+    // Open live log stream for this job
+    const pathObj = paths.find(p => p.id === pathId);
+    openLogStream(job.job_id, pathObj ? pathObj.label : pathId);
+  } catch(e) {
+    console.error('Run failed', e);
+    if (btn) { btn.textContent = '▶'; btn.classList.remove('running'); btn.disabled = false; }
+  }
+}
+
+async function runAll(tests) {
+  const btn = document.getElementById(tests ? 'btn-run-latency' : 'btn-run-all');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const body = tests ? { tests } : {};
+    const resp = await fetch('/api/run/all', { method: 'POST',
+      headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await resp.json();
+    data.jobs.forEach(jid => { activeJobs[jid] = { job_id: jid, status: 'queued' }; });
+    updateJobsSidebar();
+    // Stream the first job — others visible via job sidebar
+    if (data.jobs.length > 0) openLogStream(data.jobs[0], 'Run All');
+  } catch(e) {
+    console.error('Run all failed', e);
+  } finally {
+    if (btn) { setTimeout(() => { btn.disabled = false; btn.textContent = tests ? '▶ Latency Only' : '▶ Run All'; }, 2000); }
+  }
+}
+
+async function restoreJobs() {
+  try {
+    const jobs = await api('/api/jobs');
+    const now = Date.now();
+    const recent = jobs.filter(j => {
+      if (j.status === 'queued' || j.status === 'running') return true;
+      const finished = j.finished ? Date.parse(j.finished) : 0;
+      return finished && now - finished < 5 * 60 * 1000;
+    }).slice(0, 8);
+
+    activeJobs = {};
+    recent.forEach(j => { activeJobs[j.job_id] = j; });
+    updateJobsSidebar();
+    updateNavRunBtns();
+
+    const savedJobId = localStorage.getItem('nettest.activeLogJob');
+    const savedJob = savedJobId ? jobs.find(j => j.job_id === savedJobId) : null;
+    const runningJob = jobs.find(j => j.status === 'running' || j.status === 'queued');
+    const jobToOpen = savedJob || runningJob;
+    if (jobToOpen) openLogStream(jobToOpen.job_id, jobToOpen.label || jobToOpen.path_id || jobToOpen.job_id);
+  } catch(e) {
+    console.error('Job restore failed', e);
+  }
+}
+
+// ── Job polling ────────────────────────────────────────────
+async function pollJobs() {
+  try {
+    const jobs = await api('/api/jobs');
+    let anyDone = false;
+    jobs.forEach(j => {
+      if (activeJobs[j.job_id]) {
+        activeJobs[j.job_id] = j;
+        if (j.status === 'done' || j.status === 'error') {
+          anyDone = true;
+          // Clean up finished jobs after 30s
+          setTimeout(() => { delete activeJobs[j.job_id]; updateJobsSidebar(); }, 30000);
+        }
+      } else if (j.status === 'queued' || j.status === 'running') {
+        activeJobs[j.job_id] = j;
+      }
+    });
+    updateJobsSidebar();
+    updateNavRunBtns();
+    if (anyDone) refresh();   // Pull fresh results when a job completes
+  } catch(e) { console.error('Job poll failed', e); }
+}
+
+function updateJobsSidebar() {
+  const el = document.getElementById('jobs-sidebar');
+  const jobs = Object.values(activeJobs);
+  if (!jobs.length) { el.innerHTML = '<span style="color:var(--muted)">No active jobs</span>'; return; }
+  el.innerHTML = jobs.slice(-8).reverse().map(j => {
+    const icon = j.status === 'done' ? '<span style="color:var(--green)">✓</span>'
+               : j.status === 'error' ? '<span style="color:var(--red)">✗</span>'
+               : j.status === 'running' ? '<span style="color:var(--yellow)">⟳</span>'
+               : '<span style="color:var(--muted)">·</span>';
+    const label = j.label || j.path_id || j.job_id;
+    return `<div style="padding:3px 0;display:flex;gap:6px;align-items:center;cursor:pointer" onclick="openLogStream('${j.job_id}','${label}')">${icon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">${label}</span></div>`;
+  }).join('');
+}
+
+function updateNavRunBtns() {
+  const runningPaths = new Set(
+    Object.values(activeJobs)
+      .filter(j => j.status === 'queued' || j.status === 'running')
+      .map(j => j.path_id)
+  );
+  paths.forEach(p => {
+    const btn = document.getElementById('run-btn-' + p.id);
+    if (!btn) return;
+    if (runningPaths.has(p.id)) {
+      btn.textContent = '⟳'; btn.classList.add('running'); btn.disabled = true;
+    } else {
+      btn.textContent = '▶'; btn.classList.remove('running'); btn.disabled = false;
+    }
+  });
+}
+
+// ── Navigation ─────────────────────────────────────────────
+function renderNav() {
+  const nav = document.getElementById('path-nav');
+  nav.innerHTML = paths.map(p => `
+    <div class="nav-item" data-path="${p.id}" onclick="selectPath('${p.id}',this)">
+      <span class="nav-item-label" title="${p.label}">${p.label}</span>
+      <div style="display:flex;align-items:center;gap:5px">
+        <span class="nav-badge badge-dim" id="badge-${p.id}">—</span>
+        <button class="nav-run-btn" id="run-btn-${p.id}"
+          onclick="event.stopPropagation();runPath('${p.id}')">▶</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function selectPath(pid, el) {
+  currentPath = pid;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  el.classList.add('active');
+  refresh();
+}
+
+function setDays(d, el) {
+  currentDays = d;
+  document.querySelectorAll('.day-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  refresh();
+}
+
+function exportResults() {
+  const pathParam = currentPath !== 'all' ? `&path_id=${encodeURIComponent(currentPath)}` : '';
+  window.location.href = `/api/results/export.csv?days=${currentDays}${pathParam}`;
+}
+
+async function clearResults() {
+  const msg = 'Clear all stored result history? This deletes the local results JSONL files and cannot be undone.';
+  if (!confirm(msg)) return;
+
+  try {
+    const resp = await fetch('/api/results/clear', { method: 'POST' });
+    if (!resp.ok) throw new Error(resp.statusText);
+    const data = await resp.json();
+    appendLog(`Cleared ${data.deleted_files || 0} result file(s)`, 'log-warn');
+    await refresh();
+  } catch(e) {
+    appendLog(`Clear results failed: ${e.message}`, 'log-error');
+  }
+}
+
+// ── Main refresh ───────────────────────────────────────────
+async function refresh() {
+  try {
+    const pathParam = currentPath !== 'all' ? `&path_id=${currentPath}` : '';
+    const [summary, results, latest] = await Promise.all([
+      api(`/api/summary?days=${currentDays}${pathParam}`),
+      api(`/api/results?days=${currentDays}&limit=100${pathParam}`),
+      api('/api/results/latest'),
+    ]);
+
+    latestMap = {};
+    latest.forEach(r => latestMap[r.path_id] = r);
+
+    updateStats(summary);
+    updateNextRun();
+    updateBadges();
+    renderTable(results);
+    await updateCharts();
+    if (currentPath !== 'all') await renderHops(currentPath);
+
+    document.getElementById('last-update').textContent =
+      'updated ' + new Date().toLocaleTimeString();
+    setStatus('online');
+  } catch(e) {
+    setStatus('error');
+    console.error(e);
+  }
+}
+
+function setStatus(s) {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  if (s === 'online') {
+    dot.style.background = '#22c55e';
+    dot.style.boxShadow  = '0 0 6px #22c55e';
+    text.textContent = 'live';
+  } else {
+    dot.style.background = '#ef4444';
+    dot.style.boxShadow  = '0 0 6px #ef4444';
+    text.textContent = 'error';
+  }
+}
+
+// ── Stats ──────────────────────────────────────────────────
+function updateStats(s) {
+  const total = s.total_runs || 0;
+  const ok    = s.successful || 0;
+  const fail  = s.failed     || 0;
+
+  el('s-nextrun').textContent = '—';
+  el('s-nextrun').className   = 'stat-value c-muted';
+  el('s-nextrun-sub').textContent = 'calculating...';
+  updateNextRun();
+
+  el('s-lat').textContent = fmt(s.avg_latency_ms,'ms');
+  el('s-lat').className   = 'stat-value ' + health(s.avg_latency_ms, T.latWarn, T.latCrit);
+
+  const avgTx = s.avg_throughput_tx_mbps != null ? s.avg_throughput_tx_mbps : s.avg_throughput_mbps;
+  const avgRx = s.avg_throughput_rx_mbps != null ? s.avg_throughput_rx_mbps : null;
+  el('s-tput-tx').textContent = fmt(avgTx);
+  el('s-tput-tx').className   = 'stat-value ' + health(avgTx, T.tputWarn, T.tputCrit, false);
+  el('s-tput-rx').textContent = fmt(avgRx);
+  el('s-tput-rx').className   = 'stat-value ' + health(avgRx, T.tputWarn, T.tputCrit, false);
+
+  el('s-jitter').textContent = fmt(s.avg_jitter_ms,'ms',2);
+  el('s-jitter').className   = 'stat-value ' + health(s.avg_jitter_ms, T.jitWarn, T.jitCrit);
+
+  el('s-fail').textContent = fail;
+  el('s-fail').className   = 'stat-value ' + (fail === 0 ? 'c-green' : 'c-red');
+}
+
+function updateBadges() {
+  // All badge
+  const total = paths.length;
+  const okPaths = paths.filter(p => latestMap[p.id]?.success).length;
+  const allBadge = document.getElementById('badge-all');
+  allBadge.textContent = `${okPaths}/${total}`;
+  allBadge.className = 'nav-badge ' + (okPaths === total ? 'badge-ok' : okPaths < total-2 ? 'badge-crit' : 'badge-warn');
+
+  // Per-path badges
+  paths.forEach(p => {
+    const b = document.getElementById(`badge-${p.id}`);
+    if (!b) return;
+    const r = latestMap[p.id];
+    if (!r) { b.textContent = '?'; b.className = 'nav-badge badge-dim'; return; }
+    b.textContent = r.success ? 'OK' : 'FAIL';
+    b.className   = 'nav-badge ' + (r.success ? 'badge-ok' : 'badge-crit');
+  });
+}
+
+// ── Table ──────────────────────────────────────────────────
+function renderTable(records) {
+  const tbody = document.getElementById('results-body');
+  if (!records.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">No results for this period.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = records.slice(0, 60).map(r => {
+    const t  = r.throughput;
+    const l  = r.latency;
+    const lu = r.latency_under_load;
+    const j  = r.jitter;
+    const m  = r.mtu;
+    const ts = r.timestamp_utc.slice(11, 19);
+
+    const txC  = health(t?.tx_mbps,      T.tputWarn, T.tputCrit, false);
+    const latC = health(l?.rtt_avg_ms,   T.latWarn,  T.latCrit);
+    const lssC = health(l?.packet_loss_pct, T.lossWarn, T.lossCrit);
+    const jitC = health(j?.jitter_ms,    T.jitWarn,  T.jitCrit);
+    const bbC  = health(lu?.delta_ms,    T.bbWarn,   T.bbCrit);
+    const mtuW = m?.fragmentation_detected ? ' c-yellow' : '';
+
+    return `<tr>
+      <td class="td-path" title="${r.path_label}">${r.path_label}</td>
+      <td class="td-time">${ts}</td>
+      <td>${r.success ? '<span class="ok-dot">✓</span>' : '<span class="fail-dot">✗</span>'}</td>
+      <td class="${txC}">${fmt(t?.tx_mbps)}</td>
+      <td>${fmt(t?.rx_mbps)}</td>
+      <td class="${latC}">${fmt(l?.rtt_avg_ms,'ms')}</td>
+      <td>${fmt(l?.rtt_max_ms,'ms')}</td>
+      <td class="${lssC}">${fmt(l?.packet_loss_pct,'%')}</td>
+      <td class="${jitC}">${fmt(j?.jitter_ms,'ms',2)}</td>
+      <td class="${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</td>
+      <td class="${mtuW}">${m ? m.effective_mtu_bytes : '—'}</td>
+      <td>${t?.retransmits ?? '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Charts ─────────────────────────────────────────────────
+const CHART_COLOURS = ['#06b6d4','#22c55e','#eab308','#ef4444','#a855f7','#f97316','#3b82f6','#ec4899'];
+
+function initCharts() {
+  const defaults = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 300 },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#475569', font: { family: 'JetBrains Mono, monospace', size: 10 },
+                    maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+           grid: { color: '#1c2130' } },
+      y: { ticks: { color: '#475569', font: { family: 'JetBrains Mono, monospace', size: 10 } },
+           grid: { color: '#1c2130' } },
+    },
+  };
+
+  ['latency','tput','jitter','bb'].forEach(id => {
+    const ctx = document.getElementById(`chart-${id}`).getContext('2d');
+    charts[id] = new Chart(ctx, {
+      type: 'line',
+      data: { labels: [], datasets: [] },
+      options: JSON.parse(JSON.stringify(defaults)),
+    });
+  });
+}
+
+async function updateCharts() {
+  const isAll  = currentPath === 'all';
+  const days   = currentDays;
+
+  // Toggle which view is visible
+  document.getElementById('overview-sparklines').style.display = isAll ? '' : 'none';
+  document.getElementById('path-charts').style.display         = isAll ? 'none' : '';
+
+  if (isAll) {
+    await renderSparklines(days);
+  } else {
+    const pathParam = `&path_id=${currentPath}`;
+    const [latData, tputData, jitterData, bbData] = await Promise.all([
+      api(`/api/timeseries/latency?days=${days}${pathParam}`),
+      api(`/api/timeseries/throughput?days=${days}${pathParam}`),
+      api(`/api/timeseries/jitter?days=${days}${pathParam}`),
+      api(`/api/timeseries/bufferbloat?days=${days}${pathParam}`),
+    ]);
+    setChartData('latency', latData,   '#06b6d4');
+    setChartData('tput',    tputData,  '#22c55e');
+    setChartData('jitter',  jitterData,'#eab308');
+    setChartData('bb',      bbData,    '#ef4444');
+  }
+}
+
+// ── Sparkline rendering ────────────────────────────────────
+const _sparkCharts = {};   // path_id+metric -> Chart instance
+
+async function renderSparklines(days) {
+  if (!paths.length) return;
+
+  // Fetch latest results and latency timeseries per path for sparklines
+  const latest = Object.values(latestMap);
+
+  // Fetch latency timeseries for all paths in parallel
+  const tsData = await Promise.all(
+    paths.map(p => api(`/api/timeseries/latency?days=${days}&path_id=${p.id}`)
+      .then(d => ({ pid: p.id, points: d[0]?.points || [] }))
+      .catch(() => ({ pid: p.id, points: [] }))
+    )
+  );
+  const tsMap = {};
+  tsData.forEach(d => { tsMap[d.pid] = d.points; });
+
+  const grid = document.getElementById('spark-grid');
+
+  // Header row
+  grid.innerHTML = `
+    <div class="spark-row spark-header">
+      <div class="spark-cell">Path</div>
+      <div class="spark-cell">Latency trend</div>
+      <div class="spark-cell spark-val">RTT avg</div>
+      <div class="spark-cell spark-val">TX Mbps</div>
+      <div class="spark-cell spark-val">Jitter</div>
+      <div class="spark-cell spark-val">Δ Loaded</div>
+      <div class="spark-cell spark-val">Loss</div>
+      <div class="spark-cell spark-val">Status</div>
+    </div>
+  `;
+
+  paths.forEach(p => {
+    const r   = latestMap[p.id];
+    const pts = tsMap[p.id] || [];
+
+    const l   = r?.latency;
+    const t   = r?.throughput;
+    const j   = r?.jitter;
+    const lu  = r?.latency_under_load;
+
+    const latC  = l ? health(l.rtt_avg_ms,       T.latWarn,  T.latCrit)  : 'c-muted';
+    const tputC = t ? health(t.tx_mbps,           T.tputWarn, T.tputCrit, false) : 'c-muted';
+    const jitC  = j ? health(j.jitter_ms,         T.jitWarn,  T.jitCrit)  : 'c-muted';
+    const bbC   = lu? health(lu.delta_ms,          T.bbWarn,   T.bbCrit)   : 'c-muted';
+    const lssC  = l ? health(l.packet_loss_pct,   T.lossWarn, T.lossCrit) : 'c-muted';
+
+    const statusIcon = !r ? '<span style="color:var(--muted)">?</span>'
+      : r.success ? '<span style="color:var(--green)">✓</span>'
+                  : '<span style="color:var(--red)">✗</span>';
+
+    const canvasId = 'spark-' + p.id;
+    const row = document.createElement('div');
+    row.className = 'spark-row';
+    row.innerHTML = `
+      <div class="spark-cell">
+        <span class="spark-path" onclick="selectPathById('${p.id}')">${p.label}</span>
+      </div>
+      <div class="spark-cell-chart">
+        <div class="spark-canvas-wrap"><canvas id="${canvasId}"></canvas></div>
+      </div>
+      <div class="spark-cell spark-val ${latC}">${l ? fmt(l.rtt_avg_ms,'ms') : '—'}</div>
+      <div class="spark-cell spark-val ${tputC}">${t ? fmt(t.tx_mbps) : '—'}</div>
+      <div class="spark-cell spark-val ${jitC}">${j ? fmt(j.jitter_ms,'ms',2) : '—'}</div>
+      <div class="spark-cell spark-val ${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</div>
+      <div class="spark-cell spark-val ${lssC}">${l ? fmt(l.packet_loss_pct,'%') : '—'}</div>
+      <div class="spark-cell spark-val">${statusIcon}</div>
+    `;
+    grid.appendChild(row);
+
+    // Draw sparkline after DOM insertion
+    requestAnimationFrame(() => {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas || !pts.length) return;
+
+      // Destroy old chart if exists
+      if (_sparkCharts[canvasId]) {
+        _sparkCharts[canvasId].destroy();
+        delete _sparkCharts[canvasId];
+      }
+
+      const values = pts.slice(-20).map(p => p.value);  // last 20 points
+      const colour = cssColour(latC);
+
+      _sparkCharts[canvasId] = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: values.map(() => ''),
+          datasets: [{
+            data: values,
+            borderColor: colour,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.3,
+            fill: { target: 'origin', above: colour + '18' },
+            spanGaps: true,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: {
+            x: { display: false },
+            y: { display: false, beginAtZero: false },
+          },
+        }
+      });
+    });
+  });
+}
+
+function selectPathById(pid) {
+  const navItem = document.querySelector(`.nav-item[data-path="${pid}"]`);
+  if (navItem) selectPath(pid, navItem);
+}
+
+function setChartData(chartId, seriesArray, fallbackColour) {
+  const chart = charts[chartId];
+  if (!seriesArray.length) {
+    chart.data.labels   = [];
+    chart.data.datasets = [];
+    chart.update('none');
+    return;
+  }
+
+  // Build a merged time-axis from all series
+  const allTs = [...new Set(
+    seriesArray.flatMap(s => s.points.map(p => p.ts.slice(11,19)))
+  )].sort();
+
+  const datasets = seriesArray.map((s, i) => {
+    const ptMap = {};
+    s.points.forEach(p => { ptMap[p.ts.slice(11,19)] = p.value; });
+    return {
+      label: s.label,
+      data:  allTs.map(t => ptMap[t] ?? null),
+      borderColor: CHART_COLOURS[i % CHART_COLOURS.length],
+      borderWidth: 1.5,
+      pointRadius: 2,
+      tension: 0.3,
+      spanGaps: true,
+      fill: false,
+    };
+  });
+
+  chart.data.labels   = allTs;
+  chart.data.datasets = datasets;
+  chart.update('none');
+}
+
+// ── Hop detail ─────────────────────────────────────────────
+async function renderHops(pathId) {
+  try {
+    const data = await api(`/api/hops/${pathId}`);
+    const body  = document.getElementById('hops-body');
+    const title = document.getElementById('hops-title');
+
+    title.textContent = `MTR hop detail — ${data.path_label || pathId}`;
+
+    if (!data.hops || !data.hops.length) {
+      body.innerHTML = '<div class="empty">No MTR data for this path yet.</div>';
+      return;
+    }
+
+    const maxAvg = Math.max(...data.hops.map(h => h.avg_ms || 0));
+
+    body.innerHTML = `
+      <div class="hop-grid">
+        <div class="hop-header">Hop</div>
+        <div class="hop-header">Host</div>
+        <div class="hop-header" style="text-align:right">Loss %</div>
+        <div class="hop-header" style="text-align:right">Avg ms</div>
+        <div class="hop-header" style="text-align:right">Best</div>
+        <div class="hop-header" style="text-align:right">Worst</div>
+        <div class="hop-header" style="text-align:right">StDev</div>
+      </div>
+      ${data.hops.map(h => {
+        const lssC = cssColour(health(h.loss_pct, T.lossWarn, T.lossCrit));
+        const avgC = cssColour(health(h.avg_ms,   T.latWarn,  T.latCrit));
+        const barW = maxAvg > 0 ? Math.round((h.avg_ms / maxAvg) * 120) : 4;
+        return `
+        <div class="hop-grid hop-row">
+          <div style="color:var(--muted)">${h.hop}</div>
+          <div>
+            <div class="hop-bar-wrap">
+              <div class="hop-bar" style="width:${barW}px;background:${avgC};opacity:.7"></div>
+              <span style="font-size:12px">${h.host || '???'}</span>
+            </div>
+          </div>
+          <div style="text-align:right;color:${lssC}">${fmt(h.loss_pct,'%')}</div>
+          <div style="text-align:right;color:${avgC}">${fmt(h.avg_ms,'ms')}</div>
+          <div style="text-align:right;color:var(--muted)">${fmt(h.best_ms,'ms')}</div>
+          <div style="text-align:right;color:var(--muted)">${fmt(h.worst_ms,'ms')}</div>
+          <div style="text-align:right;color:var(--muted)">${fmt(h.stddev_ms,'ms')}</div>
+        </div>`;
+      }).join('')}
+    `;
+  } catch(e) {
+    console.error('Hop fetch failed', e);
+  }
+}
+
+// ── Utility ────────────────────────────────────────────────
+function el(id) { return document.getElementById(id); }
+
+boot();
+</script>
+</body>
+</html>
