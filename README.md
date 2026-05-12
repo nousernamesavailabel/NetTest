@@ -23,6 +23,30 @@ No persistent daemon is required on agents beyond sshd.
 
 ## Setup
 
+### Quick install on a controller
+
+On a fresh Ubuntu/Debian controller, clone the repo and run:
+
+```bash
+sudo ./install.sh
+```
+
+The installer copies the app to `/opt/nettest`, creates a Python virtual
+environment, installs Python and system dependencies, creates
+`/opt/nettest/config/config.yaml` from the example if needed, and enables:
+
+```bash
+nettest.service      # scheduler/controller
+nettest-web.service  # web dashboard on port 8080
+```
+
+After editing `/opt/nettest/config/config.yaml`, start the services:
+
+```bash
+sudo systemctl start nettest
+sudo systemctl start nettest-web
+```
+
 ### 1. Clone and install dependencies
 ```bash
 cd nettest/

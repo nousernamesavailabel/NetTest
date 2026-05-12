@@ -1,0 +1,18 @@
+[Unit]
+Description=NetTest Controller Scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nettest
+Group=nettest
+WorkingDirectory=/opt/nettest
+ExecStart=/opt/nettest/venv/bin/python /opt/nettest/main.py --config /opt/nettest/config/config.yaml
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
