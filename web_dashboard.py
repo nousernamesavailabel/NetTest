@@ -17,6 +17,8 @@ import os
 import queue
 import subprocess
 import sys
+import collections
+import secrets
 import threading
 import time
 import uuid
@@ -24,7 +26,7 @@ from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from flask import Flask, jsonify, send_from_directory, request, Response
+from flask import Flask, jsonify, send_from_directory, request, Response, session, redirect, url_for
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.config_loader import load_config
@@ -41,6 +43,7 @@ try:
     _config = load_config(_config_path)
     _store  = ResultStore(_config.results_dir)
     _tester = PathTester(_config)
+    app.secret_key = _config.auth.session_secret or secrets.token_hex(32)
 except Exception as _init_err:
     import traceback
     print(f"FATAL: Failed to initialize — {_init_err}")
@@ -48,6 +51,47 @@ except Exception as _init_err:
     _config = None
     _store  = None
     _tester = None
+    app.secret_key = secrets.token_hex(32)
+
+# ── Login rate limiting ───────────────────────────────────
+_login_attempts: dict = collections.defaultdict(collections.deque)
+_login_lock = threading.Lock()
+
+
+def _check_rate_limit(ip: str):
+    if not _config: return True, 0
+    auth = _config.auth
+    now  = time.time()
+    with _login_lock:
+        attempts = _login_attempts[ip]
+        while attempts and now - attempts[0] > auth.login_window_seconds:
+            attempts.popleft()
+        if len(attempts) >= auth.login_max_attempts:
+            unlock_at = attempts[0] + auth.login_lockout_seconds
+            if now < unlock_at:
+                return False, int(unlock_at - now)
+            attempts.clear()
+        return True, 0
+
+
+def _record_attempt(ip: str):
+    with _login_lock:
+        _login_attempts[ip].append(time.time())
+
+
+def login_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _config or not _config.auth.radius_server:
+            return f(*args, **kwargs)
+        if not session.get("authenticated"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
+            return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated
+
 
 # ── Job tracking ───────────────────────────────────────────
 _jobs: dict      = {}
@@ -525,24 +569,151 @@ def api_results_clear():
 
 # ── Auth stubs ─────────────────────────────────────────────
 
+# ── Onboarding API ─────────────────────────────────────────
+
+@app.route("/api/onboard", methods=["POST"])
+@login_required
+def api_onboard():
+    """Onboard a new agent via the web UI."""
+    body       = request.get_json(silent=True) or {}
+    agent_ip   = body.get("agent_ip", "").strip()
+    agent_label= body.get("agent_label", "").strip() or agent_ip
+    agent_id   = body.get("agent_id",   "").strip()
+    agent_type = body.get("agent_type", "endpoint")
+    admin_user = body.get("admin_user", "").strip()
+    admin_pass = body.get("admin_pass", "")
+    admin_port = int(body.get("admin_port", 22))
+
+    if not agent_ip:
+        return jsonify({"error": "agent_ip is required"}), 400
+    if not admin_user:
+        return jsonify({"error": "admin_user is required"}), 400
+    if not admin_pass:
+        return jsonify({"error": "admin_pass is required"}), 400
+
+    job_id  = "onboard-" + str(uuid.uuid4())[:8]
+    log_q   = queue.Queue(maxsize=500)
+    handler = JobLogHandler(job_id)
+    handler.setLevel(logging.INFO)
+
+    with _job_logs_lock:
+        _job_logs[job_id] = log_q
+
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id":   job_id,
+            "path_id":  "onboard",
+            "label":    f"Onboarding {agent_label}",
+            "status":   "queued",
+            "started":  datetime.now(timezone.utc).isoformat(),
+            "finished": None,
+            "success":  None,
+            "error":    None,
+        }
+
+    def run_onboard():
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        logging.getLogger("netmiko").setLevel(logging.WARNING)
+        logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+
+        try:
+            from onboard import onboard_agent
+            ok = onboard_agent(
+                config_path=_config_path,
+                agent_ip=agent_ip,
+                agent_label=agent_label,
+                agent_id=agent_id or None,
+                agent_type=agent_type,
+                admin_user=admin_user,
+                admin_pass=admin_pass,
+                admin_port=admin_port,
+                interactive=False,
+            )
+            global _config, _tester
+            _config = load_config(_config_path)
+            _tester = PathTester(_config)
+
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "done" if ok else "error"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["success"]  = ok
+                _jobs[job_id]["error"]    = None if ok else "Onboarding failed — check output above"
+        except Exception as e:
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "error"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["error"]    = str(e)
+        finally:
+            root.removeHandler(handler)
+            log_q.put(None)
+
+    threading.Thread(target=run_onboard, daemon=True,
+                     name=f"onboard-{agent_ip}").start()
+    return jsonify({"job_id": job_id, "status": "queued"})
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    return send_from_directory(STATIC_DIR, "login.html")
+    if not _config or not _config.auth.radius_server:
+        session["authenticated"] = True
+        session["username"] = "admin"
+        return redirect(request.args.get("next", "/"))
+
+    error = ""
+    if request.method == "POST":
+        ip       = request.remote_addr
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        allowed, wait = _check_rate_limit(ip)
+        if not allowed:
+            error = f"Too many failed attempts. Try again in {wait}s."
+        elif not username or not password:
+            error = "Username and password are required."
+        else:
+            _record_attempt(ip)
+            try:
+                from core.radius_auth import authenticate_radius
+                if authenticate_radius(username, password, _config.auth):
+                    session.permanent = True
+                    session["authenticated"] = True
+                    session["username"] = username
+                    with _login_lock:
+                        _login_attempts[ip].clear()
+                    return redirect(request.form.get("next") or "/")
+                else:
+                    error = "Invalid username or password."
+            except Exception as e:
+                error = f"Authentication error: {e}"
+
+    next_url = request.args.get("next", "/")
+    html = open(os.path.join(STATIC_DIR, "login.html")).read()
+    html = html.replace("{{next}}", next_url)
+    html = html.replace("{{csrf_token}}", secrets.token_hex(16))
+    html = html.replace("{{error}}", error)
+    return html
 
 
 @app.route("/logout")
 def logout():
-    return send_from_directory(STATIC_DIR, "login.html")
+    session.clear()
+    return redirect(url_for("login"))
 
 
 # ── Serve HTML ─────────────────────────────────────────────
 
 @app.route("/")
+@login_required
 def serve_dashboard():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
 @app.route("/config")
+@login_required
 def serve_config_page():
     return send_from_directory(STATIC_DIR, "config.html")
 
