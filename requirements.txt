@@ -15,6 +15,7 @@ rich>=13.7.0
 # Web dashboard
 flask>=3.0.0
 gunicorn>=21.2.0
+gevent>=24.2.1
 pyrad>=2.4
 
 # --- Future: uncomment when adding InfluxDB integration ---
