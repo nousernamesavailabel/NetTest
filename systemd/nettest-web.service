@@ -8,11 +8,17 @@ Type=simple
 User=nettest
 Group=nettest
 WorkingDirectory=/opt/nettest
-ExecStart=/opt/nettest/venv/bin/gunicorn --workers 2 --threads 4 --bind 0.0.0.0:8080 web_dashboard:app
+ExecStart=/opt/nettest/venv/bin/gunicorn \
+    --worker-class gevent \
+    --workers 1 \
+    --bind 0.0.0.0:8080 \
+    --timeout 300 \
+    --chdir /opt/nettest \
+    web_dashboard:app
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/nettest
 
 [Install]
 WantedBy=multi-user.target
-
