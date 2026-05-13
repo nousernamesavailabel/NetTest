@@ -576,8 +576,9 @@ def api_results_clear():
 def api_onboard():
     """Onboard a new agent via the web UI."""
     body       = request.get_json(silent=True) or {}
-    agent_ip   = body.get("agent_ip", "").strip()
-    agent_label= body.get("agent_label", "").strip() or agent_ip
+    agent_ip      = body.get("agent_ip", "").strip()
+    agent_test_ip = body.get("agent_test_ip", "").strip() or None
+    agent_label   = body.get("agent_label", "").strip() or agent_ip
     agent_id   = body.get("agent_id",   "").strip()
     agent_type = body.get("agent_type", "endpoint")
     admin_user = body.get("admin_user", "").strip()
@@ -626,6 +627,7 @@ def api_onboard():
             ok = onboard_agent(
                 config_path=_config_path,
                 agent_ip=agent_ip,
+                agent_test_ip=agent_test_ip,
                 agent_label=agent_label,
                 agent_id=agent_id or None,
                 agent_type=agent_type,

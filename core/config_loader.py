@@ -25,13 +25,25 @@ class SSHDefaults:
 class Agent:
     id: str
     label: str
-    host: str
+    host_mgmt_ip: str                  # SSH management IP — controller connects here
     type: str                          # endpoint | svi_adjacent
+    host_test_ip: Optional[str] = None # Test traffic IP — iperf3/ping targets this
+                                       # Falls back to host_mgmt_ip if not set
     # Per-agent SSH overrides (fall back to SSHDefaults if None)
     username: Optional[str] = None
     password: Optional[str] = None
     key_file: Optional[str] = None
     port: Optional[int] = None
+
+    @property
+    def host(self) -> str:
+        """Legacy alias for host_mgmt_ip — keeps older code working."""
+        return self.host_mgmt_ip
+
+    @property
+    def test_host(self) -> str:
+        """The IP to use as the target for test traffic."""
+        return self.host_test_ip or self.host_mgmt_ip
 
 
 @dataclass
@@ -137,7 +149,7 @@ class ControllerConfig:
     def get_ssh_params(self, agent: Agent) -> dict:
         """Returns merged SSH params for an agent (agent overrides > defaults)."""
         return {
-            "host":     agent.host,
+            "host":     agent.host_mgmt_ip,
             "username": agent.username or self.ssh_defaults.username,
             "password": agent.password or self.ssh_defaults.password,
             "key_file": agent.key_file or self.ssh_defaults.key_file,
@@ -155,7 +167,13 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
 
     ssh_defaults = SSHDefaults(**raw["ssh_defaults"])
 
-    agents = [Agent(**a) for a in raw["agents"]]
+    agents = []
+    for a in raw["agents"]:
+        # Support legacy 'host' field — migrate to host_mgmt_ip transparently
+        agent_data = dict(a)
+        if "host" in agent_data and "host_mgmt_ip" not in agent_data:
+            agent_data["host_mgmt_ip"] = agent_data.pop("host")
+        agents.append(Agent(**agent_data))
 
     paths = [
         TestPath(

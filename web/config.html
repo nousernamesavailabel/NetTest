@@ -80,6 +80,7 @@ select option{background:var(--bg)}
              border-radius:4px;border:1px solid var(--bdr2);cursor:pointer;
              font-size:11px;color:var(--mt);transition:all .15s;user-select:none}
 .test-toggle.on{background:#0f1f30;border-color:var(--cy);color:var(--cy)}
+.test-toggle.svi-disabled{opacity:0.35;cursor:not-allowed;pointer-events:none;text-decoration:line-through}
 .test-toggle input{display:none}
 
 /* ── Path flow viz ── */
@@ -327,6 +328,7 @@ let schedule = {};
 let sshDefs  = {};
 
 const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu'];
+const SVI_TESTS  = ['latency','mtu'];   // tests supported by svi_adjacent agents
 const TEST_LABELS = {
   throughput:          'Throughput',
   latency:             'Latency',
@@ -389,7 +391,7 @@ function renderAgents() {
           <span class="badge ${a.type === 'svi_adjacent' ? 'badge-svi' : 'badge-endpoint'}">
             ${a.type === 'svi_adjacent' ? 'SVI' : 'endpoint'}
           </span>
-          <span style="color:var(--mt);font-size:11px">${escHtml(a.host || '')}</span>
+          <span style="color:var(--mt);font-size:11px">${escHtml(a.host_mgmt_ip || a.host || '')}</span>
         </div>
         <div class="card-actions" onclick="event.stopPropagation()">
           <button class="btn btn-ghost" style="font-size:10px;padding:3px 8px"
@@ -411,9 +413,16 @@ function renderAgents() {
             oninput="agents[${i}].label=this.value;updateAgentHeader(${i});updatePathsForAgent(${i});markDirty()">
         </div>
         <div class="form-row">
-          <label>Host / IP <span style="color:var(--rd)">*</span></label>
-          <input type="text" value="${escHtml(a.host||'')}" placeholder="10.1.1.10"
-            oninput="agents[${i}].host=this.value;updateAgentHeader(${i});markDirty()" id="agent-host-${i}">
+          <label>Management IP <span style="color:var(--rd)">*</span></label>
+          <input type="text" value="${escHtml(a.host_mgmt_ip||a.host||'')}" placeholder="10.0.1.10"
+            oninput="agents[${i}].host_mgmt_ip=this.value;updateAgentHeader(${i});markDirty()"
+            id="agent-host-${i}" title="Controller SSHes to this IP for control">
+        </div>
+        <div class="form-row">
+          <label>Test IP</label>
+          <input type="text" value="${escHtml(a.host_test_ip||'')}" placeholder="10.1.1.10 (leave blank to use Management IP)"
+            oninput="agents[${i}].host_test_ip=this.value;markDirty()"
+            title="iPerf3 and ping target this IP — use client network IP. Leave blank to use Management IP.">
         </div>
         <div class="form-row">
           <label>Type</label>
@@ -429,7 +438,7 @@ function renderAgents() {
 }
 
 function addAgent() {
-  agents.push({ id: '', label: '', host: '', type: 'endpoint' });
+  agents.push({ id: '', label: '', host_mgmt_ip: '', host_test_ip: '', type: 'endpoint' });
   renderAgents();
   // Auto-expand the new card
   const i = agents.length - 1;
@@ -450,13 +459,14 @@ async function testAgent(i) {
   collectSSH();
   const a   = agents[i];
   const div = document.getElementById('agent-ping-' + i);
-  if (!a.host) { div.innerHTML = '<div class="ping-result ping-err">No host IP set</div>'; return; }
-  div.innerHTML = '<div class="ping-result ping-pending">⟳ Testing SSH connectivity to ' + escHtml(a.host) + '...</div>';
+  const mgmtIp = a.host_mgmt_ip || a.host;
+  if (!mgmtIp) { div.innerHTML = '<div class="ping-result ping-err">No Management IP set</div>'; return; }
+  div.innerHTML = '<div class="ping-result ping-pending">⟳ Testing SSH connectivity to ' + escHtml(mgmtIp) + '...</div>';
   try {
     const res = await apiFetch('/api/config/test-agent', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ host: a.host, username: sshDefs.username, key_file: sshDefs.key_file, port: sshDefs.port })
+      body: JSON.stringify({ host: a.host_mgmt_ip || a.host, username: sshDefs.username, key_file: sshDefs.key_file, port: sshDefs.port })
     });
     if (res.ok) {
       div.innerHTML = `<div class="ping-result ping-ok">✓ Connected — hostname: ${escHtml(res.hostname)} | ${escHtml(res.iperf3)}</div>`;
@@ -523,14 +533,14 @@ function renderPaths() {
         </div>
         <div class="form-row">
           <label>Source <span style="color:var(--rd)">*</span></label>
-          <select onchange="paths[${i}].source=this.value;updatePathFlow(${i});markDirty()">
+          <select onchange="paths[${i}].source=this.value;updatePathFlow(${i});enforceSviTests(${i});markDirty()">
             <option value="">— select agent —</option>
             ${agents.map(a => `<option value="${escHtml(a.id)}" ${p.source===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
           </select>
         </div>
         <div class="form-row">
           <label>Destination <span style="color:var(--rd)">*</span></label>
-          <select onchange="paths[${i}].destination=this.value;updatePathFlow(${i});markDirty()">
+          <select onchange="paths[${i}].destination=this.value;updatePathFlow(${i});enforceSviTests(${i});markDirty()">
             <option value="">— select agent —</option>
             ${agents.map(a => `<option value="${escHtml(a.id)}" ${p.destination===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
           </select>
@@ -538,18 +548,70 @@ function renderPaths() {
         <div class="form-row tall">
           <label>Tests</label>
           <div class="test-toggles">
-            ${ALL_TESTS.map(t => `
-              <label class="test-toggle ${tests.includes(t)?'on':''}">
-                <input type="checkbox" ${tests.includes(t)?'checked':''}
+            ${ALL_TESTS.map(t => {
+              const dstAgent  = agents.find(a => a.id === p.destination);
+              const isSvi     = dstAgent && dstAgent.type === 'svi_adjacent';
+              const supported = !isSvi || SVI_TESTS.includes(t);
+              const on        = tests.includes(t) && supported;
+              const disabled  = !supported;
+              const title     = disabled
+                ? `${TEST_LABELS[t]} is not supported for svi_adjacent agents (ping target only)`
+                : '';
+              return `<label class="test-toggle ${on?'on':''} ${disabled?'svi-disabled':''}"
+                        title="${title}"
+                        style="${disabled?'opacity:0.35;cursor:not-allowed;pointer-events:none':''}">
+                <input type="checkbox" ${on?'checked':''} ${disabled?'disabled':''}
                   onchange="toggleTest(${i},'${t}',this.checked)">
-                ${TEST_LABELS[t]}
-              </label>
-            `).join('')}
+                ${TEST_LABELS[t]}${disabled?' ✕':''}
+              </label>`;
+            }).join('')}
           </div>
         </div>
 
       </div>
     </div>`;
+  }).join('');
+}
+
+function enforceSviTests(pathIdx) {
+  const p = paths[pathIdx];
+  const dstAgent = agents.find(a => a.id === p.destination);
+  const isSvi = dstAgent && dstAgent.type === 'svi_adjacent';
+
+  if (isSvi) {
+    const before = p.tests.length;
+    p.tests = p.tests.filter(t => SVI_TESTS.includes(t));
+    if (!p.tests.length) p.tests = ['latency'];
+    if (p.tests.length < before) {
+      const removed = before - p.tests.length;
+      const errBar = document.getElementById('save-errors');
+      if (errBar) {
+        errBar.textContent = `Note: removed ${removed} unsupported test${removed>1?'s':''} — '${dstAgent.label}' is svi_adjacent (latency and MTU only)`;
+        errBar.style.background = '#2a1f00';
+        errBar.style.color = 'var(--yw)';
+        errBar.style.display = 'block';
+        setTimeout(() => { errBar.style.display = 'none'; }, 5000);
+      }
+    }
+  }
+
+  // Update test toggles in-place without re-rendering the whole path list
+  const container = document.querySelector(`#path-body-${pathIdx} .test-toggles`);
+  if (!container) return;
+  container.innerHTML = ALL_TESTS.map(t => {
+    const supported = !isSvi || SVI_TESTS.includes(t);
+    const on        = p.tests.includes(t) && supported;
+    const disabled  = !supported;
+    const title     = disabled
+      ? `${TEST_LABELS[t]} is not supported for svi_adjacent agents (ping target only)`
+      : '';
+    return `<label class="test-toggle ${on?'on':''} ${disabled?'svi-disabled':''}"
+              title="${title}"
+              style="${disabled?'opacity:0.35;cursor:not-allowed;pointer-events:none':''}">
+      <input type="checkbox" ${on?'checked':''} ${disabled?'disabled':''}
+        onchange="toggleTest(${pathIdx},'${t}',this.checked)">
+      ${TEST_LABELS[t]}${disabled?' ✕':''}
+    </label>`;
   }).join('');
 }
 
@@ -655,7 +717,7 @@ async function saveConfig() {
   const errs = [];
   agents.forEach((a, i) => {
     if (!a.id)   errs.push(`Agent ${i+1}: ID is required`);
-    if (!a.host) errs.push(`Agent ${i+1} (${a.id||'?'}): Host IP is required`);
+    if (!a.host_mgmt_ip && !a.host) errs.push(`Agent ${i+1} (${a.id||'?'}): Management IP is required`);
   });
   paths.forEach((p, i) => {
     if (!p.id)          errs.push(`Path ${i+1}: ID is required`);
@@ -802,8 +864,12 @@ boot();
     <div id="wizard-form">
       <div class="wizard-body">
         <div class="form-row">
-          <label>Agent IP <span style="color:var(--rd)">*</span></label>
-          <input type="text" id="ob-ip" placeholder="10.5.1.10">
+          <label>Management IP <span style="color:var(--rd)">*</span></label>
+          <input type="text" id="ob-ip" placeholder="10.0.1.10" title="Controller will SSH to this IP">
+        </div>
+        <div class="form-row">
+          <label>Test IP</label>
+          <input type="text" id="ob-test-ip" placeholder="10.1.1.10 (leave blank to use Management IP)" title="iPerf3 and ping will target this IP">
         </div>
         <div class="form-row">
           <label>Label</label>
@@ -885,7 +951,8 @@ function closeWizard() {
 }
 
 async function startOnboard() {
-  const ip    = document.getElementById('ob-ip').value.trim();
+  const ip      = document.getElementById('ob-ip').value.trim();
+  const test_ip = document.getElementById('ob-test-ip') ? document.getElementById('ob-test-ip').value.trim() : '';
   const label = document.getElementById('ob-label').value.trim();
   const id    = document.getElementById('ob-id').value.trim();
   const type  = document.getElementById('ob-type').value;
@@ -912,7 +979,7 @@ async function startOnboard() {
     const resp = await fetch('/api/onboard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_ip:ip, agent_label:label, agent_id:id,
+      body: JSON.stringify({ agent_ip:ip, agent_test_ip:test_ip, agent_label:label, agent_id:id,
                              agent_type:type, admin_user:user, admin_pass:pass,
                              admin_port:port })
     });

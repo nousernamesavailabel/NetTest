@@ -17,6 +17,9 @@ from runners.runner_latency import (
 
 logger = logging.getLogger(__name__)
 
+# Tests supported by svi_adjacent agents (passive ping targets only)
+SVI_SUPPORTED_TESTS = {"latency", "mtu"}
+
 TEST_LABELS = {
     "throughput":         "Throughput",
     "latency":            "Latency",
@@ -40,6 +43,27 @@ class PathTester:
                          f"(source='{path.source}', destination='{path.destination}')")
             return self._error_result(path, "Unknown source or destination agent ID")
 
+        # Filter unsupported tests if destination is svi_adjacent
+        if dst_agent.type == "svi_adjacent":
+            filtered_tests = []
+            for t in path.tests:
+                if t in SVI_SUPPORTED_TESTS:
+                    filtered_tests.append(t)
+                else:
+                    logger.warning(
+                        f"  Skipping '{TEST_LABELS.get(t, t)}' — destination "
+                        f"'{dst_agent.label}' is svi_adjacent (passive ping target only). "
+                        f"Supported tests: latency, mtu"
+                    )
+            from dataclasses import replace as dc_replace
+            path = dc_replace(path, tests=filtered_tests)
+            if not path.tests:
+                logger.error(f"  No supported tests remain for svi_adjacent destination "
+                             f"'{dst_agent.label}'")
+                return self._error_result(
+                    path, f"No supported tests for svi_adjacent agent '{dst_agent.label}'"
+                )
+
         src_ssh_params = self.config.get_ssh_params(src_agent)
         dst_ssh_params = self.config.get_ssh_params(dst_agent)
 
@@ -49,8 +73,8 @@ class PathTester:
             path_label=path.label,
             source_agent_id=src_agent.id,
             destination_agent_id=dst_agent.id,
-            source_host=src_agent.host,
-            destination_host=dst_agent.host,
+            source_host=src_agent.host_mgmt_ip,
+            destination_host=dst_agent.host_mgmt_ip,
             timestamp_utc=utc_now_iso(),
             duration_total_sec=0,
             success=False,
@@ -59,32 +83,53 @@ class PathTester:
         test_labels = [TEST_LABELS.get(t, t) for t in path.tests]
         logger.info(f"")
         logger.info(f"===  {path.label}  ===")
-        logger.info(f"     Source      : {src_agent.label} ({src_agent.host})")
-        logger.info(f"     Destination : {dst_agent.label} ({dst_agent.host})")
+        src_test  = f" → test: {src_agent.host_test_ip}" if src_agent.host_test_ip else ""
+        dst_test  = f" → test: {dst_agent.host_test_ip}" if dst_agent.host_test_ip else ""
+        logger.info(f"     Source      : {src_agent.label} ({src_agent.host_mgmt_ip}{src_test})")
+        logger.info(f"     Destination : {dst_agent.label} ({dst_agent.host_mgmt_ip}{dst_test})")
         logger.info(f"     Tests       : {', '.join(test_labels)}")
 
         start = time.monotonic()
 
         try:
-            logger.info(f"Connecting to {src_agent.label} ({src_agent.host})...")
-            logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host})...")
+            is_svi_dst = dst_agent.type == "svi_adjacent"
 
-            with ssh_connection(**self._to_ssh_kwargs(src_ssh_params)) as src_ssh, \
-                 ssh_connection(**self._to_ssh_kwargs(dst_ssh_params)) as dst_ssh:
+            logger.info(f"Connecting to {src_agent.label} ({src_agent.host_mgmt_ip})...")
+            if is_svi_dst:
+                logger.info(f"Destination {dst_agent.label} is svi_adjacent — "
+                            f"no SSH needed (ping target only)")
+            else:
+                logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host_mgmt_ip})...")
 
-                logger.info(f"Both agents connected — beginning {len(path.tests)} test(s)")
+            with ssh_connection(**self._to_ssh_kwargs(src_ssh_params)) as src_ssh:
 
-                for i, test_type in enumerate(path.tests, 1):
-                    label = TEST_LABELS.get(test_type, test_type)
-                    logger.info(f"")
-                    logger.info(f"-- Test {i}/{len(path.tests)}: {label} --")
-                    self._run_test(
-                        test_type=test_type,
-                        result=result,
-                        src_ssh=src_ssh,
-                        dst_ssh=dst_ssh,
-                        dst_host=dst_agent.host,
-                    )
+                if is_svi_dst:
+                    logger.info(f"Source connected — beginning {len(path.tests)} test(s)")
+                    for i, test_type in enumerate(path.tests, 1):
+                        label = TEST_LABELS.get(test_type, test_type)
+                        logger.info(f"")
+                        logger.info(f"-- Test {i}/{len(path.tests)}: {label} --")
+                        self._run_test(
+                            test_type=test_type,
+                            result=result,
+                            src_ssh=src_ssh,
+                            dst_ssh=None,
+                            dst_host=dst_agent.test_host,
+                        )
+                else:
+                    with ssh_connection(**self._to_ssh_kwargs(dst_ssh_params)) as dst_ssh:
+                        logger.info(f"Both agents connected — beginning {len(path.tests)} test(s)")
+                        for i, test_type in enumerate(path.tests, 1):
+                            label = TEST_LABELS.get(test_type, test_type)
+                            logger.info(f"")
+                            logger.info(f"-- Test {i}/{len(path.tests)}: {label} --")
+                            self._run_test(
+                                test_type=test_type,
+                                result=result,
+                                src_ssh=src_ssh,
+                                dst_ssh=dst_ssh,
+                                dst_host=dst_agent.test_host,
+                            )
 
             result.success = True
 
