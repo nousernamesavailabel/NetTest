@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from core.config_loader import ControllerConfig, TestPath
-from core.results import PathTestResult, make_result_id, utc_now_iso
+from core.results import PathTestResult, SegmentResult, make_result_id, utc_now_iso
 from core.ssh_manager import ssh_connection, SSHConnectionError
 from runners.runner_throughput import ThroughputRunner
 from runners.runner_latency import (
@@ -37,11 +37,17 @@ class PathTester:
     def run_path(self, path: TestPath) -> PathTestResult:
         src_agent = self.config.get_agent(path.source)
         dst_agent = self.config.get_agent(path.destination)
+        hop_agents = [self.config.get_agent(h) for h in path.hops]
 
         if not src_agent or not dst_agent:
             logger.error(f"Cannot run '{path.label}' — unknown agent ID "
                          f"(source='{path.source}', destination='{path.destination}')")
             return self._error_result(path, "Unknown source or destination agent ID")
+
+        missing_hops = [h for h, a in zip(path.hops, hop_agents) if not a]
+        if missing_hops:
+            logger.error(f"Cannot run '{path.label}' — unknown hop agent ID(s): {missing_hops}")
+            return self._error_result(path, f"Unknown hop agent ID(s): {missing_hops}")
 
         # Filter unsupported tests if destination is svi_adjacent
         if dst_agent.type == "svi_adjacent":
@@ -79,6 +85,8 @@ class PathTester:
             duration_total_sec=0,
             success=False,
         )
+        # For multi-hop paths, segments holds per-hop results
+        # The main result fields hold source→destination (final segment)
 
         test_labels = [TEST_LABELS.get(t, t) for t in path.tests]
         logger.info(f"")
@@ -86,25 +94,69 @@ class PathTester:
         src_test  = f" → test: {src_agent.host_test_ip}" if src_agent.host_test_ip else ""
         dst_test  = f" → test: {dst_agent.host_test_ip}" if dst_agent.host_test_ip else ""
         logger.info(f"     Source      : {src_agent.label} ({src_agent.host_mgmt_ip}{src_test})")
+        if hop_agents:
+            for hop in hop_agents:
+                hop_test = f" → test: {hop.host_test_ip}" if hop.host_test_ip else ""
+                logger.info(f"     Via         : {hop.label} ({hop.host_mgmt_ip}{hop_test})")
         logger.info(f"     Destination : {dst_agent.label} ({dst_agent.host_mgmt_ip}{dst_test})")
         logger.info(f"     Tests       : {', '.join(test_labels)}")
 
         start = time.monotonic()
 
         try:
-            is_svi_dst = dst_agent.type == "svi_adjacent"
-
             logger.info(f"Connecting to {src_agent.label} ({src_agent.host_mgmt_ip})...")
-            if is_svi_dst:
-                logger.info(f"Destination {dst_agent.label} is svi_adjacent — "
-                            f"no SSH needed (ping target only)")
-            else:
-                logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host_mgmt_ip})...")
 
             with ssh_connection(**self._to_ssh_kwargs(src_ssh_params)) as src_ssh:
 
+                # ── Intermediate hop segments ──────────────────────
+                if hop_agents:
+                    logger.info(f"Running {len(hop_agents)} intermediate hop segment(s)...")
+
+                for seg_idx, hop_agent in enumerate(hop_agents):
+                    logger.info(f"")
+                    logger.info(f"── Segment {seg_idx+1}/{len(hop_agents)+1}: "
+                                f"{src_agent.label} → {hop_agent.label} ──")
+
+                    # Determine which tests to run on this segment
+                    # Intermediate hops only support latency + mtu
+                    seg_tests = [t for t in path.tests
+                                 if t in SVI_SUPPORTED_TESTS or
+                                 hop_agent.type not in ("svi_adjacent",)]
+                    # Always restrict to latency+mtu for intermediate hops
+                    seg_tests = [t for t in ("latency", "mtu") if t in path.tests]
+
+                    seg_result = SegmentResult(
+                        segment_index=seg_idx,
+                        source_agent_id=src_agent.id,
+                        destination_agent_id=hop_agent.id,
+                        source_host=src_agent.host_mgmt_ip,
+                        destination_host=hop_agent.test_host,
+                    )
+
+                    for i, test_type in enumerate(seg_tests, 1):
+                        label = TEST_LABELS.get(test_type, test_type)
+                        logger.info(f"-- Test {i}/{len(seg_tests)}: {label} --")
+                        self._run_test(
+                            test_type=test_type,
+                            result=seg_result,
+                            src_ssh=src_ssh,
+                            dst_ssh=None,
+                            dst_host=hop_agent.test_host,
+                        )
+
+                    result.segments.append(seg_result)
+
+                # ── Final segment: source → destination ────────────
+                is_svi_dst = dst_agent.type == "svi_adjacent"
+                total_segs = len(hop_agents) + 1
+                if hop_agents:
+                    logger.info(f"")
+                    logger.info(f"── Segment {total_segs}/{total_segs}: "
+                                f"{src_agent.label} → {dst_agent.label} ──")
+
                 if is_svi_dst:
-                    logger.info(f"Source connected — beginning {len(path.tests)} test(s)")
+                    logger.info(f"Destination {dst_agent.label} is svi_adjacent — "
+                                f"no SSH needed (ping target only)")
                     for i, test_type in enumerate(path.tests, 1):
                         label = TEST_LABELS.get(test_type, test_type)
                         logger.info(f"")
@@ -117,8 +169,11 @@ class PathTester:
                             dst_host=dst_agent.test_host,
                         )
                 else:
+                    dst_ssh_params = self.config.get_ssh_params(dst_agent)
+                    logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host_mgmt_ip})...")
                     with ssh_connection(**self._to_ssh_kwargs(dst_ssh_params)) as dst_ssh:
-                        logger.info(f"Both agents connected — beginning {len(path.tests)} test(s)")
+                        logger.info(f"Both endpoints connected — beginning "
+                                    f"{len(path.tests)} test(s)")
                         for i, test_type in enumerate(path.tests, 1):
                             label = TEST_LABELS.get(test_type, test_type)
                             logger.info(f"")
@@ -150,6 +205,23 @@ class PathTester:
         logger.info(f"")
         if result.success:
             logger.info(f"PASSED: {path.label} completed in {result.duration_total_sec}s")
+            # Log intermediate segment summaries first
+            if result.segments:
+                logger.info(f"  Intermediate segments:")
+                prev_lat = 0.0
+                for seg in result.segments:
+                    hop_agent = self.config.get_agent(seg.destination_agent_id)
+                    hop_label = hop_agent.label if hop_agent else seg.destination_agent_id
+                    if seg.latency:
+                        delta = round(seg.latency.rtt_avg_ms - prev_lat, 3)
+                        sign = "+" if delta >= 0 else ""
+                        logger.info(f"    → {hop_label}: "
+                                    f"{seg.latency.rtt_avg_ms}ms avg  "
+                                    f"({sign}{delta}ms from prev hop)")
+                        prev_lat = seg.latency.rtt_avg_ms
+                    if seg.mtu and seg.mtu.fragmentation_detected:
+                        logger.info(f"      MTU: {seg.mtu.effective_mtu_bytes} bytes "
+                                    f"⚠ fragmentation")
             self._log_summary(result)
         else:
             logger.info(f"FAILED: {path.label} after {result.duration_total_sec}s")
@@ -159,8 +231,9 @@ class PathTester:
 
         return result
 
-    def _run_test(self, test_type: str, result: PathTestResult,
+    def _run_test(self, test_type: str, result,
                   src_ssh, dst_ssh, dst_host: str):
+        """Run a single test type. result can be PathTestResult or SegmentResult."""
         p = self.config.test_params
 
         try:

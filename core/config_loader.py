@@ -27,8 +27,7 @@ class Agent:
     label: str
     host_mgmt_ip: str                  # SSH management IP — controller connects here
     type: str                          # endpoint | svi_adjacent
-    host_test_ip: Optional[str] = None # Test traffic IP — iperf3/ping targets this
-                                       # Falls back to host_mgmt_ip if not set
+    host_test_ip: Optional[str] = None # Test traffic IP — falls back to host_mgmt_ip
     # Per-agent SSH overrides (fall back to SSHDefaults if None)
     username: Optional[str] = None
     password: Optional[str] = None
@@ -37,14 +36,11 @@ class Agent:
 
     @property
     def host(self) -> str:
-        """Legacy alias for host_mgmt_ip — keeps older code working."""
         return self.host_mgmt_ip
 
     @property
     def test_host(self) -> str:
-        """The IP to use as the target for test traffic."""
         return self.host_test_ip or self.host_mgmt_ip
-
 
 @dataclass
 class TestPath:
@@ -53,6 +49,16 @@ class TestPath:
     source: str                        # Agent ID
     destination: str                   # Agent ID
     tests: List[str]                   # e.g. [throughput, latency, jitter]
+    hops: List[str] = field(default_factory=list)  # Intermediate agent IDs
+
+    @property
+    def all_agents(self) -> List[str]:
+        """All agent IDs in order: source → hops → destination."""
+        return [self.source] + self.hops + [self.destination]
+
+    @property
+    def is_multihop(self) -> bool:
+        return len(self.hops) > 0
 
 
 @dataclass
@@ -169,7 +175,6 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
 
     agents = []
     for a in raw["agents"]:
-        # Support legacy 'host' field — migrate to host_mgmt_ip transparently
         agent_data = dict(a)
         if "host" in agent_data and "host_mgmt_ip" not in agent_data:
             agent_data["host_mgmt_ip"] = agent_data.pop("host")
@@ -182,6 +187,7 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
             source=p["source"],
             destination=p["destination"],
             tests=p["tests"],
+            hops=p.get("hops", []),
         )
         for p in raw["paths"]
     ]

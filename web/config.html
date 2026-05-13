@@ -84,9 +84,10 @@ select option{background:var(--bg)}
 .test-toggle input{display:none}
 
 /* ── Path flow viz ── */
-.path-flow{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:12px}
+.path-flow{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:12px;flex-wrap:wrap}
 .path-node{background:var(--surf3);border:1px solid var(--bdr2);border-radius:4px;
            padding:4px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.path-node-svi{border-color:var(--yw);color:var(--yw)}
 .path-arrow{color:var(--cy);font-size:16px;flex-shrink:0}
 
 /* ── Buttons ── */
@@ -545,6 +546,24 @@ function renderPaths() {
             ${agents.map(a => `<option value="${escHtml(a.id)}" ${p.destination===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
           </select>
         </div>
+        <div class="form-row" style="align-items:flex-start">
+          <label style="padding-top:6px">Via (hops)</label>
+          <div class="hops-container" style="flex:1;display:flex;flex-direction:column;gap:4px">
+            ${(p.hops||[]).map((hopId,hi) => `
+              <div class="hop-row" style="display:flex;gap:6px;align-items:center">
+                <select style="flex:1" onchange="paths[${i}].hops[${hi}]=this.value;updatePathFlow(${i});markDirty()">
+                  <option value="">— select agent —</option>
+                  ${agents.map(a => `<option value="${escHtml(a.id)}" ${hopId===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
+                </select>
+                <button class="btn btn-danger" style="font-size:10px;padding:3px 7px"
+                  onclick="removeHop(${i},${hi})">✕</button>
+              </div>`).join('')}
+            <button class="add-hop-btn btn btn-ghost" style="font-size:10px;padding:3px 8px;align-self:flex-start"
+              onclick="addHop(${i})">
+              + Add Hop
+            </button>
+          </div>
+        </div>
         <div class="form-row tall">
           <label>Tests</label>
           <div class="test-toggles">
@@ -571,6 +590,63 @@ function renderPaths() {
       </div>
     </div>`;
   }).join('');
+}
+
+function addHop(pathIdx) {
+  const p = paths[pathIdx];
+  if (!p.hops) p.hops = [];
+  p.hops.push('');
+  // Insert new hop row in-place without re-rendering entire path list
+  const container = document.querySelector(`#path-body-${pathIdx} .hops-container`);
+  if (!container) { renderPaths(); return; }
+  const hi = p.hops.length - 1;
+  const div = document.createElement('div');
+  div.id = `hop-row-${pathIdx}-${hi}`;
+  div.style.cssText = 'display:flex;gap:6px;align-items:center';
+  div.innerHTML = `
+    <select style="flex:1" onchange="paths[${pathIdx}].hops[${hi}]=this.value;updatePathFlow(${pathIdx});markDirty()">
+      <option value="">— select agent —</option>
+      ${agents.map(a => `<option value="${escHtml(a.id)}">${escHtml(a.label||a.id)}</option>`).join('')}
+    </select>
+    <button class="btn btn-danger" style="font-size:10px;padding:3px 7px"
+      onclick="removeHop(${pathIdx},${hi})">✕</button>
+  `;
+  // Insert before the Add Hop button
+  const addBtn = container.querySelector('.add-hop-btn');
+  container.insertBefore(div, addBtn);
+  markDirty();
+}
+
+function removeHop(pathIdx, hopIdx) {
+  paths[pathIdx].hops.splice(hopIdx, 1);
+  updatePathFlow(pathIdx);
+  // Re-render just the hops container
+  const container = document.querySelector(`#path-body-${pathIdx} .hops-container`);
+  if (!container) { renderPaths(); return; }
+  rebuildHopsContainer(pathIdx, container);
+  markDirty();
+}
+
+function rebuildHopsContainer(pathIdx, container) {
+  const p = paths[pathIdx];
+  const hops = p.hops || [];
+  // Clear existing hop rows (not the add button)
+  container.querySelectorAll('.hop-row').forEach(el => el.remove());
+  const addBtn = container.querySelector('.add-hop-btn');
+  hops.forEach((hopId, hi) => {
+    const div = document.createElement('div');
+    div.className = 'hop-row';
+    div.style.cssText = 'display:flex;gap:6px;align-items:center';
+    div.innerHTML = `
+      <select style="flex:1" onchange="paths[${pathIdx}].hops[${hi}]=this.value;updatePathFlow(${pathIdx});markDirty()">
+        <option value="">— select agent —</option>
+        ${agents.map(a => `<option value="${escHtml(a.id)}" ${hopId===a.id?'selected':''}>${escHtml(a.label||a.id)}</option>`).join('')}
+      </select>
+      <button class="btn btn-danger" style="font-size:10px;padding:3px 7px"
+        onclick="removeHop(${pathIdx},${hi})">✕</button>
+    `;
+    container.insertBefore(div, addBtn);
+  });
 }
 
 function enforceSviTests(pathIdx) {
@@ -616,7 +692,7 @@ function enforceSviTests(pathIdx) {
 }
 
 function addPath() {
-  paths.push({ id: '', label: '', source: '', destination: '', tests: ['latency','jitter'] });
+  paths.push({ id: '', label: '', source: '', hops: [], destination: '', tests: ['latency','jitter'] });
   renderPaths();
   const i = paths.length - 1;
   toggleCard('path-body-' + i, 'path-chev-' + i);
@@ -738,7 +814,18 @@ async function saveConfig() {
     const res = await apiFetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ agents, paths, schedule, ssh_defaults: sshDefs }),
+      body: JSON.stringify({
+        agents,
+        paths: paths.map(p => {
+          const out = {...p};
+          // Clean empty hop entries before saving
+          if (out.hops) out.hops = out.hops.filter(h => h);
+          if (!out.hops || !out.hops.length) delete out.hops;
+          return out;
+        }),
+        schedule,
+        ssh_defaults: sshDefs
+      }),
     });
     if (res.ok) {
       setStatus(`Saved — ${res.agents} agents, ${res.paths} paths`, 'ok');
@@ -828,14 +915,22 @@ function updatePathHeader(i) {
 
 function updatePathFlow(i) {
   const p = paths[i];
-  // Update the flow preview nodes
   const card = document.getElementById('path-card-' + i);
   if (!card) return;
-  const nodes = card.querySelectorAll('.path-node');
-  const srcAgent = agents.find(a => a.id === p.source);
-  const dstAgent = agents.find(a => a.id === p.destination);
-  if (nodes[0]) nodes[0].textContent = srcAgent ? (srcAgent.label || srcAgent.id) : (p.source || '?');
-  if (nodes[1]) nodes[1].textContent = dstAgent ? (dstAgent.label || dstAgent.id) : (p.destination || '?');
+
+  // Rebuild the flow preview to support variable hop count
+  const flowDiv = card.querySelector('.path-flow');
+  if (flowDiv) {
+    const allIds  = [p.source, ...(p.hops||[]).filter(h=>h), p.destination];
+    const allAgents = allIds.map(id => agents.find(a => a.id === id));
+    flowDiv.innerHTML = allIds.map((id, idx) => {
+      const a = allAgents[idx];
+      const label = a ? (a.label || a.id) : (id || '?');
+      const isSvi = a && a.type === 'svi_adjacent';
+      return (idx > 0 ? '<span class="path-arrow">→</span>' : '') +
+        `<span class="path-node${isSvi?' path-node-svi':''}">${escHtml(label)}</span>`;
+    }).join('');
+  }
   updatePathHeader(i);
 }
 

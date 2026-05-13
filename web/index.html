@@ -87,6 +87,20 @@
   .panel-body  { padding: 0; }
 
   /* ── Chart grid ── */
+  /* ── Path flow banner ── */
+  .path-flow-banner { display:flex; align-items:center; gap:0;
+                      background:var(--surface); border:1px solid var(--border);
+                      border-radius:6px; padding:10px 16px; margin-bottom:12px;
+                      flex-wrap:wrap; gap:6px; }
+  .pf-node { background:var(--surface2); border:1px solid var(--border2);
+             border-radius:4px; padding:4px 10px; font-size:11px; line-height:1.4; }
+  .pf-node-label { color:var(--muted); font-size:9px; text-transform:uppercase;
+                   letter-spacing:.5px; display:block; }
+  .pf-node-name  { color:var(--tx); font-weight:600; display:block; }
+  .pf-node-ip    { color:var(--cyan); font-size:10px; display:block; }
+  .pf-node-svi   { border-color:var(--yellow); }
+  .pf-node-svi .pf-node-label { color:var(--yellow); }
+  .pf-arrow { color:var(--muted); font-size:16px; padding:0 4px; flex-shrink:0; }
   .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .chart-panel { background: var(--surface); border: 1px solid var(--border);
                  border-radius: 6px; padding: 14px 16px; }
@@ -191,21 +205,39 @@
   .log-badge-idle    { color: var(--muted); border: 1px solid var(--border); }
 
   /* ── Sparkline grid (all-paths overview) ── */
-  .sparkline-grid { display: flex; flex-direction: column; gap: 2px; }
-  .spark-row { display: grid; grid-template-columns: 180px 1fr 90px 90px 90px 90px 70px 60px;
-               align-items: center; gap: 0;
-               border-bottom: 1px solid var(--border); padding: 0; }
+  .sparkline-grid { display: flex; flex-direction: column; gap: 0; }
+  .spark-cols { display: grid;
+    grid-template-columns: 180px 1fr 80px 75px 70px 70px 65px 55px 55px;
+    align-items: center; gap: 0; }
+  .spark-row { border-bottom: 1px solid var(--border); }
   .spark-row:last-child { border-bottom: none; }
-  .spark-row:hover { background: var(--surface2); }
+  .spark-main { padding: 0; }
+  .spark-main:hover { background: var(--surface2); }
+  .spark-hop-rows { display: none; }
+  .spark-hop-rows.open { display: block; }
+  .spark-hop { border-top: 1px solid var(--border); padding-left: 20px;
+               background: #080b10; }
+  .spark-hop .spark-cols { opacity: .85; }
   .spark-row.spark-header { background: var(--surface2); font-size: 9px; font-weight: 700;
                              text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-  .spark-cell { padding: 6px 10px; font-size: 11px; font-variant-numeric: tabular-nums; }
-  .spark-cell-chart { padding: 4px 6px; }
+  .spark-cell { padding: 5px 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .spark-cell-sm { padding: 4px 8px; font-size: 10px; font-variant-numeric: tabular-nums; }
+  .spark-cell-chart { padding: 3px 6px; }
   .spark-path { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                 cursor: pointer; }
   .spark-path:hover { color: var(--cyan); }
   .spark-val { text-align: right; }
-  .spark-canvas-wrap { position: relative; height: 32px; }
+  .spark-hop-label { font-size: 10px; color: var(--muted); white-space: nowrap;
+                     overflow: hidden; text-overflow: ellipsis; }
+  .spark-hop-label::before { content: "└ "; }
+  .hop-toggle { font-size: 9px; color: var(--muted); margin-left: 5px; cursor: pointer;
+                padding: 1px 4px; border-radius: 3px; border: 1px solid var(--border);
+                user-select: none; display: inline-block; }
+  .hop-toggle:hover { background: var(--surface2); color: var(--cyan); }
+  .mtu-warn { font-size: 9px; padding: 1px 3px; border-radius: 2px;
+              background: rgba(234,179,8,.15); color: var(--yellow);
+              border: 1px solid rgba(234,179,8,.4); }
+  .spark-canvas-wrap { position: relative; height: 28px; }
   .spark-canvas-wrap canvas { position: absolute; inset: 0; }
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -290,6 +322,7 @@
 
       <!-- Per-path charts (shown when a single path is selected) -->
       <div id="path-charts">
+        <div id="path-flow-banner" class="path-flow-banner" style="display:none"></div>
         <div class="chart-grid">
           <div class="chart-panel">
             <div class="chart-title">Latency — RTT avg (ms)</div>
@@ -349,6 +382,17 @@
         </div>
         <div class="panel-body" id="hops-body">
           <div class="empty">Select a path with latency_under_load tests to see per-hop breakdown.</div>
+        </div>
+      </div>
+
+      <!-- Defined hop breakdown (multi-hop paths) -->
+      <div class="panel" id="seg-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title" id="seg-title">Hop segment breakdown</span>
+          <span style="font-size:11px;color:var(--muted)">source → each defined hop → destination</span>
+        </div>
+        <div class="panel-body" id="seg-body" style="padding:0">
+          <div class="empty">No segment data.</div>
         </div>
       </div>
 
@@ -415,6 +459,7 @@ function cssColour(cls) {
        : '#64748b';
 }
 
+function round2(v) { return Math.round(v * 100) / 100; }
 function fmt(v, unit='', dec=1) {
   if (v == null || v === undefined) return '—';
   return Number(v).toFixed(dec) + unit;
@@ -435,6 +480,140 @@ setInterval(tickClock, 1000);
 tickClock();
 
 // ── API helpers ────────────────────────────────────────────
+
+function updatePathFlowBanner(pathId) {
+  const banner = document.getElementById('path-flow-banner');
+  if (!banner) return;
+
+  const path = paths.find(p => p.id === pathId);
+  if (!path) { banner.style.display = 'none'; return; }
+
+  // Build ordered list: source, ...hops, destination
+  const agentIds = [path.source, ...(path.hops || []), path.destination];
+  const r = latestMap[pathId];
+
+  const nodes = agentIds.map((agentId, idx) => {
+    let label = agentId;
+    let ip    = '';
+    let isSvi = false;
+
+    if (window._cachedAgents) {
+      const a = window._cachedAgents.find(a => a.id === agentId);
+      if (a) {
+        label = a.label || agentId;
+        isSvi = a.type === 'svi_adjacent';
+        ip = a.host_test_ip || a.host_mgmt_ip || a.host || '';
+      }
+    }
+
+    // Override src/dst IPs from actual result
+    if (r) {
+      if (idx === 0)                   ip = r.source_host || ip;
+      if (idx === agentIds.length - 1) ip = r.destination_host || ip;
+    }
+
+    const nodeType = idx === 0 ? 'source'
+      : idx === agentIds.length - 1 ? 'destination'
+      : 'via';
+
+    return `
+      <div class="pf-node${isSvi ? ' pf-node-svi' : ''}">
+        <span class="pf-node-label">${nodeType}</span>
+        <span class="pf-node-name">${label}</span>
+        ${ip ? `<span class="pf-node-ip">${ip}</span>` : ''}
+      </div>
+    `;
+  });
+
+  const parts = [];
+  nodes.forEach((n, i) => {
+    parts.push(n);
+    if (i < nodes.length - 1) parts.push('<span class="pf-arrow">→</span>');
+  });
+
+  banner.innerHTML = parts.join('');
+  banner.style.display = 'flex';
+}
+
+async function updateSegPanel(pathId, results) {
+  const panel  = document.getElementById('seg-panel');
+  const title  = document.getElementById('seg-title');
+  const body   = document.getElementById('seg-body');
+  if (!panel) return;
+
+  // Find most recent SUCCESSFUL result with segments
+  const withSegs = (results || [])
+    .filter(r => r.segments && r.segments.length > 0)
+    .sort((a, b) => a.timestamp_utc > b.timestamp_utc ? 1 : -1);
+  // Prefer successful result, fall back to most recent regardless
+  const r = withSegs.filter(r => r.success).pop() || withSegs[withSegs.length - 1];
+  if (!r) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+  const segs = r.segments;
+
+  // Fetch agent labels
+  let agentMap = {};
+  try {
+    const agents = await api('/api/agents');
+    agents.forEach(a => { agentMap[a.id] = a.label || a.id; });
+  } catch(e) {}
+
+  title.textContent = `Hop segment breakdown — ${r.path_label}`;
+
+  // Build table
+  const allSegsPlus = [
+    ...segs,
+    { destination_agent_id: r.destination_agent_id, latency: r.latency, mtu: r.mtu, isFinal: true }
+  ];
+
+  body.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead>
+        <tr style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);background:var(--surface2)">
+          <th style="padding:6px 14px;text-align:left;font-weight:700">Segment</th>
+          <th style="padding:6px 14px;text-align:right;font-weight:700">RTT avg</th>
+          <th style="padding:6px 14px;text-align:right;font-weight:700">RTT max</th>
+          <th style="padding:6px 14px;text-align:right;font-weight:700">Loss</th>
+          <th style="padding:6px 14px;text-align:right;font-weight:700">MTU</th>
+          <th style="padding:6px 14px;text-align:right;font-weight:700">Δ from prev</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${allSegsPlus.map((seg, si) => {
+          const sl    = seg.latency;
+          const sm    = seg.mtu;
+          const prev  = si > 0 ? allSegsPlus[si-1].latency?.rtt_avg_ms || 0 : 0;
+          const delta = sl ? round2(sl.rtt_avg_ms - prev) : null;
+          const dSign = delta !== null ? (delta >= 0 ? '+' : '') : '';
+          const latC  = sl ? health(sl.rtt_avg_ms, T.latWarn, T.latCrit) : 'c-muted';
+          const mtuW  = sm?.fragmentation_detected ? 'c-yellow' : '';
+          const label = agentMap[seg.destination_agent_id] || seg.destination_agent_id;
+          const isFinal = seg.isFinal;
+          return `<tr style="border-top:1px solid var(--border)${isFinal ? ';background:var(--surface2)' : ''}">
+            <td style="padding:7px 14px;color:var(--muted)">
+              ${isFinal
+                ? `<span style="color:var(--tx)">→ ${label}</span> <span style="font-size:9px;color:var(--cyan);margin-left:4px">final</span>`
+                : `→ ${label}`}
+            </td>
+            <td style="padding:7px 14px;text-align:right" class="${latC}">${fmt(sl?.rtt_avg_ms,'ms')}</td>
+            <td style="padding:7px 14px;text-align:right">${fmt(sl?.rtt_max_ms,'ms')}</td>
+            <td style="padding:7px 14px;text-align:right">${fmt(sl?.packet_loss_pct,'%')}</td>
+            <td style="padding:7px 14px;text-align:right" class="${mtuW}">${sm ? sm.effective_mtu_bytes : '—'}</td>
+            <td style="padding:7px 14px;text-align:right;color:var(--muted)">
+              ${delta !== null ? `${dSign}${delta}ms` : '—'}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+
 async function api(path) {
   const r = await fetch(path);
   if (!r.ok) throw new Error(r.statusText);
@@ -795,13 +974,20 @@ async function refresh() {
 
     latestMap = {};
     latest.forEach(r => latestMap[r.path_id] = r);
+    // Cache agents for path flow banner
+    api('/api/agents').then(a => { window._cachedAgents = a; }).catch(()=>{});
 
     updateStats(summary);
     updateNextRun();
     updateBadges();
     renderTable(results);
     await updateCharts();
-    if (currentPath !== 'all') await renderHops(currentPath);
+    if (currentPath !== 'all') {
+      await renderHops(currentPath);
+      await updateSegPanel(currentPath, results);
+    } else {
+      document.getElementById('seg-panel').style.display = 'none';
+    }
 
     document.getElementById('last-update').textContent =
       'updated ' + new Date().toLocaleTimeString();
@@ -881,23 +1067,33 @@ function renderTable(records) {
     return;
   }
 
-  tbody.innerHTML = records.slice(0, 60).map(r => {
+  const rows = [];
+  records.slice(0, 60).forEach((r, ri) => {
     const t  = r.throughput;
     const l  = r.latency;
     const lu = r.latency_under_load;
     const j  = r.jitter;
     const m  = r.mtu;
     const ts = r.timestamp_utc.slice(11, 19);
+    const segs = r.segments || [];
 
-    const txC  = health(t?.tx_mbps,      T.tputWarn, T.tputCrit, false);
-    const latC = health(l?.rtt_avg_ms,   T.latWarn,  T.latCrit);
-    const lssC = health(l?.packet_loss_pct, T.lossWarn, T.lossCrit);
-    const jitC = health(j?.jitter_ms,    T.jitWarn,  T.jitCrit);
-    const bbC  = health(lu?.delta_ms,    T.bbWarn,   T.bbCrit);
+    const txC  = health(t?.tx_mbps,         T.tputWarn, T.tputCrit, false);
+    const latC = health(l?.rtt_avg_ms,       T.latWarn,  T.latCrit);
+    const lssC = health(l?.packet_loss_pct,  T.lossWarn, T.lossCrit);
+    const jitC = health(j?.jitter_ms,        T.jitWarn,  T.jitCrit);
+    const bbC  = health(lu?.delta_ms,        T.bbWarn,   T.bbCrit);
     const mtuW = m?.fragmentation_detected ? ' c-yellow' : '';
+    const hasSegs = segs.length > 0;
+    const rowId = `seg-rows-${ri}`;
 
-    return `<tr>
-      <td class="td-path" title="${r.path_label}">${r.path_label}</td>
+    const hopBtn = hasSegs
+      ? `<span onclick="toggleTableHops('${rowId}', this)"
+           style="font-size:9px;color:var(--muted);margin-left:5px;cursor:pointer;
+                  padding:1px 4px;border-radius:3px;border:1px solid var(--border)">▸ ${segs.length}</span>`
+      : '';
+
+    rows.push(`<tr>
+      <td class="td-path" title="${r.path_label}">${r.path_label}${hopBtn}</td>
       <td class="td-time">${ts}</td>
       <td>${r.success ? '<span class="ok-dot">✓</span>' : '<span class="fail-dot">✗</span>'}</td>
       <td class="${txC}">${fmt(t?.tx_mbps)}</td>
@@ -909,8 +1105,46 @@ function renderTable(records) {
       <td class="${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</td>
       <td class="${mtuW}">${m ? m.effective_mtu_bytes : '—'}</td>
       <td>${t?.retransmits ?? '—'}</td>
-    </tr>`;
-  }).join('');
+    </tr>`);
+
+    if (hasSegs) {
+      rows.push(`<tr id="${rowId}" style="display:none">
+        <td colspan="12" style="padding:0 0 0 24px;background:#080b10">
+          <table style="width:100%;font-size:10px;border-collapse:collapse">
+            <tr style="color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.5px">
+              <td style="padding:4px 8px">Hop</td>
+              <td style="padding:4px 8px;text-align:right">RTT avg</td>
+              <td style="padding:4px 8px;text-align:right">RTT max</td>
+              <td style="padding:4px 8px;text-align:right">Loss</td>
+              <td style="padding:4px 8px;text-align:right">MTU</td>
+            </tr>
+            ${segs.map(seg => {
+              const sl = seg.latency;
+              const sm = seg.mtu;
+              const sLatC = health(sl?.rtt_avg_ms, T.latWarn, T.latCrit);
+              const sMtuW = sm?.fragmentation_detected ? 'c-yellow' : 'c-green';
+              return `<tr style="border-top:1px solid var(--border)">
+                <td style="padding:4px 8px;color:var(--muted)">→ ${seg.destination_agent_id}</td>
+                <td style="padding:4px 8px;text-align:right" class="${sLatC}">${fmt(sl?.rtt_avg_ms,'ms')}</td>
+                <td style="padding:4px 8px;text-align:right">${fmt(sl?.rtt_max_ms,'ms')}</td>
+                <td style="padding:4px 8px;text-align:right">${fmt(sl?.packet_loss_pct,'%')}</td>
+                <td style="padding:4px 8px;text-align:right" class="${sMtuW}">${sm ? sm.effective_mtu_bytes : '—'}</td>
+              </tr>`;
+            }).join('')}
+          </table>
+        </td>
+      </tr>`);
+    }
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+function toggleTableHops(rowId, btn) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  const open = row.style.display === 'none';
+  row.style.display = open ? '' : 'none';
+  btn.textContent = open ? '▾ ' + btn.textContent.slice(2) : '▸ ' + btn.textContent.slice(2);
 }
 
 // ── Charts ─────────────────────────────────────────────────
@@ -948,6 +1182,8 @@ async function updateCharts() {
   // Toggle which view is visible
   document.getElementById('overview-sparklines').style.display = isAll ? '' : 'none';
   document.getElementById('path-charts').style.display         = isAll ? 'none' : '';
+  if (!isAll) updatePathFlowBanner(currentPath);
+  else document.getElementById('path-flow-banner').style.display = 'none';
 
   if (isAll) {
     await renderSparklines(days);
@@ -968,118 +1204,210 @@ async function updateCharts() {
 
 // ── Sparkline rendering ────────────────────────────────────
 const _sparkCharts = {};   // path_id+metric -> Chart instance
+const _expandedHops = new Set();  // path IDs with hop rows currently expanded
 
 async function renderSparklines(days) {
   if (!paths.length) return;
 
-  // Fetch latest results and latency timeseries per path for sparklines
-  const latest = Object.values(latestMap);
+  // Cache agents for banner use
+  api('/api/agents').then(a => { window._cachedAgents = a; }).catch(()=>{});
 
-  // Fetch latency timeseries for all paths in parallel
-  const tsData = await Promise.all(
-    paths.map(p => api(`/api/timeseries/latency?days=${days}&path_id=${p.id}`)
-      .then(d => ({ pid: p.id, points: d[0]?.points || [] }))
-      .catch(() => ({ pid: p.id, points: [] }))
-    )
-  );
+  const [tsData, agentsList] = await Promise.all([
+    Promise.all(
+      paths.map(p => api(`/api/timeseries/latency?days=${days}&path_id=${p.id}`)
+        .then(d => ({ pid: p.id, points: d[0]?.points || [] }))
+        .catch(() => ({ pid: p.id, points: [] }))
+      )
+    ),
+    api('/api/agents').catch(() => []),
+  ]);
   const tsMap = {};
   tsData.forEach(d => { tsMap[d.pid] = d.points; });
+  const agentLabelMap = {};
+  (agentsList||[]).forEach(a => { agentLabelMap[a.id] = a.label || a.id; });
 
   const grid = document.getElementById('spark-grid');
-
-  // Header row
   grid.innerHTML = `
     <div class="spark-row spark-header">
-      <div class="spark-cell">Path</div>
-      <div class="spark-cell">Latency trend</div>
-      <div class="spark-cell spark-val">RTT avg</div>
-      <div class="spark-cell spark-val">TX Mbps</div>
-      <div class="spark-cell spark-val">Jitter</div>
-      <div class="spark-cell spark-val">Δ Loaded</div>
-      <div class="spark-cell spark-val">Loss</div>
-      <div class="spark-cell spark-val">Status</div>
+      <div class="spark-cols">
+        <div class="spark-cell">Path</div>
+        <div class="spark-cell">Latency trend</div>
+        <div class="spark-cell spark-val">RTT avg</div>
+        <div class="spark-cell spark-val">TX Mbps</div>
+        <div class="spark-cell spark-val">Jitter</div>
+        <div class="spark-cell spark-val">Δ Loaded</div>
+        <div class="spark-cell spark-val">Loss</div>
+        <div class="spark-cell spark-val">MTU</div>
+        <div class="spark-cell spark-val">Status</div>
+      </div>
     </div>
   `;
 
   paths.forEach(p => {
-    const r   = latestMap[p.id];
+    const r  = latestMap[p.id];
     const pts = tsMap[p.id] || [];
+    const l  = r?.latency;
+    const t  = r?.throughput;
+    const j  = r?.jitter;
+    const lu = r?.latency_under_load;
+    const m  = r?.mtu;
+    const segs = r?.segments || [];
 
-    const l   = r?.latency;
-    const t   = r?.throughput;
-    const j   = r?.jitter;
-    const lu  = r?.latency_under_load;
+    const latC  = l  ? health(l.rtt_avg_ms,       T.latWarn,  T.latCrit)       : 'c-muted';
+    const tputC = t  ? health(t.tx_mbps,           T.tputWarn, T.tputCrit,false): 'c-muted';
+    const jitC  = j  ? health(j.jitter_ms,         T.jitWarn,  T.jitCrit)       : 'c-muted';
+    const bbC   = lu ? health(lu.delta_ms,          T.bbWarn,   T.bbCrit)        : 'c-muted';
+    const lssC  = l  ? health(l.packet_loss_pct,   T.lossWarn, T.lossCrit)      : 'c-muted';
 
-    const latC  = l ? health(l.rtt_avg_ms,       T.latWarn,  T.latCrit)  : 'c-muted';
-    const tputC = t ? health(t.tx_mbps,           T.tputWarn, T.tputCrit, false) : 'c-muted';
-    const jitC  = j ? health(j.jitter_ms,         T.jitWarn,  T.jitCrit)  : 'c-muted';
-    const bbC   = lu? health(lu.delta_ms,          T.bbWarn,   T.bbCrit)   : 'c-muted';
-    const lssC  = l ? health(l.packet_loss_pct,   T.lossWarn, T.lossCrit) : 'c-muted';
+    const mtuVal = m ? m.effective_mtu_bytes : null;
+    const mtuHtml = !mtuVal ? '—'
+      : m.fragmentation_detected
+        ? `<span class="mtu-warn">${mtuVal}</span>`
+        : `<span style="color:var(--green)">${mtuVal}</span>`;
 
     const statusIcon = !r ? '<span style="color:var(--muted)">?</span>'
       : r.success ? '<span style="color:var(--green)">✓</span>'
                   : '<span style="color:var(--red)">✗</span>';
 
+    const hasHops = segs.length > 0;
     const canvasId = 'spark-' + p.id;
-    const row = document.createElement('div');
-    row.className = 'spark-row';
-    row.innerHTML = `
-      <div class="spark-cell">
-        <span class="spark-path" onclick="selectPathById('${p.id}')">${p.label}</span>
-      </div>
-      <div class="spark-cell-chart">
-        <div class="spark-canvas-wrap"><canvas id="${canvasId}"></canvas></div>
-      </div>
-      <div class="spark-cell spark-val ${latC}">${l ? fmt(l.rtt_avg_ms,'ms') : '—'}</div>
-      <div class="spark-cell spark-val ${tputC}">${t ? fmt(t.tx_mbps) : '—'}</div>
-      <div class="spark-cell spark-val ${jitC}">${j ? fmt(j.jitter_ms,'ms',2) : '—'}</div>
-      <div class="spark-cell spark-val ${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</div>
-      <div class="spark-cell spark-val ${lssC}">${l ? fmt(l.packet_loss_pct,'%') : '—'}</div>
-      <div class="spark-cell spark-val">${statusIcon}</div>
-    `;
-    grid.appendChild(row);
+    const hopToggleId = 'hop-toggle-' + p.id;
+    const hopBlockId  = 'hop-block-' + p.id;
 
-    // Draw sparkline after DOM insertion
+    const hopToggle = hasHops
+      ? `<span class="hop-toggle" id="${hopToggleId}"
+           onclick="toggleSparkHops('${p.id}')">▸ ${segs.length} hops</span>`
+      : '';
+
+    const rowWrapper = document.createElement('div');
+    rowWrapper.className = 'spark-row';
+    rowWrapper.id = 'spark-row-' + p.id;
+
+    rowWrapper.innerHTML = `
+      <div class="spark-main">
+        <div class="spark-cols">
+          <div class="spark-cell">
+            <span class="spark-path" onclick="selectPathById('${p.id}')">${p.label}</span>
+            ${hopToggle}
+          </div>
+          <div class="spark-cell-chart">
+            <div class="spark-canvas-wrap"><canvas id="${canvasId}"></canvas></div>
+          </div>
+          <div class="spark-cell spark-val ${latC}">${l ? fmt(l.rtt_avg_ms,'ms') : '—'}</div>
+          <div class="spark-cell spark-val ${tputC}">${t ? fmt(t.tx_mbps) : '—'}</div>
+          <div class="spark-cell spark-val ${jitC}">${j ? fmt(j.jitter_ms,'ms',2) : '—'}</div>
+          <div class="spark-cell spark-val ${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</div>
+          <div class="spark-cell spark-val ${lssC}">${l ? fmt(l.packet_loss_pct,'%') : '—'}</div>
+          <div class="spark-cell spark-val">${mtuHtml}</div>
+          <div class="spark-cell spark-val">${statusIcon}</div>
+        </div>
+      </div>
+      ${hasHops ? `<div class="spark-hop-rows" id="${hopBlockId}"></div>` : ''}
+    `;
+    grid.appendChild(rowWrapper);
+
+    // Draw main sparkline
+    const values = pts.slice(-20).map(pt => pt.value);
+    const yMin = values.length ? Math.min(...values) * 0.95 : 0;
+    const yMax = values.length ? Math.max(...values) * 1.05 : 1;
+
     requestAnimationFrame(() => {
       const canvas = document.getElementById(canvasId);
-      if (!canvas || !pts.length) return;
-
-      // Destroy old chart if exists
-      if (_sparkCharts[canvasId]) {
-        _sparkCharts[canvasId].destroy();
-        delete _sparkCharts[canvasId];
-      }
-
-      const values = pts.slice(-20).map(p => p.value);  // last 20 points
+      if (!canvas) return;
+      if (_sparkCharts[canvasId]) { _sparkCharts[canvasId].destroy(); delete _sparkCharts[canvasId]; }
+      if (!values.length) return;
       const colour = cssColour(latC);
-
       _sparkCharts[canvasId] = new Chart(canvas.getContext('2d'), {
         type: 'line',
-        data: {
-          labels: values.map(() => ''),
-          datasets: [{
-            data: values,
-            borderColor: colour,
-            borderWidth: 1.5,
-            pointRadius: 0,
-            tension: 0.3,
-            fill: { target: 'origin', above: colour + '18' },
-            spanGaps: true,
-          }]
-        },
+        data: { labels: values.map(()=>''), datasets: [{
+          data: values, borderColor: colour, borderWidth: 1.5,
+          pointRadius: 0, tension: 0.3,
+          fill: { target: 'origin', above: colour + '18' }, spanGaps: true,
+        }]},
         options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false,
+          responsive: true, maintainAspectRatio: false, animation: false,
           plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          scales: {
-            x: { display: false },
-            y: { display: false, beginAtZero: false },
-          },
+          scales: { x: { display: false }, y: { display: false, min: yMin, max: yMax } },
         }
       });
     });
+
+    // Build hop rows, restore expanded state if was open before re-render
+    if (hasHops) {
+      const hopBlock = document.getElementById(hopBlockId);
+      if (_expandedHops.has(p.id)) {
+        hopBlock.classList.add('open');
+        const toggle = document.getElementById(hopToggleId);
+        if (toggle) toggle.textContent = '▾ ' + segs.length + ' hops';
+      }
+      segs.forEach((seg, si) => {
+        const hopAgent = seg.destination_agent_id;
+        const hopLabel = seg.destination_agent_id;
+        const sl  = seg.latency;
+        const sm  = seg.mtu;
+        const hLatC = sl ? health(sl.rtt_avg_ms, T.latWarn, T.latCrit) : 'c-muted';
+        const hMtuHtml = !sm ? '—'
+          : sm.fragmentation_detected
+            ? `<span class="mtu-warn">${sm.effective_mtu_bytes}</span>`
+            : `<span style="color:var(--green)">${sm.effective_mtu_bytes}</span>`;
+        const hcid = `spark-hop-${p.id}-${si}`;
+
+        const hopRow = document.createElement('div');
+        hopRow.className = 'spark-hop';
+        hopRow.innerHTML = `
+          <div class="spark-cols">
+            <div class="spark-cell-sm spark-hop-label">${agentLabelMap[seg.destination_agent_id] || seg.destination_agent_id}</div>
+            <div class="spark-cell-chart">
+              <div class="spark-canvas-wrap"><canvas id="${hcid}"></canvas></div>
+            </div>
+            <div class="spark-cell-sm spark-val ${hLatC}">${sl ? fmt(sl.rtt_avg_ms,'ms') : '—'}</div>
+            <div class="spark-cell-sm spark-val c-muted">—</div>
+            <div class="spark-cell-sm spark-val c-muted">—</div>
+            <div class="spark-cell-sm spark-val c-muted">—</div>
+            <div class="spark-cell-sm spark-val c-muted">—</div>
+            <div class="spark-cell-sm spark-val">${hMtuHtml}</div>
+            <div class="spark-cell-sm spark-val c-muted">—</div>
+          </div>
+        `;
+        hopBlock.appendChild(hopRow);
+
+        // Draw hop sparkline on same scale as parent
+        requestAnimationFrame(() => {
+          const hcanvas = document.getElementById(hcid);
+          if (!hcanvas || !values.length) return;
+          const hopVal = sl ? sl.rtt_avg_ms : null;
+          if (!hopVal) return;
+          // Flat line at hop latency using same Y scale as parent
+          const hopLine = values.map(() => hopVal);
+          if (_sparkCharts[hcid]) { _sparkCharts[hcid].destroy(); delete _sparkCharts[hcid]; }
+          _sparkCharts[hcid] = new Chart(hcanvas.getContext('2d'), {
+            type: 'line',
+            data: { labels: hopLine.map(()=>''), datasets: [{
+              data: hopLine, borderColor: '#64748b', borderWidth: 1.5,
+              pointRadius: 0, tension: 0,
+              fill: { target: 'origin', above: '#64748b18' }, spanGaps: true,
+            }]},
+            options: {
+              responsive: true, maintainAspectRatio: false, animation: false,
+              plugins: { legend: { display: false }, tooltip: { enabled: false } },
+              scales: { x: { display: false }, y: { display: false, min: yMin, max: yMax } },
+            }
+          });
+        });
+      });
+    }
   });
+}
+
+function toggleSparkHops(pid) {
+  const block  = document.getElementById('hop-block-' + pid);
+  const toggle = document.getElementById('hop-toggle-' + pid);
+  if (!block) return;
+  const open = block.classList.toggle('open');
+  const count = block.querySelectorAll('.spark-hop').length;
+  toggle.textContent = (open ? '▾ ' : '▸ ') + count + ' hops';
+  if (open) _expandedHops.add(pid);
+  else _expandedHops.delete(pid);
 }
 
 function selectPathById(pid) {

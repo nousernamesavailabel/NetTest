@@ -61,6 +61,25 @@ class MTUResult:
     fragmentation_detected: bool
 
 
+# ── Segment result (one hop pair in a multi-hop path) ─────
+
+@dataclass
+class SegmentResult:
+    segment_index: int                 # 0 = source→first_hop, 1 = source→second_hop, etc.
+    source_agent_id: str
+    destination_agent_id: str
+    source_host: str
+    destination_host: str
+    # Test results for this segment
+    latency: Optional[LatencyResult] = None
+    mtu: Optional[MTUResult] = None
+    # Full tests only available on source→final_destination segment
+    throughput: Optional[ThroughputResult] = None
+    latency_under_load: Optional[LatencyUnderLoadResult] = None
+    jitter: Optional[JitterResult] = None
+    error: Optional[str] = None
+
+
 # ── Top-level test run result ──────────────────────────────
 
 @dataclass
@@ -83,6 +102,10 @@ class PathTestResult:
     latency_under_load: Optional[LatencyUnderLoadResult] = None
     jitter: Optional[JitterResult] = None
     mtu: Optional[MTUResult] = None
+
+    # Multi-hop segment results — populated for paths with intermediate hops
+    # Each entry is source→hop_n results. Empty list for simple 2-agent paths.
+    segments: List[SegmentResult] = field(default_factory=list)
 
 
 # ── Result store ───────────────────────────────────────────
