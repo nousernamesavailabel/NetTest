@@ -306,6 +306,153 @@ select option{background:var(--bg)}
       </div>
     </div>
 
+
+    <!-- ── Tests ── -->
+    <div class="section" id="section-tests">
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Traceroute</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Max hops</label>
+            <input type="number" id="tp-tr-hops" min="5" max="64" style="width:80px">
+          </div>
+          <div class="form-row">
+            <label>Probes per hop</label>
+            <input type="number" id="tp-tr-probes" min="1" max="5" style="width:80px">
+          </div>
+          <div class="form-row">
+            <label>Wait per probe</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-tr-wait" min="1" max="10" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">seconds</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Resolve hostnames</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="tp-tr-dns" style="width:auto;accent-color:var(--cy)">
+              <span style="color:var(--mt);font-size:11px">perform DNS lookup on hop IPs</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Latency (ping)</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Packet count</label>
+            <input type="number" id="tp-lat-count" min="10" max="1000" style="width:80px">
+          </div>
+          <div class="form-row">
+            <label>Interval</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-lat-interval" min="1" max="1000" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">ms</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Packet size</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-lat-size" min="28" max="1400" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">bytes</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Jitter (iPerf3 UDP)</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Packet count</label>
+            <input type="number" id="tp-jit-count" min="100" max="10000" style="width:80px">
+          </div>
+          <div class="form-row">
+            <label>Bandwidth</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-jit-bw" min="100" max="100000" style="width:100px">
+              <span style="color:var(--mt);font-size:11px">Kbps</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Packet size</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-jit-size" min="28" max="1400" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">bytes</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Throughput (iPerf3 TCP)</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Duration</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-tput-dur" min="5" max="300" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">seconds</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Parallel streams</label>
+            <input type="number" id="tp-tput-streams" min="1" max="32" style="width:80px">
+          </div>
+          <div class="form-row">
+            <label>Bidirectional</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="tp-tput-bidir" style="width:auto;accent-color:var(--cy)">
+              <span style="color:var(--mt);font-size:11px">test upload and download simultaneously</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Latency Under Load</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Ping count</label>
+            <input type="number" id="tp-lul-count" min="10" max="500" style="width:80px">
+          </div>
+          <div class="form-row">
+            <label>Ping interval</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-lul-interval" min="10" max="1000" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">ms</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>MTR cycles</label>
+            <input type="number" id="tp-lul-mtr" min="5" max="100" style="width:80px">
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">MTU Discovery</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Min size</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-mtu-min" min="64" max="1400" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">bytes</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Max size</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-mtu-max" min="576" max="9000" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">bytes</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
     <!-- ── Save bar (always visible) ── -->
     <div class="save-bar">
       <span class="save-status" id="save-status"></span>
@@ -323,19 +470,21 @@ select option{background:var(--bg)}
 
 <script>
 // ── State ──────────────────────────────────────────────────
-let agents   = [];
-let paths    = [];
-let schedule = {};
-let sshDefs  = {};
+let agents     = [];
+let paths      = [];
+let schedule   = {};
+let sshDefs    = {};
+let testParams = {};
 
-const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu'];
-const SVI_TESTS  = ['latency','mtu'];   // tests supported by svi_adjacent agents
+const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu','traceroute'];
+const SVI_TESTS  = ['latency','mtu','traceroute'];   // tests supported by svi_adjacent agents
 const TEST_LABELS = {
   throughput:          'Throughput',
   latency:             'Latency',
   latency_under_load:  'Latency Under Load',
   jitter:              'Jitter',
   mtu:                 'MTU',
+  traceroute:          'Traceroute',
 };
 
 // ── Boot ───────────────────────────────────────────────────
@@ -348,8 +497,9 @@ async function loadConfig() {
     const raw = await apiFetch('/api/config');
     agents   = raw.agents   || [];
     paths    = raw.paths    || [];
-    schedule = raw.schedule || {};
-    sshDefs  = raw.ssh_defaults || {};
+    schedule   = raw.schedule    || {};
+    sshDefs    = raw.ssh_defaults|| {};
+    testParams = raw.test_params || {};
     renderAll();
     setStatus('');
   } catch(e) {
@@ -371,6 +521,7 @@ function renderAll() {
   renderPaths();
   renderSchedule();
   renderSSH();
+  renderTests();
 }
 
 // ── Agents ─────────────────────────────────────────────────
@@ -780,6 +931,89 @@ function collectSSH() {
   };
 }
 
+// ── Tests ──────────────────────────────────────────────────
+function renderTests() {
+  const tp = testParams;
+  const tr = tp.traceroute        || {};
+  const la = tp.latency           || {};
+  const ji = tp.jitter            || {};
+  const th = tp.throughput        || {};
+  const lu = tp.latency_under_load|| {};
+  const mt = tp.mtu               || {};
+
+  setVal('tp-tr-hops',    tr.max_hops    ?? 30);
+  setVal('tp-tr-probes',  tr.probes      ?? 2);
+  setVal('tp-tr-wait',    tr.wait_sec    ?? 1);
+  const dnsCb = document.getElementById('tp-tr-dns');
+  if (dnsCb) dnsCb.checked = tr.resolve_dns !== false;
+
+  setVal('tp-lat-count',    la.packet_count      ?? 100);
+  setVal('tp-lat-interval', la.interval_ms       ?? 10);
+  setVal('tp-lat-size',     la.packet_size_bytes ?? 64);
+
+  setVal('tp-jit-count',  ji.packet_count      ?? 1000);
+  setVal('tp-jit-bw',     ji.bandwidth_kbps    ?? 1000);
+  setVal('tp-jit-size',   ji.packet_size_bytes ?? 172);
+
+  setVal('tp-tput-dur',     th.duration_sec     ?? 30);
+  setVal('tp-tput-streams', th.parallel_streams ?? 8);
+  const bidirCb = document.getElementById('tp-tput-bidir');
+  if (bidirCb) bidirCb.checked = th.bidirectional !== false;
+
+  setVal('tp-lul-count',    lu.ping_count       ?? 50);
+  setVal('tp-lul-interval', lu.ping_interval_ms ?? 200);
+  setVal('tp-lul-mtr',      lu.mtr_cycles       ?? 20);
+
+  setVal('tp-mtu-min', mt.min_size ?? 576);
+  setVal('tp-mtu-max', mt.max_size ?? 9000);
+
+  document.querySelectorAll('[id^="tp-"]').forEach(el => {
+    el.addEventListener('change', () => { collectTests(); markDirty(); });
+    el.addEventListener('input',  () => { collectTests(); markDirty(); });
+  });
+}
+
+function collectTests() {
+  testParams = {
+    traceroute: {
+      max_hops:    parseInt(getVal('tp-tr-hops'))   || 30,
+      probes:      parseInt(getVal('tp-tr-probes')) || 2,
+      wait_sec:    parseInt(getVal('tp-tr-wait'))   || 1,
+      resolve_dns: document.getElementById('tp-tr-dns').checked,
+    },
+    latency: {
+      packet_count:      parseInt(getVal('tp-lat-count'))    || 100,
+      interval_ms:       parseInt(getVal('tp-lat-interval')) || 10,
+      packet_size_bytes: parseInt(getVal('tp-lat-size'))     || 64,
+    },
+    jitter: {
+      packet_count:      parseInt(getVal('tp-jit-count')) || 1000,
+      bandwidth_kbps:    parseInt(getVal('tp-jit-bw'))    || 1000,
+      packet_size_bytes: parseInt(getVal('tp-jit-size'))  || 172,
+      iperf3_port:       testParams.jitter?.iperf3_port   || 5201,
+      protocol:          testParams.jitter?.protocol      || 'udp',
+      interval_ms:       testParams.jitter?.interval_ms   || 10,
+    },
+    throughput: {
+      duration_sec:     parseInt(getVal('tp-tput-dur'))     || 30,
+      parallel_streams: parseInt(getVal('tp-tput-streams')) || 8,
+      bidirectional:    document.getElementById('tp-tput-bidir').checked,
+      iperf3_port:      testParams.throughput?.iperf3_port  || 5201,
+      protocol:         testParams.throughput?.protocol     || 'tcp',
+    },
+    latency_under_load: {
+      ping_count:       parseInt(getVal('tp-lul-count'))    || 50,
+      ping_interval_ms: parseInt(getVal('tp-lul-interval')) || 200,
+      mtr_cycles:       parseInt(getVal('tp-lul-mtr'))      || 20,
+    },
+    mtu: {
+      min_size: parseInt(getVal('tp-mtu-min')) || 576,
+      max_size: parseInt(getVal('tp-mtu-max')) || 9000,
+      step:     testParams.mtu?.step           || 10,
+    },
+  };
+}
+
 // ── Save ───────────────────────────────────────────────────
 function markDirty() {
   setStatus('Unsaved changes', 'pending');
@@ -824,7 +1058,8 @@ async function saveConfig() {
           return out;
         }),
         schedule,
-        ssh_defaults: sshDefs
+        ssh_defaults: sshDefs,
+        test_params: testParams
       }),
     });
     if (res.ok) {

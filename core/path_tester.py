@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from core.config_loader import ControllerConfig, TestPath
 from core.results import PathTestResult, SegmentResult, make_result_id, utc_now_iso
+from runners.runner_traceroute import TracerouteRunner
 from core.ssh_manager import ssh_connection, SSHConnectionError
 from runners.runner_throughput import ThroughputRunner
 from runners.runner_latency import (
@@ -18,7 +19,7 @@ from runners.runner_latency import (
 logger = logging.getLogger(__name__)
 
 # Tests supported by svi_adjacent agents (passive ping targets only)
-SVI_SUPPORTED_TESTS = {"latency", "mtu"}
+SVI_SUPPORTED_TESTS = {"latency", "mtu", "traceroute"}
 
 TEST_LABELS = {
     "throughput":         "Throughput",
@@ -26,8 +27,8 @@ TEST_LABELS = {
     "latency_under_load": "Latency Under Load",
     "jitter":             "Jitter",
     "mtu":                "MTU Discovery",
+    "traceroute":         "Traceroute",
 }
-
 
 class PathTester:
 
@@ -277,6 +278,19 @@ class PathTester:
                     step=p.mtu.step,
                 )
                 result.mtu = runner.run(src_ssh, dst_host)
+
+            elif test_type == 'traceroute':
+                tp = self.config.test_params
+                tr_cfg = tp.traceroute
+                tr_runner = TracerouteRunner(
+                    max_hops=tr_cfg.max_hops,
+                    probes=tr_cfg.probes,
+                    wait_sec=tr_cfg.wait_sec,
+                    resolve_dns=tr_cfg.resolve_dns,
+                )
+                result.traceroute_forward = tr_runner.run_forward(src_ssh, dst_host)
+                if dst_ssh is not None:
+                    result.traceroute_reverse = tr_runner.run_reverse(dst_ssh, src_ssh.host)
 
             else:
                 logger.warning(f"  Unknown test type '{test_type}' — skipping")

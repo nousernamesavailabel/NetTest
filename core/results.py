@@ -61,6 +61,39 @@ class MTUResult:
     fragmentation_detected: bool
 
 
+# ── Traceroute result ─────────────────────────────────────
+
+@dataclass
+class TracerouteHop:
+    hop:        int
+    ip:         Optional[str]
+    hostname:   Optional[str]
+    rtt_ms:     List[float]
+    responding: bool
+
+    @property
+    def rtt_avg_ms(self) -> Optional[float]:
+        if not self.rtt_ms:
+            return None
+        return round(sum(self.rtt_ms) / len(self.rtt_ms), 3)
+
+    @property
+    def display_host(self) -> str:
+        if self.hostname and self.hostname != self.ip:
+            return self.hostname
+        return self.ip or '*'
+
+
+@dataclass
+class TracerouteResult:
+    direction:   str
+    source_host: str
+    dest_host:   str
+    hops:        List[TracerouteHop] = field(default_factory=list)
+    completed:   bool = False
+    error:       Optional[str] = None
+
+
 # ── Segment result (one hop pair in a multi-hop path) ─────
 
 @dataclass
@@ -107,6 +140,10 @@ class PathTestResult:
     # Each entry is source→hop_n results. Empty list for simple 2-agent paths.
     segments: List[SegmentResult] = field(default_factory=list)
 
+    # Traceroute — forward always, reverse if destination supports SSH
+    traceroute_forward: Optional[TracerouteResult] = None
+    traceroute_reverse: Optional[TracerouteResult] = None
+
 
 # ── Result store ───────────────────────────────────────────
 
@@ -127,6 +164,16 @@ class ResultStore:
 
     def save(self, result: PathTestResult):
         record = asdict(result)
+        # Inject computed properties into traceroute hops (not included by asdict)
+        for direction in ("traceroute_forward", "traceroute_reverse"):
+            tr = record.get(direction)
+            if tr and tr.get("hops"):
+                for hop in tr["hops"]:
+                    rtt_ms = hop.get("rtt_ms") or []
+                    hop["rtt_avg_ms"]   = round(sum(rtt_ms) / len(rtt_ms), 3) if rtt_ms else None
+                    ip = hop.get("ip")
+                    hn = hop.get("hostname")
+                    hop["display_host"] = (hn if hn and hn != ip else ip) or "*"
         with open(self._today_file(), "a") as f:
             f.write(json.dumps(record) + "\n")
 

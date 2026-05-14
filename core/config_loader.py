@@ -102,12 +102,21 @@ class MTUParams:
 
 
 @dataclass
+class TracerouteParams:
+    max_hops:    int  = 30
+    probes:      int  = 2
+    wait_sec:    int  = 1
+    resolve_dns: bool = True
+
+
+@dataclass
 class TestParams:
     throughput: ThroughputParams
     latency: LatencyParams
     latency_under_load: LatencyUnderLoadParams
     jitter: JitterParams
     mtu: MTUParams
+    traceroute: TracerouteParams = field(default_factory=TracerouteParams)
 
 
 @dataclass
@@ -199,6 +208,7 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
         latency_under_load=LatencyUnderLoadParams(**tp["latency_under_load"]),
         jitter=JitterParams(**tp["jitter"]),
         mtu=MTUParams(**tp["mtu"]),
+        traceroute=TracerouteParams(**(tp.get("traceroute") or {})),
     )
 
     schedule = Schedule(**raw["schedule"])

@@ -113,7 +113,6 @@ TOTAL_STEPS = 9
 
 def onboard_agent(config_path: str,
                   agent_ip: str = None,
-                  agent_test_ip: str = None,
                   agent_label: str = None,
                   agent_id: str = None,
                   agent_type: str = None,
@@ -203,8 +202,6 @@ def onboard_agent(config_path: str,
 
     _log.info(f"\n{dim('─'*55)}")
     _log.info(f"  Host    : {agent_ip}")
-    if agent_test_ip:
-        _log.info(f"  Test IP : {agent_test_ip}")
     _log.info(f"  Label   : {agent_label}")
     _log.info(f"  ID      : {agent_id}")
     _log.info(f"  Type    : {agent_type}")
@@ -240,9 +237,10 @@ def onboard_agent(config_path: str,
         # Check what is missing using a reliable sentinel pattern
         pkgs_needed = []
         for tool, pkg in [
-            ("iperf3", "iperf3"),
-            ("mtr",    "mtr-tiny"),
-            ("ping",   "iputils-ping"),
+            ("iperf3",      "iperf3"),
+            ("mtr",         "mtr-tiny"),
+            ("ping",        "iputils-ping"),
+            ("traceroute",  "traceroute"),
         ]:
             # Use dpkg-query — definitive, no false positives from shell noise
             result = _run(conn,
@@ -281,7 +279,7 @@ def onboard_agent(config_path: str,
                         _warn(line[:120])
 
             # Verify each newly installed package
-            for tool, pkg in [("iperf3","iperf3"),("mtr","mtr-tiny"),("ping","iputils-ping")]:
+            for tool, pkg in [("iperf3","iperf3"),("mtr","mtr-tiny"),("ping","iputils-ping"),("traceroute","traceroute")]:
                 if pkg in pkgs_needed:
                     result = _run(conn,
                         f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
@@ -416,15 +414,12 @@ def onboard_agent(config_path: str,
             with open(config_path, "r") as f:
                 raw = yaml.safe_load(f)
 
-            entry = {
-                "id":           agent_id,
-                "label":        agent_label,
-                "host_mgmt_ip": agent_ip,
-                "type":         agent_type,
-            }
-            if agent_test_ip:
-                entry["host_test_ip"] = agent_test_ip
-            raw["agents"].append(entry)
+            raw["agents"].append({
+                "id":    agent_id,
+                "label": agent_label,
+                "host":  agent_ip,
+                "type":  agent_type,
+            })
 
             with open(config_path, "w") as f:
                 yaml.dump(raw, f, default_flow_style=False,

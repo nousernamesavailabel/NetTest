@@ -80,6 +80,7 @@
 
   /* ── Section panels ── */
   .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  #path-charts { display: flex; flex-direction: column; gap: 12px; }
   .panel-header { display: flex; align-items: center; justify-content: space-between;
                   padding: 10px 16px; border-bottom: 1px solid var(--border); }
   .panel-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -106,7 +107,7 @@
                  border-radius: 6px; padding: 14px 16px; }
   .chart-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
                  letter-spacing: .8px; color: var(--muted); margin-bottom: 12px; }
-  .chart-wrap  { position: relative; height: 180px; }
+  .chart-wrap  { position: relative; height: 120px; }
 
   /* ── Results table ── */
   .tbl-wrap { overflow-x: auto; }
@@ -132,6 +133,32 @@
   .hop-bar-wrap { display: flex; align-items: center; gap: 8px; }
   .hop-bar { height: 6px; border-radius: 3px; min-width: 2px; transition: width .3s; }
 
+  /* ── Traceroute panel ── */
+  .tr-flow { display:flex; align-items:center; flex-wrap:wrap;
+             gap:0; padding:12px 16px; overflow-x:auto; }
+  .tr-hop { display:flex; flex-direction:column; align-items:center;
+            min-width:90px; max-width:130px; }
+  .tr-hop-node { background:var(--surface2); border:1px solid var(--border2);
+                 border-radius:4px; padding:5px 8px; text-align:center;
+                 width:100%; font-size:10px; line-height:1.4; }
+  .tr-hop-node.tr-dead { background:transparent; border-color:var(--border);
+                         opacity:.4; min-width:40px; max-width:50px; }
+  .tr-hop-num { font-size:9px; color:var(--muted); margin-bottom:2px; }
+  .tr-hop-host { color:var(--tx); word-break:break-all; font-size:10px; }
+  .tr-hop-ip { color:var(--muted); font-size:9px; }
+  .tr-hop-rtt { color:var(--cyan); font-size:10px; font-weight:600; margin-top:2px; }
+  .tr-hop-rtt.c-yellow { color:var(--yellow); }
+  .tr-hop-rtt.c-red    { color:var(--red); }
+  .tr-arrow { color:var(--border2); font-size:12px; padding:0 4px;
+              flex-shrink:0; margin-bottom:18px; }
+  .tr-dir-label { font-size:10px; color:var(--muted); padding:6px 14px 2px;
+                  font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
+  .tr-empty { padding:16px 14px; font-size:11px; color:var(--muted); }
+  .tr-row-btn { font-size:9px; color:var(--muted); margin-left:5px; cursor:pointer;
+                padding:1px 4px; border-radius:3px; border:1px solid var(--border);
+                user-select:none; display:inline-block; vertical-align:middle; }
+  .tr-row-btn:hover { background:var(--surface2); color:var(--cyan); }
+  .tr-row-btn.active { background:#0f1f30; border-color:var(--cyan); color:var(--cyan); }
   /* ── MTR detail section ── */
   .hop-grid { display: grid; grid-template-columns: 40px 1fr 80px 80px 80px 80px 80px;
               gap: 0; }
@@ -320,9 +347,58 @@
         </div>
       </div>
 
+      <!-- Recent results — always visible regardless of path selection -->
+      <div class="panel" id="results-panel">
+        <div class="panel-header">
+          <span class="panel-title">Recent results</span>
+          <div class="day-tabs">
+            <div class="day-tab active" onclick="setDays(1,this)">Today</div>
+            <div class="day-tab" onclick="setDays(3,this)">3 days</div>
+            <div class="day-tab" onclick="setDays(7,this)">7 days</div>
+          </div>
+        </div>
+        <div id="results-scroll" style="max-height:185px;overflow-y:auto">
+          <table style="width:100%">
+            <thead style="position:sticky;top:0;z-index:1;background:var(--surface2)"><tr>
+              <th style="text-align:left">Path</th>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Status</th>
+              <th>TX Mbps</th>
+              <th>RX Mbps</th>
+              <th>RTT avg</th>
+              <th>RTT max</th>
+              <th>Loss %</th>
+              <th>Jitter</th>
+              <th>Δ Loaded</th>
+              <th>MTU</th>
+              <th>Retr</th>
+            </tr></thead>
+            <tbody id="results-body"><tr><td colspan="13" class="loading">Loading results...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- Per-path charts (shown when a single path is selected) -->
       <div id="path-charts">
-        <div id="path-flow-banner" class="path-flow-banner" style="display:none"></div>
+        <div id="path-flow-banner-wrap" style="display:none;margin-bottom:12px">
+          <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
+                      color:var(--muted);padding:0 4px 5px">Test Path Visualization</div>
+          <div id="path-flow-banner" class="path-flow-banner" style="margin-bottom:0"></div>
+        </div>
+
+        <!-- Traceroute panel -->
+        <div class="panel" id="tr-panel" style="display:none">
+          <div class="panel-header">
+            <span class="panel-title" id="tr-title">Traceroute</span>
+            <span style="font-size:11px;color:var(--muted)" id="tr-subtitle">most recent run</span>
+          </div>
+          <div id="tr-body">
+            <div class="tr-empty">No traceroute data for this path yet.</div>
+          </div>
+        </div>
+
+        <!-- Charts 2x2 grid -->
         <div class="chart-grid">
           <div class="chart-panel">
             <div class="chart-title">Latency — RTT avg (ms)</div>
@@ -341,60 +417,30 @@
             <div class="chart-wrap"><canvas id="chart-bb" role="img" aria-label="Bufferbloat delta over time"></canvas></div>
           </div>
         </div>
-      </div>
 
-      <!-- Results table -->
-      <div class="panel">
-        <div class="panel-header">
-          <span class="panel-title">Recent results</span>
-          <div class="day-tabs">
-            <div class="day-tab active" onclick="setDays(1,this)">Today</div>
-            <div class="day-tab" onclick="setDays(3,this)">3 days</div>
-            <div class="day-tab" onclick="setDays(7,this)">7 days</div>
+        <!-- MTR hop detail -->
+        <div class="panel" id="hops-panel">
+          <div class="panel-header">
+            <span class="panel-title" id="hops-title">MTR hop detail</span>
+            <span style="font-size:11px;color:var(--muted)">most recent latency-under-load run</span>
+          </div>
+          <div class="panel-body" id="hops-body">
+            <div class="empty">Select a path with latency_under_load tests to see per-hop breakdown.</div>
           </div>
         </div>
-        <div class="panel-body tbl-wrap">
-          <table>
-            <thead><tr>
-              <th style="text-align:left">Path</th>
-              <th>Time</th>
-              <th>Status</th>
-              <th>TX Mbps</th>
-              <th>RX Mbps</th>
-              <th>RTT avg</th>
-              <th>RTT max</th>
-              <th>Loss %</th>
-              <th>Jitter</th>
-              <th>Δ Loaded</th>
-              <th>MTU</th>
-              <th>Retr</th>
-            </tr></thead>
-            <tbody id="results-body"><tr><td colspan="12" class="loading">Loading results...</td></tr></tbody>
-          </table>
-        </div>
-      </div>
 
-      <!-- MTR hop detail -->
-      <div class="panel" id="hops-panel">
-        <div class="panel-header">
-          <span class="panel-title" id="hops-title">MTR hop detail</span>
-          <span style="font-size:11px;color:var(--muted)">most recent latency-under-load run</span>
+        <!-- Defined hop breakdown (multi-hop paths) -->
+        <div class="panel" id="seg-panel" style="display:none">
+          <div class="panel-header">
+            <span class="panel-title" id="seg-title">Hop segment breakdown</span>
+            <span style="font-size:11px;color:var(--muted)">source → each defined hop → destination</span>
+          </div>
+          <div class="panel-body" id="seg-body" style="padding:0">
+            <div class="empty">No segment data.</div>
+          </div>
         </div>
-        <div class="panel-body" id="hops-body">
-          <div class="empty">Select a path with latency_under_load tests to see per-hop breakdown.</div>
-        </div>
-      </div>
 
-      <!-- Defined hop breakdown (multi-hop paths) -->
-      <div class="panel" id="seg-panel" style="display:none">
-        <div class="panel-header">
-          <span class="panel-title" id="seg-title">Hop segment breakdown</span>
-          <span style="font-size:11px;color:var(--muted)">source → each defined hop → destination</span>
-        </div>
-        <div class="panel-body" id="seg-body" style="padding:0">
-          <div class="empty">No segment data.</div>
-        </div>
-      </div>
+      </div><!-- /path-charts -->
 
     </div><!-- /content -->
 
@@ -533,6 +579,121 @@ function updatePathFlowBanner(pathId) {
 
   banner.innerHTML = parts.join('');
   banner.style.display = 'flex';
+  document.getElementById('path-flow-banner-wrap').style.display = '';
+}
+
+function _renderTracerouteData(data) {
+  const panel    = document.getElementById('tr-panel');
+  const title    = document.getElementById('tr-title');
+  const subtitle = document.getElementById('tr-subtitle');
+  const body     = document.getElementById('tr-body');
+  if (!panel) return;
+
+  if (!data || !data.forward || !data.forward.hops || !data.forward.hops.length) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+  title.textContent    = `Traceroute — ${data.path_label || ''}`;
+  subtitle.textContent = data.timestamp
+    ? 'run at ' + data.timestamp.slice(11, 19) + ' UTC'
+    : 'most recent run';
+
+  body.innerHTML = '';
+
+  function buildHopFlow(hops, label) {
+    const wrap = document.createElement('div');
+
+    const lbl = document.createElement('div');
+    lbl.className = 'tr-dir-label';
+    lbl.textContent = label;
+    wrap.appendChild(lbl);
+
+    const flow = document.createElement('div');
+    flow.className = 'tr-flow';
+
+    hops.forEach((h, i) => {
+      if (i > 0) {
+        const arr = document.createElement('span');
+        arr.className = 'tr-arrow';
+        arr.textContent = '→';
+        flow.appendChild(arr);
+      }
+
+      const hopDiv = document.createElement('div');
+      hopDiv.className = 'tr-hop';
+
+      if (!h.responding) {
+        hopDiv.innerHTML = `
+          <div class="tr-hop-num">${h.hop}</div>
+          <div class="tr-hop-node tr-dead">* * *</div>
+        `;
+      } else {
+        const rtt     = h.rtt_avg_ms;
+        const rttC    = rtt == null ? '' : rtt > 100 ? 'c-red' : rtt > 30 ? 'c-yellow' : '';
+        const rttTxt  = rtt != null ? rtt.toFixed(1) + ' ms' : '—';
+        const host    = h.hostname && h.hostname !== h.ip ? h.hostname : (h.ip || '?');
+        const ipLine  = h.hostname && h.hostname !== h.ip
+          ? `<div class="tr-hop-ip">${h.ip}</div>` : '';
+
+        hopDiv.innerHTML = `
+          <div class="tr-hop-num">${h.hop}</div>
+          <div class="tr-hop-node">
+            <div class="tr-hop-host">${host}</div>
+            ${ipLine}
+            <div class="tr-hop-rtt ${rttC}">${rttTxt}</div>
+          </div>
+        `;
+      }
+
+      flow.appendChild(hopDiv);
+    });
+
+    wrap.appendChild(flow);
+    return wrap;
+  }
+
+  body.appendChild(buildHopFlow(data.forward.hops,
+    data.reverse ? 'Forward  (' + data.forward.source_host + ' → ' + data.forward.dest_host + ')' : 'Forward'));
+
+  if (data.reverse && data.reverse.hops && data.reverse.hops.length) {
+    const divider = document.createElement('div');
+    divider.style.cssText = 'border-top:1px solid var(--border);margin:0';
+    body.appendChild(divider);
+    body.appendChild(buildHopFlow(data.reverse.hops,
+      'Reverse  (' + data.reverse.source_host + ' → ' + data.reverse.dest_host + ')'));
+  }
+}
+
+// Load most recent traceroute for a path
+async function renderTraceroute(pathId) {
+  try {
+    const data = await api(`/api/traceroute/${pathId}`);
+    _renderTracerouteData(data);
+  } catch(e) {
+    const panel = document.getElementById('tr-panel');
+    if (panel) panel.style.display = 'none';
+  }
+}
+
+// Load traceroute for a specific result ID (called from table row)
+async function loadTracerouteForResult(resultId, ts, btn) {
+  // Highlight active button
+  document.querySelectorAll('.tr-row-btn.active').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+
+  try {
+    const data = await api(`/api/traceroute/result/${encodeURIComponent(resultId)}`);
+    _renderTracerouteData(data);
+    // Scroll panel into view
+    const panel = document.getElementById('tr-panel');
+    if (panel && panel.style.display !== 'none') {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  } catch(e) {
+    console.warn('Failed to load traceroute for result', resultId, e);
+  }
 }
 
 async function updateSegPanel(pathId, results) {
@@ -541,18 +702,15 @@ async function updateSegPanel(pathId, results) {
   const body   = document.getElementById('seg-body');
   if (!panel) return;
 
-  // Find most recent SUCCESSFUL result with segments
-  const withSegs = (results || [])
-    .filter(r => r.segments && r.segments.length > 0)
-    .sort((a, b) => a.timestamp_utc > b.timestamp_utc ? 1 : -1);
-  // Prefer successful result, fall back to most recent regardless
-  const r = withSegs.filter(r => r.success).pop() || withSegs[withSegs.length - 1];
-  if (!r) {
+  // Find most recent result with segments
+  const withSegs = (results || []).filter(r => r.segments && r.segments.length > 0);
+  if (!withSegs.length) {
     panel.style.display = 'none';
     return;
   }
 
   panel.style.display = '';
+  const r    = withSegs[withSegs.length - 1];
   const segs = r.segments;
 
   // Fetch agent labels
@@ -974,8 +1132,8 @@ async function refresh() {
 
     latestMap = {};
     latest.forEach(r => latestMap[r.path_id] = r);
-    // Cache agents for path flow banner
-    api('/api/agents').then(a => { window._cachedAgents = a; }).catch(()=>{});
+    // Cache agents for path flow banner (await so banner has them immediately)
+    try { window._cachedAgents = await api('/api/agents'); } catch(e) {}
 
     updateStats(summary);
     updateNextRun();
@@ -985,8 +1143,10 @@ async function refresh() {
     if (currentPath !== 'all') {
       await renderHops(currentPath);
       await updateSegPanel(currentPath, results);
+      await renderTraceroute(currentPath);
     } else {
       document.getElementById('seg-panel').style.display = 'none';
+      document.getElementById('tr-panel').style.display = 'none';
     }
 
     document.getElementById('last-update').textContent =
@@ -1063,7 +1223,7 @@ function updateBadges() {
 function renderTable(records) {
   const tbody = document.getElementById('results-body');
   if (!records.length) {
-    tbody.innerHTML = '<tr><td colspan="12" class="empty">No results for this period.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" class="empty">No results for this period.</td></tr>';
     return;
   }
 
@@ -1092,8 +1252,15 @@ function renderTable(records) {
                   padding:1px 4px;border-radius:3px;border:1px solid var(--border)">▸ ${segs.length}</span>`
       : '';
 
+    const hasTr = !!(r.traceroute_forward?.hops?.length);
+    const trBtn = hasTr
+      ? `<span class="tr-row-btn" title="View traceroute for this run"
+           onclick="loadTracerouteForResult('${r.result_id}','${ts}',this)">⤳ tr</span>`
+      : '';
+
     rows.push(`<tr>
-      <td class="td-path" title="${r.path_label}">${r.path_label}${hopBtn}</td>
+      <td class="td-path" title="${r.path_label}">${r.path_label}${hopBtn}${trBtn}</td>
+      <td class="td-time" style="color:var(--muted);font-size:10px">${r.timestamp_utc.slice(0,10)}</td>
       <td class="td-time">${ts}</td>
       <td>${r.success ? '<span class="ok-dot">✓</span>' : '<span class="fail-dot">✗</span>'}</td>
       <td class="${txC}">${fmt(t?.tx_mbps)}</td>
@@ -1109,7 +1276,7 @@ function renderTable(records) {
 
     if (hasSegs) {
       rows.push(`<tr id="${rowId}" style="display:none">
-        <td colspan="12" style="padding:0 0 0 24px;background:#080b10">
+        <td colspan="13" style="padding:0 0 0 24px;background:#080b10">
           <table style="width:100%;font-size:10px;border-collapse:collapse">
             <tr style="color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.5px">
               <td style="padding:4px 8px">Hop</td>
@@ -1179,11 +1346,19 @@ async function updateCharts() {
   const isAll  = currentPath === 'all';
   const days   = currentDays;
 
+  // Ensure agents are cached before rendering banner
+  if (!window._cachedAgents) {
+    try { window._cachedAgents = await api('/api/agents'); } catch(e) {}
+  }
+
   // Toggle which view is visible
   document.getElementById('overview-sparklines').style.display = isAll ? '' : 'none';
   document.getElementById('path-charts').style.display         = isAll ? 'none' : '';
+  // More rows visible on overview, fewer on single-path to save space
+  const scrollEl = document.getElementById('results-scroll');
+  if (scrollEl) scrollEl.style.maxHeight = isAll ? '370px' : '185px';
   if (!isAll) updatePathFlowBanner(currentPath);
-  else document.getElementById('path-flow-banner').style.display = 'none';
+  else document.getElementById('path-flow-banner-wrap').style.display = 'none';
 
   if (isAll) {
     await renderSparklines(days);
@@ -1209,8 +1384,8 @@ const _expandedHops = new Set();  // path IDs with hop rows currently expanded
 async function renderSparklines(days) {
   if (!paths.length) return;
 
-  // Cache agents for banner use
-  api('/api/agents').then(a => { window._cachedAgents = a; }).catch(()=>{});
+  // Cache agents for banner use (await to ensure available before banner renders)
+  try { window._cachedAgents = await api('/api/agents'); } catch(e) {}
 
   const [tsData, agentsList] = await Promise.all([
     Promise.all(

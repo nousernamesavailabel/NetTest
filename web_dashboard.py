@@ -289,6 +289,42 @@ def api_timeseries(metric: str):
     return jsonify(list(series_by_path.values()))
 
 
+@app.route("/api/traceroute/<path_id>")
+@login_required
+def api_traceroute(path_id: str):
+    """Return most recent traceroute result for a path."""
+    records = _load_records(days=7, path_id=path_id)
+    for r in reversed(records):
+        if r.get("traceroute_forward"):
+            return jsonify({
+                "path_id":    path_id,
+                "path_label": r.get("path_label", ""),
+                "timestamp":  r.get("timestamp_utc", ""),
+                "forward":    r["traceroute_forward"],
+                "reverse":    r.get("traceroute_reverse"),
+            })
+    return jsonify({"path_id": path_id, "forward": None, "reverse": None})
+
+
+@app.route("/api/traceroute/result/<result_id>")
+@login_required
+def api_traceroute_by_result(result_id: str):
+    """Return traceroute for a specific result ID."""
+    records = _load_records(days=7)
+    for r in records:
+        if r.get("result_id") == result_id:
+            if r.get("traceroute_forward"):
+                return jsonify({
+                    "path_id":    r.get("path_id", ""),
+                    "path_label": r.get("path_label", ""),
+                    "timestamp":  r.get("timestamp_utc", ""),
+                    "forward":    r["traceroute_forward"],
+                    "reverse":    r.get("traceroute_reverse"),
+                })
+            return jsonify({"path_id": r.get("path_id",""), "forward": None, "reverse": None})
+    return jsonify({"error": "Result not found"}), 404
+
+
 @app.route("/api/hops/<path_id>")
 def api_hops(path_id: str):
     records = _load_records(days=1, path_id=path_id)
@@ -461,6 +497,7 @@ def api_config_save():
 
     if 'agents'      in body: raw['agents']      = body['agents']
     if 'paths'       in body: raw['paths']        = body['paths']
+    if 'test_params' in body: raw['test_params']  = body['test_params']
     if 'ssh_defaults'in body: raw['ssh_defaults'].update(body['ssh_defaults'])
     if 'schedule'    in body: raw['schedule'].update(body['schedule'])
 
