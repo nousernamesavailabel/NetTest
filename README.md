@@ -3,6 +3,11 @@
 Automated network measurement controller for multi-site, multi-VLAN environments.
 Tests throughput, latency, jitter, and MTU across defined paths between agents.
 
+<img width="1917" height="862" alt="image" src="https://github.com/user-attachments/assets/597dbb9e-b3b2-441d-ac4a-307f987e1570" />
+
+<img width="1177" height="612" alt="image" src="https://github.com/user-attachments/assets/530b9816-9a52-4598-8cc4-41388054e763" />
+
+
 ## Requirements (Controller Host)
 
 - Ubuntu/Debian Linux
