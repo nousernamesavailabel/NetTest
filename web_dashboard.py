@@ -36,7 +36,9 @@ from core.path_tester import PathTester
 app = Flask(__name__, static_folder="web/static")
 
 STATIC_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config/config.yaml")
+_config_path  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config/config.yaml")
+_packages_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "packages")
+os.makedirs(_packages_dir, exist_ok=True)
 
 # ── Module-level init (required for gunicorn) ──────────────
 try:
@@ -325,6 +327,273 @@ def api_traceroute_by_result(result_id: str):
     return jsonify({"error": "Result not found"}), 404
 
 
+# ── Onboarding API ─────────────────────────────────────────
+
+@app.route("/api/onboard", methods=["POST"])
+@login_required
+def api_onboard():
+    """Onboard a new agent via the web UI."""
+    body          = request.get_json(silent=True) or {}
+    agent_ip      = body.get("agent_ip", "").strip()
+    agent_test_ip = body.get("agent_test_ip", "").strip() or None
+    agent_label   = body.get("agent_label", "").strip() or agent_ip
+    agent_id      = body.get("agent_id",   "").strip()
+    agent_type    = body.get("agent_type", "endpoint")
+    admin_user    = body.get("admin_user", "").strip()
+    admin_pass    = body.get("admin_pass", "")
+    admin_port    = int(body.get("admin_port", 22))
+    air_gapped    = bool(body.get("air_gapped", False))
+
+    if not agent_ip:   return jsonify({"error": "agent_ip is required"}), 400
+    if not admin_user: return jsonify({"error": "admin_user is required"}), 400
+    if not admin_pass: return jsonify({"error": "admin_pass is required"}), 400
+
+    job_id  = "onboard-" + str(uuid.uuid4())[:8]
+    log_q   = queue.Queue(maxsize=500)
+    handler = JobLogHandler(job_id)
+    handler.setLevel(logging.INFO)
+
+    with _job_logs_lock:
+        _job_logs[job_id] = log_q
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id":   job_id,
+            "path_id":  "onboard",
+            "label":    f"Onboarding {agent_label}",
+            "status":   "queued",
+            "started":  datetime.now(timezone.utc).isoformat(),
+            "finished": None, "success": None, "error": None,
+        }
+
+    def run_onboard():
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        logging.getLogger("netmiko").setLevel(logging.WARNING)
+        logging.getLogger("paramiko").setLevel(logging.WARNING)
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+        try:
+            from onboard import onboard_agent
+            ok = onboard_agent(
+                config_path=_config_path,
+                agent_ip=agent_ip,
+                agent_test_ip=agent_test_ip,
+                agent_label=agent_label,
+                agent_id=agent_id or None,
+                agent_type=agent_type,
+                admin_user=admin_user,
+                admin_pass=admin_pass,
+                admin_port=admin_port,
+                interactive=False,
+                air_gapped=air_gapped,
+                packages_dir=_packages_dir,
+            )
+            global _config, _tester
+            from core.config_loader import load_config
+            from core.path_tester import PathTester
+            _config = load_config(_config_path)
+            _tester = PathTester(_config)
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "done" if ok else "error"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["success"]  = ok
+                _jobs[job_id]["error"]    = None if ok else "Onboarding failed — check output above"
+        except Exception as e:
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "error"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["error"]    = str(e)
+        finally:
+            root.removeHandler(handler)
+            log_q.put(None)
+
+    threading.Thread(target=run_onboard, daemon=True,
+                     name=f"onboard-{agent_ip}").start()
+    return jsonify({"job_id": job_id, "status": "queued"})
+
+
+# ── Package management API ────────────────────────────────
+
+@app.route("/api/packages")
+@login_required
+def api_packages_list():
+    """List staged .deb files."""
+    files = []
+    for f in sorted(os.listdir(_packages_dir)):
+        if f.endswith(".deb"):
+            fp = os.path.join(_packages_dir, f)
+            stat = os.stat(fp)
+            files.append({
+                "name":     f,
+                "size":     stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            })
+    return jsonify(files)
+
+
+@app.route("/api/packages/upload", methods=["POST"])
+@login_required
+def api_packages_upload():
+    """Upload a .deb file to the staging area."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename.endswith(".deb"):
+        return jsonify({"error": "Only .deb files are accepted"}), 400
+    safe_name = os.path.basename(f.filename)
+    dest = os.path.join(_packages_dir, safe_name)
+    f.save(dest)
+    return jsonify({"ok": True, "name": safe_name})
+
+
+@app.route("/api/packages/delete/<filename>", methods=["DELETE"])
+@login_required
+def api_packages_delete(filename: str):
+    """Delete a staged .deb file."""
+    safe_name = os.path.basename(filename)
+    dest = os.path.join(_packages_dir, safe_name)
+    if not os.path.exists(dest):
+        return jsonify({"error": "File not found"}), 404
+    os.remove(dest)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/packages/push/<agent_id>", methods=["POST"])
+@login_required
+def api_packages_push(agent_id: str):
+    """SCP staged packages to an agent and install with dpkg."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+
+    agent = _config.get_agent(agent_id)
+    if not agent:
+        return jsonify({"error": f"Agent '{agent_id}' not found"}), 404
+
+    deb_files = [f for f in os.listdir(_packages_dir) if f.endswith(".deb")]
+    if not deb_files:
+        return jsonify({"error": "No .deb files staged — upload packages first"}), 400
+
+    job_id  = "pkg-push-" + str(uuid.uuid4())[:8]
+    log_q   = queue.Queue(maxsize=500)
+    handler = JobLogHandler(job_id)
+    handler.setLevel(logging.INFO)
+
+    with _job_logs_lock:
+        _job_logs[job_id] = log_q
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id":   job_id,
+            "path_id":  "packages",
+            "label":    f"Push packages → {agent.label}",
+            "status":   "queued",
+            "started":  datetime.now(timezone.utc).isoformat(),
+            "finished": None, "success": None, "error": None,
+        }
+
+    def run_push():
+        import subprocess
+        root = logging.getLogger()
+        root.addHandler(handler)
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+        try:
+            key_file    = _config.ssh_defaults.key_file
+            nettest_usr = _config.ssh_defaults.username
+            port        = agent.port or _config.ssh_defaults.port
+            remote_tmp  = "/tmp/nettest_packages"
+
+            _push_log = logging.getLogger("packages")
+            _push_log.info(f"Pushing {len(deb_files)} package(s) to {agent.label} ({agent.host_mgmt_ip})...")
+
+            # Create remote tmp dir
+            subprocess.run([
+                "ssh", "-i", key_file, "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes", "-p", str(port),
+                f"{nettest_usr}@{agent.host_mgmt_ip}",
+                f"mkdir -p {remote_tmp}"
+            ], capture_output=True, timeout=30)
+
+            # SCP each file
+            for deb in sorted(deb_files):
+                local_path = os.path.join(_packages_dir, deb)
+                _push_log.info(f"  Copying {deb}...")
+                proc = subprocess.run([
+                    "scp", "-i", key_file,
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "BatchMode=yes",
+                    "-P", str(port),
+                    local_path,
+                    f"{nettest_usr}@{agent.host_mgmt_ip}:{remote_tmp}/{deb}",
+                ], capture_output=True, timeout=120)
+                if proc.returncode == 0:
+                    _push_log.info(f"  ✓ {deb}")
+                else:
+                    _push_log.error(f"  ✗ {deb}: {proc.stderr.decode()[:100]}")
+
+            # Install
+            _push_log.info("Installing packages with dpkg...")
+            proc = subprocess.run([
+                "ssh", "-i", key_file, "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes", "-p", str(port),
+                f"{nettest_usr}@{agent.host_mgmt_ip}",
+                f"sudo dpkg -i {remote_tmp}/*.deb && rm -rf {remote_tmp}"
+            ], capture_output=True, timeout=120)
+            if proc.returncode == 0:
+                _push_log.info("✓ Packages installed successfully")
+            else:
+                _push_log.error(f"dpkg failed: {proc.stderr.decode()[:200]}")
+
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "done"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["success"]  = True
+        except Exception as e:
+            with _jobs_lock:
+                _jobs[job_id]["status"]  = "error"
+                _jobs[job_id]["finished"]= datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["error"]   = str(e)
+        finally:
+            root.removeHandler(handler)
+            log_q.put(None)
+
+    threading.Thread(target=run_push, daemon=True,
+                     name=f"pkg-push-{agent_id}").start()
+    return jsonify({"job_id": job_id, "status": "queued"})
+
+
+@app.route("/api/packages/push_all", methods=["POST"])
+@login_required
+def api_packages_push_all():
+    """Push staged packages to all endpoint agents."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    results = []
+    for agent in _config.agents:
+        if agent.type == "svi_adjacent":
+            continue
+        resp = api_packages_push(agent.id)
+        results.append({"agent_id": agent.id, "job_id": resp.get_json().get("job_id")})
+    return jsonify(results)
+
+
+@app.route("/api/agents")
+@login_required
+def api_agents():
+    if not _config:
+        return jsonify([])
+    return jsonify([
+        {
+            "id":           a.id,
+            "label":        a.label,
+            "host_mgmt_ip": a.host_mgmt_ip,
+            "host_test_ip": a.host_test_ip,
+            "type":         a.type,
+        }
+        for a in _config.agents
+    ])
+
+
 @app.route("/api/hops/<path_id>")
 def api_hops(path_id: str):
     records = _load_records(days=1, path_id=path_id)
@@ -339,13 +608,7 @@ def api_hops(path_id: str):
     return jsonify({"path_id": path_id, "hops": []})
 
 
-@app.route("/api/agents")
-def api_agents():
-    agents = [
-        {"id": a.id, "label": a.label, "host": a.host, "type": a.type}
-        for a in _config.agents
-    ]
-    return jsonify(agents)
+
 
 
 # ── Trigger API ────────────────────────────────────────────

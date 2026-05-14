@@ -125,7 +125,8 @@ ok "Code files synced"
 # ── Create runtime directories ─────────────────────────────
 install -d -o "${APP_USER}" -g "${APP_GROUP}" \
   "${APP_DIR}/logs" \
-  "${APP_DIR}/results"
+  "${APP_DIR}/results" \
+  "${APP_DIR}/packages"
 ok "Runtime directories ready"
 
 # ── Config file ────────────────────────────────────────────
@@ -188,7 +189,8 @@ SUDOERS_FILE="/etc/sudoers.d/nettest-restart"
 cat > "${SUDOERS_FILE}" << SUDOERS
 # Allow nettest service user to restart the scheduler
 # (triggered automatically when config is saved from the web UI)
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest
+# dpkg is needed for air-gapped agent package installation
+${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/dpkg
 SUDOERS
 chmod 440 "${SUDOERS_FILE}"
 visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \
@@ -238,6 +240,12 @@ if [[ "$UPGRADE" == "false" ]]; then
   echo ""
   echo "  4. Open the dashboard:"
   echo "     http://<this-server-ip>:8080"
+  echo ""
+  echo "  5. Air-gapped agents only:"
+  echo "     Upload .deb packages via Config → Packages in the web UI"
+  echo "     before onboarding any air-gapped agents."
+  echo "     Required packages: iperf3, mtr-tiny, iputils-ping,"
+  echo "     traceroute, psmisc (fuser)"
   echo ""
 fi
 

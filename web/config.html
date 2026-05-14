@@ -194,6 +194,12 @@ select option{background:var(--bg)}
     <div class="tab" onclick="showSection('ssh',this)">
       <span class="tab-icon">🔑</span> SSH
     </div>
+    <div class="tab" onclick="showSection('tests',this)">
+      <span class="tab-icon">⚙</span> Tests
+    </div>
+    <div class="tab" onclick="showSection('packages',this)">
+      <span class="tab-icon">📦</span> Packages
+    </div>
   </nav>
 
   <!-- Content -->
@@ -453,6 +459,60 @@ select option{background:var(--bg)}
 
     </div>
 
+
+    <!-- ── Packages ── -->
+    <div class="section" id="section-packages">
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Staged Packages</span>
+          <span style="font-size:11px;color:var(--mt)">Upload .deb files for air-gapped agent onboarding</span>
+        </div>
+        <div class="panel-body">
+
+          <!-- Upload area -->
+          <div id="pkg-upload-area" style="border:2px dashed var(--bdr2);border-radius:6px;
+               padding:24px;text-align:center;cursor:pointer;margin-bottom:16px;
+               transition:border-color .15s"
+               onclick="document.getElementById('pkg-file-input').click()"
+               ondragover="event.preventDefault();this.style.borderColor='var(--cy)'"
+               ondragleave="this.style.borderColor='var(--bdr2)'"
+               ondrop="handlePkgDrop(event)">
+            <div style="font-size:13px;color:var(--mt);margin-bottom:6px">
+              Drop .deb files here or click to browse
+            </div>
+            <div style="font-size:11px;color:var(--bdr2)">
+              Required: iperf3, libiperf0, libsctp1, mtr-tiny, iputils-ping, traceroute, psmisc
+            </div>
+            <input type="file" id="pkg-file-input" accept=".deb" multiple
+                   style="display:none" onchange="uploadPkgFiles(this.files)">
+          </div>
+
+          <!-- Upload progress -->
+          <div id="pkg-upload-status" style="display:none;margin-bottom:12px;font-size:11px;color:var(--cy)"></div>
+
+          <!-- Package list -->
+          <div id="pkg-list">
+            <div style="color:var(--mt);font-size:11px">Loading...</div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Push to Agents</span>
+          <button class="btn" style="font-size:11px" onclick="pushPkgsAll()">
+            Push to All Agents
+          </button>
+        </div>
+        <div class="panel-body" id="pkg-agents-list">
+          <div style="color:var(--mt);font-size:11px">Loading agents...</div>
+        </div>
+      </div>
+
+    </div>
+
     <!-- ── Save bar (always visible) ── -->
     <div class="save-bar">
       <span class="save-status" id="save-status"></span>
@@ -513,6 +573,7 @@ function showSection(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('section-' + name).classList.add('active');
   el.classList.add('active');
+  if (name === 'packages') loadPackages();
 }
 
 // ── Render all ─────────────────────────────────────────────
@@ -1014,6 +1075,128 @@ function collectTests() {
   };
 }
 
+// ── Packages ───────────────────────────────────────────────
+async function loadPackages() {
+  const list = document.getElementById('pkg-list');
+  const agentsList = document.getElementById('pkg-agents-list');
+  if (!list) return;
+
+  try {
+    const pkgs = await apiFetch('/api/packages');
+    if (!pkgs.length) {
+      list.innerHTML = '<div style="color:var(--mt);font-size:11px">No packages staged yet. Upload .deb files above.</div>';
+    } else {
+      list.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="color:var(--mt);font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--bdr2)">
+              <th style="padding:6px 8px;text-align:left">File</th>
+              <th style="padding:6px 8px;text-align:right">Size</th>
+              <th style="padding:6px 8px;text-align:right">Modified</th>
+              <th style="padding:6px 8px"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${pkgs.map(p => `
+              <tr style="border-bottom:1px solid var(--bdr)">
+                <td style="padding:6px 8px;font-family:monospace">${escHtml(p.name)}</td>
+                <td style="padding:6px 8px;text-align:right;color:var(--mt)">${(p.size/1024).toFixed(1)} KB</td>
+                <td style="padding:6px 8px;text-align:right;color:var(--mt)">${p.modified.slice(0,10)}</td>
+                <td style="padding:6px 8px;text-align:right">
+                  <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--rd);border-color:var(--rd)"
+                    onclick="deletePkg('${escHtml(p.name)}')">Delete</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    // Load agent push buttons
+    const ags = await apiFetch('/api/agents');
+    const endpoints = ags.filter(a => a.type !== 'svi_adjacent');
+    if (!endpoints.length) {
+      agentsList.innerHTML = '<div style="color:var(--mt);font-size:11px">No endpoint agents configured.</div>';
+    } else {
+      agentsList.innerHTML = endpoints.map(a => `
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:8px 0;border-bottom:1px solid var(--bdr)">
+          <div>
+            <span style="font-size:12px">${escHtml(a.label)}</span>
+            <span style="font-size:10px;color:var(--mt);margin-left:8px">${escHtml(a.host_mgmt_ip||a.host||'')}</span>
+          </div>
+          <button class="btn" style="font-size:11px" onclick="pushPkgsToAgent('${a.id}', this)">
+            Push packages
+          </button>
+        </div>`).join('');
+    }
+  } catch(e) {
+    list.innerHTML = `<div style="color:var(--rd);font-size:11px">Error loading packages: ${e.message}</div>`;
+  }
+}
+
+async function uploadPkgFiles(files) {
+  const status = document.getElementById('pkg-upload-status');
+  status.style.display = 'block';
+  for (const file of files) {
+    status.textContent = `Uploading ${file.name}...`;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/packages/upload', { method:'POST', body:fd });
+      const data = await res.json();
+      if (data.ok) {
+        status.textContent = `✓ ${file.name} uploaded`;
+      } else {
+        status.textContent = `✗ ${file.name}: ${data.error}`;
+      }
+    } catch(e) {
+      status.textContent = `✗ ${file.name}: ${e.message}`;
+    }
+  }
+  setTimeout(() => { status.style.display = 'none'; }, 3000);
+  loadPackages();
+}
+
+function handlePkgDrop(e) {
+  e.preventDefault();
+  document.getElementById('pkg-upload-area').style.borderColor = 'var(--bdr2)';
+  uploadPkgFiles(e.dataTransfer.files);
+}
+
+async function deletePkg(name) {
+  if (!confirm(`Delete ${name}?`)) return;
+  try {
+    await fetch(`/api/packages/delete/${encodeURIComponent(name)}`, { method:'DELETE' });
+    loadPackages();
+  } catch(e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function pushPkgsToAgent(agentId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Pushing...'; }
+  try {
+    const res = await apiFetch(`/api/packages/push/${agentId}`, { method:'POST' });
+    if (res.job_id) {
+      if (btn) { btn.textContent = 'Pushed ✓'; }
+      toast(`Package push started for agent — check Live Output for progress`, 'ok');
+    }
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Push packages'; }
+    toast('Push failed: ' + e.message, 'err');
+  }
+}
+
+async function pushPkgsAll() {
+  if (!confirm('Push all staged packages to all endpoint agents?')) return;
+  try {
+    await apiFetch('/api/packages/push_all', { method:'POST' });
+    toast('Package push started for all agents', 'ok');
+  } catch(e) {
+    toast('Push failed: ' + e.message, 'err');
+  }
+}
+
 // ── Save ───────────────────────────────────────────────────
 function markDirty() {
   setStatus('Unsaved changes', 'pending');
@@ -1216,6 +1399,15 @@ boot();
             <option value="svi_adjacent">svi_adjacent</option>
           </select>
         </div>
+        <div class="form-row">
+          <label>Air-gapped</label>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="ob-airgap" style="width:auto;accent-color:var(--cy)">
+            <span style="color:var(--mt);font-size:11px">
+              Install packages from staged .deb files instead of apt
+            </span>
+          </div>
+        </div>
         <div style="border-top:1px solid var(--bdr);padding-top:12px;margin-top:4px">
           <div class="form-row">
             <label>Admin Username <span style="color:var(--rd)">*</span></label>
@@ -1309,7 +1501,7 @@ async function startOnboard() {
     const resp = await fetch('/api/onboard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_ip:ip, agent_test_ip:test_ip, agent_label:label, agent_id:id,
+      body: JSON.stringify({ agent_ip:ip, agent_test_ip:test_ip, agent_label:label, agent_id:id, air_gapped: document.getElementById('ob-airgap')?.checked||false,
                              agent_type:type, admin_user:user, admin_pass:pass,
                              admin_port:port })
     });

@@ -68,7 +68,7 @@ class Scheduler:
             target=self._schedule_loop,
             args=(
                 self.config.schedule.latency_only_interval_minutes * 60,
-                ["latency", "jitter"], # Only these test types
+                ["latency", "jitter", "traceroute"], # Only these test types
                 "latency-only",
             ),
             daemon=True,

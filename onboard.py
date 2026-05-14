@@ -113,13 +113,16 @@ TOTAL_STEPS = 9
 
 def onboard_agent(config_path: str,
                   agent_ip: str = None,
+                  agent_test_ip: str = None,
                   agent_label: str = None,
                   agent_id: str = None,
                   agent_type: str = None,
                   admin_user: str = None,
                   admin_pass: str = None,
                   admin_port: int = 22,
-                  interactive: bool = None) -> bool:
+                  interactive: bool = None,
+                  air_gapped: bool = False,
+                  packages_dir: str = None) -> bool:
     """
     Full agent onboarding flow.
     Returns True on success, False on failure.
@@ -202,6 +205,8 @@ def onboard_agent(config_path: str,
 
     _log.info(f"\n{dim('─'*55)}")
     _log.info(f"  Host    : {agent_ip}")
+    if agent_test_ip:
+        _log.info(f"  Test IP : {agent_test_ip}")
     _log.info(f"  Label   : {agent_label}")
     _log.info(f"  ID      : {agent_id}")
     _log.info(f"  Type    : {agent_type}")
@@ -231,65 +236,173 @@ def onboard_agent(config_path: str,
     success = False
     try:
         # ── Step 2: Install required tools ───────────────────
-        _step(2, TOTAL_STEPS, "Installing iperf3, mtr-tiny, and iputils-ping...")
-        _info("Checking which packages are needed...")
-
-        # Check what is missing using a reliable sentinel pattern
-        pkgs_needed = []
-        for tool, pkg in [
+        REQUIRED_TOOLS = [
             ("iperf3",      "iperf3"),
             ("mtr",         "mtr-tiny"),
             ("ping",        "iputils-ping"),
             ("traceroute",  "traceroute"),
-        ]:
-            # Use dpkg-query — definitive, no false positives from shell noise
-            result = _run(conn,
-                f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
-                f"|| echo NOT_INSTALLED")
-            if "install ok installed" in result:
-                _ok(f"{tool} already installed")
-            else:
-                _info(f"{tool} not installed — will install")
-                pkgs_needed.append(pkg)
+            ("fuser",       "psmisc"),
+            ("libsctp1",    "libsctp1"),
+        ]
 
-        if pkgs_needed:
-            _info(f"Installing: {' '.join(pkgs_needed)}")
-            # Run install via sudo with full output captured to log
-            # Using bash -c with explicit sudo -n (non-interactive) after priming
-            pkgs_str = ' '.join(pkgs_needed)
-            install_cmd = (
-                f"sudo DEBIAN_FRONTEND=noninteractive "
-                f"DEBCONF_NONINTERACTIVE_SEEN=true "
-                f"apt-get install -y -o Dpkg::Options::='--force-confdef' "
-                f"-o Dpkg::Options::='--force-confold' "
-                f"{pkgs_str} "
-                f"> /tmp/nettest_apt.log 2>&1 && echo __APT_OK__ || echo __APT_FAIL__"
+        if air_gapped:
+            _step(2, TOTAL_STEPS, "Air-gapped mode — installing packages from staged .deb files...")
+            pkg_dir = packages_dir or os.path.join(
+                os.path.dirname(os.path.abspath(config_path)), "..", "packages"
             )
-            result = _run(conn, install_cmd, timeout=180)
-            log_content = _run(conn, "cat /tmp/nettest_apt.log 2>/dev/null | tail -8")
-            log_clean = _strip_ansi(log_content.strip())
+            pkg_dir = os.path.abspath(pkg_dir)
+            deb_files = sorted([
+                f for f in os.listdir(pkg_dir) if f.endswith(".deb")
+            ]) if os.path.isdir(pkg_dir) else []
 
-            if "__APT_OK__" in result or "__APT_OK__" in log_clean:
-                _ok("Package installation completed")
+            if not deb_files:
+                _warn(f"No .deb files found in {pkg_dir}")
+                _warn("Upload packages via Config → Packages before onboarding air-gapped agents")
             else:
-                _warn("apt-get returned non-zero exit — log:")
-                for line in log_clean.splitlines():
-                    line = line.strip()
-                    if line and "__APT" not in line and "@" not in line:
-                        _warn(line[:120])
+                _info(f"Found {len(deb_files)} package(s): {', '.join(deb_files)}")
+                remote_tmp = "/tmp/nettest_packages"
+                _run(conn, f"mkdir -p {remote_tmp}")
 
-            # Verify each newly installed package
-            for tool, pkg in [("iperf3","iperf3"),("mtr","mtr-tiny"),("ping","iputils-ping"),("traceroute","traceroute")]:
-                if pkg in pkgs_needed:
-                    result = _run(conn,
+                # Open SFTP channel over the existing admin SSH connection
+                # netmiko's remote_conn is a paramiko Channel; get Transport from it
+                try:
+                    import paramiko
+                    transport = conn.remote_conn.get_transport()
+                    sftp = paramiko.SFTPClient.from_transport(transport)
+                except Exception:
+                    # Fallback: try remote_conn directly as Transport
+                    try:
+                        transport = conn.remote_conn
+                        sftp = paramiko.SFTPClient.from_transport(transport)
+                    except Exception as e:
+                        _warn(f"Could not open SFTP channel: {e}")
+                        sftp = None
+
+                for deb in deb_files:
+                    local_path = os.path.join(pkg_dir, deb)
+                    _info(f"  Copying {deb} to agent...")
+                    if sftp is None:
+                        _warn(f"  Skipping {deb} — no SFTP channel")
+                        continue
+                    try:
+                        sftp.put(local_path, f"{remote_tmp}/{deb}")
+                        _ok(f"  {deb} copied")
+                    except Exception as e:
+                        _warn(f"  SFTP error for {deb}: {e}")
+
+                if sftp:
+                    sftp.close()
+
+                # Air-gapped dpkg install — in strict dependency order:
+                # libsctp1 → libiperf0 → iperf3 → everything else
+                # No log file — output captured directly by netmiko to avoid
+                # permission issues with root-owned log files from prior attempts.
+                _info("Installing packages with dpkg...")
+
+                install_steps = [
+                    ("libsctp1",  f"{remote_tmp}/libsctp1*.deb"),
+                    ("libiperf0", f"{remote_tmp}/libiperf0*.deb"),
+                    ("iperf3",    f"{remote_tmp}/iperf3_*.deb"),
+                    ("all",       f"{remote_tmp}/*.deb"),
+                ]
+
+                for label, glob in install_steps:
+                    _info(f"  Installing {label}...")
+                    out = _run(conn,
+                        f"echo '{admin_pass}' | sudo -S bash -c "
+                        f"'DEBIAN_FRONTEND=noninteractive "
+                        f"DEBCONF_NONINTERACTIVE_SEEN=true "
+                        f"dpkg -i {glob} 2>&1'",
+                        timeout=60)
+                    out_clean = _strip_ansi(out)
+                    for line in out_clean.splitlines():
+                        line = line.strip()
+                        if line and "@" not in line and "3008" not in line:
+                            if "error" in line.lower() or "depend" in line.lower():
+                                _warn(line[:120])
+
+                # Verify each tool — fail onboarding if any missing
+                pkg_failures = []
+                for tool, pkg in REQUIRED_TOOLS:
+                    chk = _run(conn,
                         f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
                         f"|| echo NOT_INSTALLED")
-                    if "install ok installed" in result:
-                        _ok(f"{tool} installed successfully")
+                    if "install ok installed" in chk:
+                        _ok(f"  {tool} installed")
                     else:
-                        _warn(f"{tool} still not found — run manually: sudo apt install {pkg}")
+                        _warn(f"  {tool} NOT installed — ensure {pkg}_*.deb "
+                              f"and all its dependencies are staged")
+                        pkg_failures.append(pkg)
+
+                if pkg_failures:
+                    _err(f"Package installation failed for: {', '.join(pkg_failures)}")
+                    _err("Upload missing packages via Config → Packages and retry onboarding")
+                    raise RuntimeError(
+                        f"Air-gapped install failed — missing packages: "
+                        f"{', '.join(pkg_failures)}"
+                    )
+                else:
+                    _ok("All packages installed successfully")
+
+                _run(conn, f"echo '{admin_pass}' | sudo -S rm -rf {remote_tmp} 2>/dev/null; rm -rf {remote_tmp} 2>/dev/null; true")
+
+                # Verify each tool was actually installed
+                for tool, pkg in REQUIRED_TOOLS:
+                    chk = _run(conn,
+                        f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null || echo NOT_INSTALLED")
+                    if "install ok installed" in chk:
+                        _ok(f"  {tool} installed")
+                    else:
+                        _warn(f"  {tool} not installed — stage {pkg}_*.deb and its dependencies")
+
+                _run(conn, f"echo '{admin_pass}' | sudo -S rm -rf {remote_tmp} 2>/dev/null; rm -rf {remote_tmp} 2>/dev/null; true")
         else:
-            _ok("All required tools already present")
+            _step(2, TOTAL_STEPS, "Installing required packages via apt...")
+            _info("Checking which packages are needed...")
+            pkgs_needed = []
+            for tool, pkg in REQUIRED_TOOLS:
+                result = _run(conn,
+                    f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
+                    f"|| echo NOT_INSTALLED")
+                if "install ok installed" in result:
+                    _ok(f"{tool} already installed")
+                else:
+                    _info(f"{tool} not installed — will install")
+                    pkgs_needed.append(pkg)
+
+            if pkgs_needed:
+                _info(f"Installing: {' '.join(pkgs_needed)}")
+                pkgs_str = ' '.join(pkgs_needed)
+                install_cmd = (
+                    f"sudo DEBIAN_FRONTEND=noninteractive "
+                    f"DEBCONF_NONINTERACTIVE_SEEN=true "
+                    f"apt-get install -y -o Dpkg::Options::='--force-confdef' "
+                    f"-o Dpkg::Options::='--force-confold' "
+                    f"{pkgs_str} "
+                    f"> /tmp/nettest_apt.log 2>&1 && echo __APT_OK__ || echo __APT_FAIL__"
+                )
+                result = _run(conn, install_cmd, timeout=180)
+                log_content = _run(conn, "cat /tmp/nettest_apt.log 2>/dev/null | tail -8")
+                log_clean = _strip_ansi(log_content.strip())
+                if "__APT_OK__" in result or "__APT_OK__" in log_clean:
+                    _ok("Package installation completed")
+                else:
+                    _warn("apt-get returned non-zero exit — log:")
+                    for line in log_clean.splitlines():
+                        line = line.strip()
+                        if line and "__APT" not in line and "@" not in line:
+                            _warn(line[:120])
+                for tool, pkg in REQUIRED_TOOLS:
+                    if pkg in pkgs_needed:
+                        result = _run(conn,
+                            f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
+                            f"|| echo NOT_INSTALLED")
+                        if "install ok installed" in result:
+                            _ok(f"{tool} installed successfully")
+                        else:
+                            _warn(f"{tool} still not found — run manually: sudo apt install {pkg}")
+            else:
+                _ok("All required tools already present")
 
         # ── Step 3: Create nettest user ────────────────────
         _step(3, TOTAL_STEPS, f"Creating user '{nettest_user}'...")
@@ -332,7 +445,8 @@ def onboard_agent(config_path: str,
         _step(6, TOTAL_STEPS, "Configuring sudoers...")
         sudoers_line = (
             f"{nettest_user} ALL=(ALL) NOPASSWD: "
-            f"/usr/bin/iperf3, /usr/bin/mtr, /usr/bin/pkill, /usr/bin/ping"
+            f"/usr/bin/iperf3, /usr/bin/mtr, /usr/bin/pkill, /usr/bin/ping, "
+            f"/usr/bin/traceroute, /usr/bin/fuser, /usr/bin/dpkg"
         )
         _sudo(conn,
               f"bash -c \"echo '{sudoers_line}' > /etc/sudoers.d/nettest\"",
@@ -414,12 +528,15 @@ def onboard_agent(config_path: str,
             with open(config_path, "r") as f:
                 raw = yaml.safe_load(f)
 
-            raw["agents"].append({
-                "id":    agent_id,
-                "label": agent_label,
-                "host":  agent_ip,
-                "type":  agent_type,
-            })
+            entry = {
+                "id":           agent_id,
+                "label":        agent_label,
+                "host_mgmt_ip": agent_ip,
+                "type":         agent_type,
+            }
+            if agent_test_ip:
+                entry["host_test_ip"] = agent_test_ip
+            raw["agents"].append(entry)
 
             with open(config_path, "w") as f:
                 yaml.dump(raw, f, default_flow_style=False,
