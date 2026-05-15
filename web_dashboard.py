@@ -97,9 +97,11 @@ def login_required(f):
 
 # ── Job tracking ───────────────────────────────────────────
 _jobs: dict      = {}
-_jobs_lock       = threading.Lock()
-_job_logs: dict  = {}
-_job_logs_lock   = threading.Lock()
+_jobs_lock           = threading.Lock()
+_job_logs: dict      = {}
+_job_logs_lock       = threading.Lock()
+_job_log_history: dict = {}   # job_id -> list of log line strings (last 500)
+_MAX_HISTORY_JOBS    = 20     # evict oldest jobs when over this limit
 
 
 # ── Log handler that feeds the SSE queue ──────────────────
@@ -114,11 +116,15 @@ class JobLogHandler(logging.Handler):
         ))
 
     def emit(self, record):
+        line = self.format(record)
         with _job_logs_lock:
             q = _job_logs.get(self.job_id)
+            hist = _job_log_history.setdefault(self.job_id, [])
+            if len(hist) < 500:
+                hist.append(line)
         if q:
             try:
-                q.put_nowait(self.format(record))
+                q.put_nowait(line)
             except Exception:
                 pass
 
@@ -355,6 +361,9 @@ def api_onboard():
 
     with _job_logs_lock:
         _job_logs[job_id] = log_q
+        if len(_job_log_history) >= _MAX_HISTORY_JOBS:
+            oldest = sorted(_job_log_history.keys())[0]
+            del _job_log_history[oldest]
     with _jobs_lock:
         _jobs[job_id] = {
             "job_id":   job_id,
@@ -481,6 +490,9 @@ def api_packages_push(agent_id: str):
 
     with _job_logs_lock:
         _job_logs[job_id] = log_q
+        if len(_job_log_history) >= _MAX_HISTORY_JOBS:
+            oldest = sorted(_job_log_history.keys())[0]
+            del _job_log_history[oldest]
     with _jobs_lock:
         _jobs[job_id] = {
             "job_id":   job_id,
@@ -685,6 +697,24 @@ def api_job_status(job_id: str):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job)
+
+
+@app.route("/api/jobs/<job_id>/log")
+@login_required
+def api_job_log(job_id: str):
+    """Return accumulated log lines for a completed or running job."""
+    with _job_logs_lock:
+        lines = list(_job_log_history.get(job_id, []))
+    with _jobs_lock:
+        job = dict(_jobs.get(job_id, {}))
+    status = job.get("status", "")
+    err    = job.get("error") or ""
+    if status in ("done", "error") and lines:
+        if status == "done" and not err:
+            lines.append("✓ Test completed successfully")
+        elif err:
+            lines.append("✗ Finished with error: " + err)
+    return jsonify({"job_id": job_id, "lines": lines, "job": job})
 
 
 @app.route("/api/jobs/<job_id>/stream")

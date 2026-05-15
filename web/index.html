@@ -793,6 +793,10 @@ function openLogStream(jobId, label) {
   body.innerHTML = `<div class="log-line log-dim">── ${label} ──</div>`;
   status.textContent = '⟳ running';
   status.className = 'log-badge log-badge-running';
+  sessionStorage.removeItem('nettest.log.' + jobId);
+  sessionStorage.setItem('nettest.activeLogJob', jobId);
+  sessionStorage.setItem('nettest.activeLogLabel', label);
+  localStorage.setItem('nettest.activeLogLabel', label);
 
   // Scroll log to bottom helper
   const scrollBottom = () => { body.scrollTop = body.scrollHeight; };
@@ -808,9 +812,11 @@ function openLogStream(jobId, label) {
         if (job && job.status === 'done') {
           status.textContent = '✓ done';
           status.className = 'log-badge log-badge-done';
+          sessionStorage.setItem('nettest.logStatus.' + jobId, 'done');
         } else if (job && job.status === 'error') {
           status.textContent = '✗ error';
           status.className = 'log-badge log-badge-error';
+          sessionStorage.setItem('nettest.logStatus.' + jobId, 'error');
         } else {
           status.textContent = 'idle';
           status.className = 'log-badge log-badge-idle';
@@ -838,6 +844,7 @@ function openLogStream(jobId, label) {
       cls = 'log-dim';
 
     appendLog(text, cls);
+    persistLogLine(jobId, text, cls);
     scrollBottom();
   };
 
@@ -860,6 +867,78 @@ async function with_job_status(jobId, cb) {
   try { cb(await api('/api/jobs/' + jobId)); } catch(e) {}
 }
 
+function persistLogLine(jobId, text, cls) {
+  try {
+    const key  = 'nettest.log.' + jobId;
+    const data = JSON.parse(sessionStorage.getItem(key) || '[]');
+    data.push({text, cls});
+    if (data.length > 500) data.shift();
+    sessionStorage.setItem(key, JSON.stringify(data));
+  } catch(e) {}
+}
+
+async function restoreLog() {
+  // Check sessionStorage first, fall back to localStorage (set by openLogStream)
+  const jobId = sessionStorage.getItem('nettest.activeLogJob')
+             || localStorage.getItem('nettest.activeLogJob');
+  if (!jobId) return;
+  const label = sessionStorage.getItem('nettest.activeLogLabel')
+             || localStorage.getItem('nettest.activeLogLabel')
+             || jobId;
+  // Sync to sessionStorage so subsequent checks find it
+  sessionStorage.setItem('nettest.activeLogJob', jobId);
+  const status = document.getElementById('log-status');
+  const body   = document.getElementById('log-body');
+
+  // Fast path: restore from sessionStorage
+  try {
+    const key  = 'nettest.log.' + jobId;
+    const data = JSON.parse(sessionStorage.getItem(key) || '[]');
+    if (data.length > 0) {
+      body.innerHTML = '';
+      data.forEach(({text, cls}) => appendLog(text, cls));
+      body.scrollTop = body.scrollHeight;
+      const saved = sessionStorage.getItem('nettest.logStatus.' + jobId);
+      if (saved === 'done') {
+        status.textContent = '✓ done'; status.className = 'log-badge log-badge-done';
+      } else if (saved === 'error') {
+        status.textContent = '✗ error'; status.className = 'log-badge log-badge-error';
+      } else {
+        openLogStream(jobId, label);
+      }
+      return;
+    }
+  } catch(e) {}
+
+  // Fallback: fetch from server
+  try {
+    const data = await api('/api/jobs/' + jobId + '/log');
+    if (data.lines && data.lines.length > 0) {
+      body.innerHTML = '';
+      data.lines.forEach(line => {
+        let cls = 'log-info';
+        if (line.includes('[ERROR]') || line.includes('✗') || line.includes('FAILED')) cls = 'log-error';
+        else if (line.includes('[WARNING]') || line.includes('Timeout')) cls = 'log-warn';
+        else if (line.includes('✓') || line.includes('successfully')) cls = 'log-ok';
+        else if (line.startsWith('──') || line === '') cls = 'log-dim';
+        appendLog(line, cls);
+        persistLogLine(jobId, line, cls);
+      });
+      body.scrollTop = body.scrollHeight;
+      const s = data.job?.status;
+      if (s === 'done') {
+        status.textContent = '✓ done'; status.className = 'log-badge log-badge-done';
+        sessionStorage.setItem('nettest.logStatus.' + jobId, 'done');
+      } else if (s === 'error') {
+        status.textContent = '✗ error'; status.className = 'log-badge log-badge-error';
+        sessionStorage.setItem('nettest.logStatus.' + jobId, 'error');
+      } else if (s === 'running') {
+        openLogStream(jobId, label);
+      }
+    }
+  } catch(e) {}
+}
+
 function appendLog(text, cls) {
   const body = document.getElementById('log-body');
   const div  = document.createElement('div');
@@ -873,6 +952,14 @@ function appendLog(text, cls) {
 function clearLog() {
   if (_activeStream) { _activeStream.close(); _activeStream = null; }
   localStorage.removeItem('nettest.activeLogJob');
+  localStorage.removeItem('nettest.activeLogLabel');
+  const jobId = sessionStorage.getItem('nettest.activeLogJob');
+  if (jobId) {
+    sessionStorage.removeItem('nettest.log.' + jobId);
+    sessionStorage.removeItem('nettest.logStatus.' + jobId);
+  }
+  sessionStorage.removeItem('nettest.activeLogJob');
+  sessionStorage.removeItem('nettest.activeLogLabel');
   document.getElementById('log-body').innerHTML =
     '<div class="log-line log-dim">Cleared. Trigger a test to see live output...</div>';
   document.getElementById('log-status').textContent = 'idle';
@@ -949,6 +1036,7 @@ async function boot() {
   renderNav();
   initCharts();
   await restoreJobs();
+  await restoreLog();
   await refresh();
   refreshTimer  = setInterval(refresh, REFRESH_MS);
   jobPollTimer  = setInterval(pollJobs, JOB_POLL_MS);
