@@ -30,10 +30,12 @@ sep()  { echo -e "${CYAN}━━━━━━━━━━━━━━━━━━�
 # ── Argument parsing ───────────────────────────────────────
 UPGRADE=false
 SHOW_KEY=false
+SETUP_HTTPS=false
 for arg in "$@"; do
   case "$arg" in
-    --upgrade)  UPGRADE=true  ;;
-    --show-key) SHOW_KEY=true ;;
+    --upgrade)     UPGRADE=true      ;;
+    --show-key)    SHOW_KEY=true     ;;
+    --setup-https) SETUP_HTTPS=true  ;;
   esac
 done
 
@@ -82,7 +84,11 @@ apt-get install -y -q \
   rsync \
   iperf3 \
   mtr-tiny \
-  iputils-ping
+  iputils-ping \
+  traceroute \
+  psmisc \
+  nginx \
+  openssl
 ok "System packages ready"
 
 # ── Create user and group ──────────────────────────────────
@@ -127,6 +133,7 @@ install -d -o "${APP_USER}" -g "${APP_GROUP}" \
   "${APP_DIR}/logs" \
   "${APP_DIR}/results" \
   "${APP_DIR}/packages"
+install -d -m 755 /opt/nettest/ssl
 ok "Runtime directories ready"
 
 # ── Config file ────────────────────────────────────────────
@@ -190,12 +197,77 @@ cat > "${SUDOERS_FILE}" << SUDOERS
 # Allow nettest service user to restart the scheduler
 # (triggered automatically when config is saved from the web UI)
 # dpkg is needed for air-gapped agent package installation
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/dpkg
+${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx
 SUDOERS
 chmod 440 "${SUDOERS_FILE}"
 visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \
   ok "Sudoers entry for scheduler restart configured" || \
   warn "Sudoers validation failed — check ${SUDOERS_FILE}"
+
+# ── nginx reverse proxy setup ──────────────────────────────
+info "Configuring nginx reverse proxy..."
+NGINX_CONF="/etc/nginx/sites-available/nettest"
+cat > "${NGINX_CONF}" << 'NGINXCONF'
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name _;
+
+    ssl_certificate     /opt/nettest/ssl/nettest.crt;
+    ssl_certificate_key /opt/nettest/ssl/nettest.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    proxy_buffering           off;
+    proxy_cache               off;
+    chunked_transfer_encoding on;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+        proxy_read_timeout 300s;
+    }
+}
+NGINXCONF
+ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/nettest
+rm -f /etc/nginx/sites-enabled/default
+
+# Generate self-signed cert if none exists
+if [[ ! -f /opt/nettest/ssl/nettest.crt ]]; then
+  SERVER_IP=$(hostname -I | awk '{print $1}')
+  openssl req -x509 -nodes -newkey rsa:4096 \
+    -keyout /opt/nettest/ssl/nettest.key \
+    -out    /opt/nettest/ssl/nettest.crt \
+    -days 3650 \
+    -subj "/CN=${SERVER_IP}/O=NetTest" \
+    -addext "subjectAltName=IP:${SERVER_IP}" \
+    2>/dev/null
+  chmod 600 /opt/nettest/ssl/nettest.key
+  chmod 644 /opt/nettest/ssl/nettest.crt
+  ok "Self-signed certificate generated for ${SERVER_IP}"
+else
+  info "SSL certificate already exists — keeping existing cert"
+fi
+
+if nginx -t 2>/dev/null; then
+  systemctl enable nginx
+  systemctl restart nginx
+  ok "nginx configured and started"
+else
+  warn "nginx config test failed — check /etc/nginx/sites-available/nettest"
+fi
 
 # ── Systemd service files ──────────────────────────────────
 info "Installing systemd services..."
@@ -239,13 +311,18 @@ if [[ "$UPGRADE" == "false" ]]; then
   echo "     sudo systemctl status nettest nettest-web"
   echo ""
   echo "  4. Open the dashboard:"
-  echo "     http://<this-server-ip>:8080"
+  echo "     http://<this-server-ip>:8080    (direct, always available)"
+  echo "     https://<this-server-ip>        (HTTPS via nginx)"
+  echo ""
+  echo "     Note: HTTPS uses a self-signed certificate."
+  echo "     Your browser will show a security warning — this is expected."
+  echo "     Add an exception or configure a real cert via Config → HTTPS."
   echo ""
   echo "  5. Air-gapped agents only:"
   echo "     Upload .deb packages via Config → Packages in the web UI"
   echo "     before onboarding any air-gapped agents."
-  echo "     Required packages: iperf3, mtr-tiny, iputils-ping,"
-  echo "     traceroute, psmisc (fuser)"
+  echo "     Required packages: iperf3, libiperf0, libsctp1, mtr-tiny,"
+  echo "     iputils-ping, traceroute, psmisc"
   echo ""
 fi
 

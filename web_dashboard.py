@@ -102,6 +102,8 @@ _job_logs: dict      = {}
 _job_logs_lock       = threading.Lock()
 _job_log_history: dict = {}   # job_id -> list of log line strings (last 500)
 _MAX_HISTORY_JOBS    = 20     # evict oldest jobs when over this limit
+_import_cache: dict  = {}     # stores parsed import data server-side (avoids session size limit)
+_import_cache_lock   = threading.Lock()
 
 
 # ── Log handler that feeds the SSE queue ──────────────────
@@ -687,6 +689,585 @@ def api_ssh_push_key():
 
     threading.Thread(target=run_push, daemon=True, name="push-key").start()
     return jsonify({"job_id": job_id, "status": "queued"})
+
+
+# ── Export / Import API ───────────────────────────────────
+
+@app.route("/api/export", methods=["POST"])
+@login_required
+def api_export():
+    """Export config sections as a .tar.gz bundle."""
+    import tarfile, io, copy
+    body    = request.get_json(silent=True) or {}
+    include = body.get("include", {})
+
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+
+    # Build config dict to export
+    raw = {}
+
+    # Always include agents and paths
+    raw["agents"] = [
+        {k: v for k, v in {
+            "id":           a.id,
+            "label":        a.label,
+            "host_mgmt_ip": a.host_mgmt_ip,
+            "host_test_ip": a.host_test_ip,
+            "type":         a.type,
+            **({"username": a.username} if a.username else {}),
+            **({"password": a.password} if a.password else {}),
+            **({"key_file": a.key_file} if a.key_file else {}),
+            **({"port":     a.port}     if a.port     else {}),
+        }.items() if v is not None}
+        for a in _config.agents
+    ]
+    raw["paths"] = [
+        {
+            "id":          p.id,
+            "label":       p.label,
+            "source":      p.source,
+            "destination": p.destination,
+            "hops":        p.hops,
+            "tests":       p.tests,
+        }
+        for p in _config.paths
+    ]
+
+    if include.get("controller"):
+        raw["controller"] = {
+            "name":        _config.name,
+            "results_dir": _config.results_dir,
+            "log_dir":     _config.log_dir,
+            "log_level":   _config.log_level,
+        }
+
+    if include.get("schedule"):
+        s = _config.schedule
+        raw["schedule"] = {
+            "full_test_interval_minutes":    s.full_test_interval_minutes,
+            "latency_only_interval_minutes": s.latency_only_interval_minutes,
+            "business_hours_only":           s.business_hours_only,
+            "business_hours_start":          s.business_hours_start,
+            "business_hours_end":            s.business_hours_end,
+            "timezone":                      s.timezone,
+            "stagger_seconds":               s.stagger_seconds,
+        }
+
+    if include.get("test_params"):
+        tp = _config.test_params
+        from dataclasses import asdict
+        raw["test_params"] = asdict(tp)
+
+    if include.get("ssh_credentials"):
+        sd = _config.ssh_defaults
+        raw["ssh_defaults"] = {
+            "username": sd.username,
+            "password": sd.password,
+            "port":     sd.port,
+            "timeout":  sd.timeout,
+            "key_file": sd.key_file,
+        }
+
+    if include.get("auth"):
+        a = _config.auth
+        raw["auth"] = {
+            "enabled":                    a.enabled,
+            "radius_server":              a.radius_server,
+            "radius_port":                a.radius_port,
+            "radius_secret":              a.radius_secret,
+            "radius_timeout":             a.radius_timeout,
+            "session_secret":             a.session_secret,
+            "session_lifetime_minutes":   a.session_lifetime_minutes,
+            "login_max_attempts":         a.login_max_attempts,
+            "login_window_seconds":       a.login_window_seconds,
+            "login_lockout_seconds":      a.login_lockout_seconds,
+            "cookie_secure":              a.cookie_secure,
+        }
+
+    # Build tar.gz in memory
+    import yaml as _yaml
+    buf = io.BytesIO()
+    ts  = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    prefix = f"nettest-export-{ts}"
+
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        # config.yaml
+        config_bytes = _yaml.dump(raw, default_flow_style=False,
+                                   allow_unicode=True).encode("utf-8")
+        ti = tarfile.TarInfo(name=f"{prefix}/config.yaml")
+        ti.size = len(config_bytes)
+        tar.addfile(ti, io.BytesIO(config_bytes))
+
+        # SSH keys
+        if include.get("ssh_keys"):
+            key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+            for fpath, arcname in [
+                (key_file,          f"{prefix}/nettest_key"),
+                (key_file + ".pub", f"{prefix}/nettest_key.pub"),
+            ]:
+                if os.path.exists(fpath):
+                    tar.add(fpath, arcname=arcname)
+
+        # Readme
+        sensitive = []
+        if include.get("ssh_credentials"): sensitive.append("SSH credentials")
+        if include.get("ssh_keys"):        sensitive.append("SSH private key")
+        if include.get("auth"):            sensitive.append("RADIUS/auth config")
+        readme = f"""NetTest Configuration Export
+Generated: {datetime.now(timezone.utc).isoformat()}
+
+Contents:
+- config.yaml  (agents, paths{", controller" if include.get("controller") else ""}{", schedule" if include.get("schedule") else ""}{", test params" if include.get("test_params") else ""}{", SSH credentials" if include.get("ssh_credentials") else ""}{", auth" if include.get("auth") else ""})
+{"- nettest_key / nettest_key.pub" if include.get("ssh_keys") else ""}
+
+{"⚠ SENSITIVE: This bundle contains " + ", ".join(sensitive) + ". Keep it secure." if sensitive else ""}
+
+To import: Config → Export/Import → Import Bundle
+"""
+        readme_bytes = readme.encode("utf-8")
+        ti = tarfile.TarInfo(name=f"{prefix}/README.txt")
+        ti.size = len(readme_bytes)
+        tar.addfile(ti, io.BytesIO(readme_bytes))
+
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        mimetype="application/gzip",
+        headers={"Content-Disposition": f"attachment; filename=nettest-export-{ts}.tar.gz"}
+    )
+
+
+@app.route("/api/import/preview", methods=["POST"])
+@login_required
+def api_import_preview():
+    """Parse an uploaded export bundle and return a diff preview."""
+    import tarfile, io
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    f = request.files["file"]
+    try:
+        buf = io.BytesIO(f.read())
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            config_member = next(
+                (m for m in tar.getmembers() if m.name.endswith("config.yaml")), None
+            )
+            if not config_member:
+                return jsonify({"error": "No config.yaml found in bundle"}), 400
+
+            import yaml as _yaml
+            raw = _yaml.safe_load(tar.extractfile(config_member).read())
+
+            # Check for SSH keys
+            has_privkey = any(
+                m.name.endswith("nettest_key") and not m.name.endswith(".pub")
+                for m in tar.getmembers()
+            )
+            has_pubkey = any(m.name.endswith("nettest_key.pub") for m in tar.getmembers())
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse bundle: {e}"}), 400
+
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+
+    # Build diff
+    existing_agent_ids = {a.id for a in _config.agents}
+    existing_path_ids  = {p.id for p in _config.paths}
+
+    imported_agents = raw.get("agents", [])
+    imported_paths  = raw.get("paths",  [])
+
+    agent_diff = []
+    for a in imported_agents:
+        aid = a.get("id", "")
+        agent_diff.append({
+            "id":     aid,
+            "label":  a.get("label", aid),
+            "host":   a.get("host_mgmt_ip", ""),
+            "type":   a.get("type", "endpoint"),
+            "status": "existing" if aid in existing_agent_ids else "new",
+        })
+
+    path_diff = []
+    for p in imported_paths:
+        pid = p.get("id", "")
+        path_diff.append({
+            "id":     pid,
+            "label":  p.get("label", pid),
+            "source": p.get("source", ""),
+            "dest":   p.get("destination", ""),
+            "status": "existing" if pid in existing_path_ids else "new",
+        })
+
+    sections = {
+        "agents":           bool(imported_agents),
+        "paths":            bool(imported_paths),
+        "controller":       "controller"   in raw,
+        "schedule":         "schedule"     in raw,
+        "test_params":      "test_params"  in raw,
+        "ssh_credentials":  "ssh_defaults" in raw,
+        "ssh_keys":         has_privkey or has_pubkey,
+        "auth":             "auth"         in raw,
+    }
+
+    # Store raw server-side (session cookie too small for large configs)
+    import uuid as _uuid
+    import_id = str(_uuid.uuid4())
+    with _import_cache_lock:
+        _import_cache[import_id] = {"raw": raw, "has_keys": has_privkey}
+        # Evict old entries (keep last 10)
+        if len(_import_cache) > 10:
+            oldest = sorted(_import_cache.keys())[0]
+            del _import_cache[oldest]
+    session["_import_id"] = import_id
+
+    return jsonify({
+        "sections":    sections,
+        "agent_diff":  agent_diff,
+        "path_diff":   path_diff,
+        "agent_new":   sum(1 for a in agent_diff if a["status"] == "new"),
+        "agent_exist": sum(1 for a in agent_diff if a["status"] == "existing"),
+        "path_new":    sum(1 for p in path_diff  if p["status"] == "new"),
+        "path_exist":  sum(1 for p in path_diff  if p["status"] == "existing"),
+    })
+
+
+@app.route("/api/import/confirm", methods=["POST"])
+@login_required
+def api_import_confirm():
+    """Apply the previewed import with selected options."""
+    import yaml as _yaml
+    body    = request.get_json(silent=True) or {}
+    mode    = body.get("mode", "merge")      # merge | replace
+    include = body.get("include", {})
+
+    import_id = session.get("_import_id")
+    if not import_id:
+        return jsonify({"error": "No import preview found — upload the bundle first"}), 400
+    with _import_cache_lock:
+        cache = _import_cache.get(import_id)
+    if not cache:
+        return jsonify({"error": "Import session expired — please upload the bundle again"}), 400
+    raw = cache["raw"]
+
+    # Load current config file
+    with open(_config_path, "r") as fh:
+        current = _yaml.safe_load(fh)
+
+    # Apply agents
+    if include.get("agents") and "agents" in raw:
+        if mode == "replace":
+            current["agents"] = raw["agents"]
+        else:  # merge
+            existing_ids = {a["id"] for a in current.get("agents", [])}
+            for a in raw["agents"]:
+                if a["id"] not in existing_ids:
+                    current.setdefault("agents", []).append(a)
+
+    # Apply paths
+    if include.get("paths") and "paths" in raw:
+        if mode == "replace":
+            current["paths"] = raw["paths"]
+        else:
+            existing_ids = {p["id"] for p in current.get("paths", [])}
+            for p in raw["paths"]:
+                if p["id"] not in existing_ids:
+                    current.setdefault("paths", []).append(p)
+
+    # Apply other sections (always replace)
+    for section, key in [
+        ("controller",      "controller"),
+        ("schedule",        "schedule"),
+        ("test_params",     "test_params"),
+        ("ssh_credentials", "ssh_defaults"),
+        ("auth",            "auth"),
+    ]:
+        if include.get(section) and key in raw:
+            current[key] = raw[key]
+
+    # Write config
+    with open(_config_path, "w") as fh:
+        _yaml.dump(current, fh, default_flow_style=False, allow_unicode=True)
+
+    # Apply SSH keys if requested
+    if include.get("ssh_keys") and cache.get("has_keys"):
+        # Keys were in the bundle — re-extract from the uploaded file
+        # They were stored in temp session; user needs to re-upload
+        # (session doesn't store binary) — handled by client re-submitting file
+        pass
+
+    # Reload config in web process immediately
+    global _config, _tester
+    from core.config_loader import load_config
+    from core.path_tester   import PathTester
+    try:
+        _config = load_config(_config_path)
+        _tester = PathTester(_config)
+    except Exception as e:
+        return jsonify({"error": f"Config saved but failed to reload: {e}"}), 500
+
+    # Restart scheduler (best-effort — don't fail import if this fails)
+    try:
+        import subprocess
+        subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+    # Also signal web process to reload by touching a reload sentinel
+    # (ensures dashboard reflects new config even if scheduler restart fails)
+    try:
+        import signal
+        os.kill(os.getpid(), signal.SIGUSR1)
+    except Exception:
+        pass
+
+    with _import_cache_lock:
+        _import_cache.pop(import_id, None)
+    session.pop("_import_id", None)
+
+    return jsonify({"ok": True, "mode": mode})
+
+
+@app.route("/api/import/keys", methods=["POST"])
+@login_required
+def api_import_keys():
+    """Extract and install SSH keys from an uploaded bundle."""
+    import tarfile, io
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    try:
+        buf = io.BytesIO(f.read())
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+            for member in tar.getmembers():
+                if member.name.endswith("nettest_key.pub"):
+                    content = tar.extractfile(member).read()
+                    with open(key_file + ".pub", "wb") as fh: fh.write(content)
+                    os.chmod(key_file + ".pub", 0o644)
+                elif member.name.endswith("nettest_key"):
+                    content = tar.extractfile(member).read()
+                    with open(key_file, "wb") as fh: fh.write(content)
+                    os.chmod(key_file, 0o600)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
+# ── HTTPS / nginx Management API ─────────────────────────
+
+SSL_DIR  = "/opt/nettest/ssl"
+SSL_CERT = "/opt/nettest/ssl/nettest.crt"
+SSL_KEY  = "/opt/nettest/ssl/nettest.key"
+NGINX_CONF = "/etc/nginx/sites-available/nettest"
+
+
+def _nginx_running() -> bool:
+    try:
+        import subprocess
+        r = subprocess.run(["systemctl", "is-active", "nginx"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def _cert_info(cert_path: str) -> dict:
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["openssl", "x509", "-in", cert_path, "-noout",
+             "-subject", "-dates", "-fingerprint", "-sha256"],
+            capture_output=True, text=True, timeout=10
+        )
+        lines = r.stdout.strip().splitlines()
+        info = {}
+        for line in lines:
+            if line.startswith("subject="):
+                info["subject"] = line.split("=", 1)[1].strip()
+            elif line.startswith("notBefore="):
+                info["not_before"] = line.split("=", 1)[1].strip()
+            elif line.startswith("notAfter="):
+                info["not_after"] = line.split("=", 1)[1].strip()
+            elif "Fingerprint=" in line:
+                info["fingerprint"] = line.split("=", 1)[1].strip()
+        return info
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.route("/api/https/status")
+@login_required
+def api_https_status():
+    nginx_ok  = _nginx_running()
+    cert_info = _cert_info(SSL_CERT) if os.path.exists(SSL_CERT) else {}
+    return jsonify({
+        "nginx_running": nginx_ok,
+        "cert_exists":   os.path.exists(SSL_CERT),
+        "nginx_conf":    os.path.exists(NGINX_CONF),
+        "cert_info":     cert_info,
+    })
+
+
+@app.route("/api/https/generate", methods=["POST"])
+@login_required
+def api_https_generate():
+    """Generate a new self-signed certificate."""
+    import subprocess
+    body       = request.get_json(silent=True) or {}
+    cn         = body.get("cn", "nettest").strip()
+    org        = body.get("org", "NetTest").strip()
+    days       = int(body.get("days", 3650))
+    san_ips    = body.get("san_ips", [])   # list of IP strings
+
+    os.makedirs(SSL_DIR, exist_ok=True)
+
+    san_str = ",".join(f"IP:{ip}" for ip in san_ips if ip)
+    if not san_str:
+        san_str = f"IP:{cn}" if cn.replace(".", "").isdigit() else f"DNS:{cn}"
+
+    cmd = [
+        "openssl", "req", "-x509", "-nodes", "-newkey", "rsa:4096",
+        "-keyout", SSL_KEY, "-out", SSL_CERT,
+        "-days", str(days),
+        "-subj", f"/CN={cn}/O={org}",
+        "-addext", f"subjectAltName={san_str}",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        return jsonify({"error": result.stderr}), 500
+
+    os.chmod(SSL_KEY, 0o600)
+    os.chmod(SSL_CERT, 0o644)
+
+    # Write nginx config if not present
+    _write_nginx_conf()
+
+    # Reload nginx
+    reload = subprocess.run(
+        ["sudo", "systemctl", "reload-or-restart", "nginx"],
+        capture_output=True, text=True, timeout=15
+    )
+
+    return jsonify({
+        "ok":        True,
+        "cert_info": _cert_info(SSL_CERT),
+        "nginx_ok":  reload.returncode == 0,
+    })
+
+
+@app.route("/api/https/upload", methods=["POST"])
+@login_required
+def api_https_upload():
+    """Upload a certificate and key."""
+    import subprocess
+    if "cert" not in request.files or "key" not in request.files:
+        return jsonify({"error": "Both cert and key files are required"}), 400
+
+    cert_content = request.files["cert"].read().decode("utf-8")
+    key_content  = request.files["key"].read().decode("utf-8")
+
+    if "BEGIN CERTIFICATE" not in cert_content:
+        return jsonify({"error": "Invalid certificate format"}), 400
+    if "BEGIN" not in key_content:
+        return jsonify({"error": "Invalid key format"}), 400
+
+    os.makedirs(SSL_DIR, exist_ok=True)
+    with open(SSL_CERT, "w") as f: f.write(cert_content)
+    with open(SSL_KEY,  "w") as f: f.write(key_content)
+    os.chmod(SSL_KEY,  0o600)
+    os.chmod(SSL_CERT, 0o644)
+
+    # Verify cert and key match
+    r_cert = subprocess.run(["openssl", "x509", "-modulus", "-noout", "-in", SSL_CERT],
+                             capture_output=True, text=True)
+    r_key  = subprocess.run(["openssl", "rsa",  "-modulus", "-noout", "-in", SSL_KEY],
+                             capture_output=True, text=True)
+    if r_cert.returncode != 0 or r_key.returncode != 0:
+        return jsonify({"error": "Could not verify certificate/key"}), 400
+    if r_cert.stdout.strip() != r_key.stdout.strip():
+        return jsonify({"error": "Certificate and key do not match"}), 400
+
+    _write_nginx_conf()
+    reload = subprocess.run(
+        ["sudo", "systemctl", "reload-or-restart", "nginx"],
+        capture_output=True, text=True, timeout=15
+    )
+    return jsonify({
+        "ok":        True,
+        "cert_info": _cert_info(SSL_CERT),
+        "nginx_ok":  reload.returncode == 0,
+    })
+
+
+@app.route("/api/https/nginx/start", methods=["POST"])
+@login_required
+def api_https_nginx_start():
+    import subprocess
+    _write_nginx_conf()
+    subprocess.run(["sudo", "systemctl", "enable", "nginx"],
+                   capture_output=True, timeout=10)
+    r = subprocess.run(["sudo", "systemctl", "restart", "nginx"],
+                       capture_output=True, text=True, timeout=15)
+    return jsonify({"ok": r.returncode == 0, "output": r.stderr})
+
+
+@app.route("/api/https/nginx/stop", methods=["POST"])
+@login_required
+def api_https_nginx_stop():
+    import subprocess
+    r = subprocess.run(["sudo", "systemctl", "stop", "nginx"],
+                       capture_output=True, text=True, timeout=15)
+    return jsonify({"ok": r.returncode == 0})
+
+
+def _write_nginx_conf():
+    """Write the nginx reverse proxy config if not already present."""
+    conf = """server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name _;
+
+    ssl_certificate     /opt/nettest/ssl/nettest.crt;
+    ssl_certificate_key /opt/nettest/ssl/nettest.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    proxy_buffering           off;
+    proxy_cache               off;
+    chunked_transfer_encoding on;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+        proxy_read_timeout 300s;
+    }
+}
+"""
+    os.makedirs(os.path.dirname(NGINX_CONF), exist_ok=True)
+    with open(NGINX_CONF, "w") as f:
+        f.write(conf)
+    link = "/etc/nginx/sites-enabled/nettest"
+    if not os.path.exists(link):
+        os.symlink(NGINX_CONF, link)
+    default = "/etc/nginx/sites-enabled/default"
+    if os.path.exists(default):
+        os.remove(default)
 
 
 # ── Package management API ────────────────────────────────

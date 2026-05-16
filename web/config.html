@@ -200,6 +200,12 @@ select option{background:var(--bg)}
     <div class="tab" onclick="showSection('packages',this)">
       <span class="tab-icon">📦</span> Packages
     </div>
+    <div class="tab" onclick="showSection('https',this)">
+      <span class="tab-icon">🔒</span> HTTPS
+    </div>
+    <div class="tab" onclick="showSection('exportimport',this)">
+      <span class="tab-icon">⇅</span> Export/Import
+    </div>
   </nav>
 
   <!-- Content -->
@@ -596,6 +602,204 @@ select option{background:var(--bg)}
 
     </div>
 
+
+    <!-- ── HTTPS ── -->
+    <div class="section" id="section-https">
+
+      <!-- Status -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">HTTPS Status</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn" id="https-nginx-toggle" onclick="toggleNginx()"
+                    style="font-size:11px">Loading...</button>
+          </div>
+        </div>
+        <div class="panel-body" id="https-status-body">
+          <div style="color:var(--mt);font-size:11px">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Generate Certificate -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Generate Self-Signed Certificate</span>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Common Name / IP</label>
+            <input type="text" id="https-cn" placeholder="192.168.5.26">
+          </div>
+          <div class="form-row">
+            <label>Organisation</label>
+            <input type="text" id="https-org" placeholder="NetTest" value="NetTest">
+          </div>
+          <div class="form-row">
+            <label>Valid for (days)</label>
+            <input type="number" id="https-days" value="3650" style="width:100px">
+          </div>
+          <div class="form-row">
+            <label>Additional IPs</label>
+            <input type="text" id="https-san" placeholder="192.168.5.26, 10.0.0.1">
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary" onclick="generateCert()">Generate Certificate</button>
+            <span id="https-gen-status" style="font-size:11px;color:var(--mt)"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Upload Certificate -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Upload Certificate</span>
+        </div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Upload your own certificate and private key (e.g. from an internal CA).
+            The certificate and key must match.
+          </p>
+          <div class="form-row">
+            <label>Certificate (.crt / .pem)</label>
+            <input type="file" id="https-cert-file" accept=".crt,.pem,.cer"
+                   style="font-size:11px;color:var(--tx)">
+          </div>
+          <div class="form-row">
+            <label>Private key (.key / .pem)</label>
+            <input type="file" id="https-key-file" accept=".key,.pem"
+                   style="font-size:11px;color:var(--tx)">
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary" onclick="uploadCert()">Upload & Apply</button>
+            <span id="https-upload-status" style="font-size:11px;color:var(--mt)"></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+
+    <!-- ── Export / Import ── -->
+    <div class="section" id="section-exportimport">
+
+      <!-- Export -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Export Configuration</span></div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Select the sections to include in the export bundle (.tar.gz).
+            Agents and Paths are always included.
+          </p>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="exp-controller" checked style="accent-color:var(--cy)">
+              Controller name &amp; paths
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="exp-schedule" checked style="accent-color:var(--cy)">
+              Schedule settings
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="exp-test-params" checked style="accent-color:var(--cy)">
+              Test parameters
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="exp-ssh-creds" style="accent-color:var(--cy)">
+              SSH credentials (user/pass/port)
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="exp-ssh-keys" style="accent-color:var(--cy)">
+              SSH keys (private + public)
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="exp-auth" style="accent-color:var(--cy)">
+              Auth / RADIUS config
+            </label>
+          </div>
+
+          <div id="exp-sensitive-warn" style="display:none;background:#2a1500;
+               border:1px solid #a05000;border-radius:4px;padding:8px 12px;
+               font-size:11px;color:#e09050;margin-bottom:12px">
+            ⚠ Sensitive data selected. Keep this export bundle secure —
+            it contains credentials that provide access to your network.
+          </div>
+
+          <button class="btn btn-primary" onclick="doExport()">⬇ Download Export Bundle</button>
+        </div>
+      </div>
+
+      <!-- Import -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Import Configuration</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Bundle file</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="file" id="imp-file" accept=".tar.gz,.tgz"
+                     style="font-size:11px;color:var(--tx)"
+                     onchange="previewImport(this)">
+              <span id="imp-parse-status" style="font-size:11px;color:var(--mt)"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Import Preview (shown after file selected) -->
+      <div class="panel" id="imp-preview-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Import Preview</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="font-size:11px;color:var(--mt)">Mode:</label>
+            <select id="imp-mode" style="font-size:11px;padding:3px 6px;
+                    background:var(--surf2);border:1px solid var(--bdr);
+                    color:var(--tx);border-radius:4px">
+              <option value="merge">Merge (add new, keep existing)</option>
+              <option value="replace">Replace (overwrite all)</option>
+            </select>
+          </div>
+        </div>
+        <div class="panel-body">
+
+          <!-- Sections available -->
+          <div style="font-size:11px;font-weight:700;color:var(--mt);
+                      text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+            Available sections
+          </div>
+          <div id="imp-sections-grid"
+               style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
+          </div>
+
+          <!-- Agent diff -->
+          <div style="font-size:11px;font-weight:700;color:var(--mt);
+                      text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+            Agents
+          </div>
+          <div id="imp-agent-diff" style="margin-bottom:14px;font-size:11px"></div>
+
+          <!-- Path diff -->
+          <div style="font-size:11px;font-weight:700;color:var(--mt);
+                      text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+            Paths
+          </div>
+          <div id="imp-path-diff" style="margin-bottom:16px;font-size:11px"></div>
+
+          <div id="imp-sensitive-warn" style="display:none;background:#2a1500;
+               border:1px solid #a05000;border-radius:4px;padding:8px 12px;
+               font-size:11px;color:#e09050;margin-bottom:12px">
+            ⚠ This bundle contains sensitive data (SSH keys/credentials/auth).
+            Only import from a trusted source.
+          </div>
+
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary" onclick="confirmImport()">Apply Import</button>
+            <span id="imp-confirm-status" style="font-size:11px;color:var(--mt)"></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
     <!-- ── Save bar (always visible) ── -->
     <div class="save-bar">
       <span class="save-status" id="save-status"></span>
@@ -658,6 +862,7 @@ function showSection(name, el) {
   el.classList.add('active');
   if (name === 'packages') loadPackages();
   if (name === 'ssh') { loadSSHKeyInfo(); loadPushKeyAgents(); }
+  if (name === 'https') loadHTTPSStatus();
 }
 
 // ── Render all ─────────────────────────────────────────────
@@ -1414,6 +1619,390 @@ async function pushKey() {
 }
 
 // Load SSH key info and agent list when SSH section is shown
+// ── HTTPS Management ───────────────────────────────────────
+let _nginxRunning = false;
+
+async function loadHTTPSStatus() {
+  const body   = document.getElementById('https-status-body');
+  const toggle = document.getElementById('https-nginx-toggle');
+  if (!body) return;
+
+  try {
+    const d = await apiFetch('/api/https/status');
+    _nginxRunning = d.nginx_running;
+
+    // Status rows
+    const rows = [
+      ['nginx',       d.nginx_running  ? '✓ running' : '✗ stopped',  d.nginx_running  ? 'gn' : 'rd'],
+      ['nginx config', d.nginx_conf    ? '✓ present' : '✗ missing',  d.nginx_conf     ? 'gn' : 'mt'],
+      ['Certificate',  d.cert_exists   ? '✓ present' : '✗ none',     d.cert_exists    ? 'gn' : 'mt'],
+    ];
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:11px">';
+    rows.forEach(([label, val, col]) => {
+      html += `<tr style="border-bottom:1px solid var(--bdr)">
+        <td style="padding:5px 8px;color:var(--mt);width:140px">${label}</td>
+        <td style="padding:5px 8px;color:var(--${col})">${val}</td>
+      </tr>`;
+    });
+
+    if (d.cert_info && d.cert_info.not_after) {
+      const expiry = new Date(d.cert_info.not_after);
+      const daysLeft = Math.floor((expiry - Date.now()) / 86400000);
+      const col = daysLeft < 30 ? 'rd' : daysLeft < 90 ? 'ye' : 'gn';
+      html += `<tr style="border-bottom:1px solid var(--bdr)">
+        <td style="padding:5px 8px;color:var(--mt)">Cert expires</td>
+        <td style="padding:5px 8px;color:var(--${col})">${d.cert_info.not_after} (${daysLeft} days)</td>
+      </tr>`;
+      if (d.cert_info.subject) {
+        html += `<tr style="border-bottom:1px solid var(--bdr)">
+          <td style="padding:5px 8px;color:var(--mt)">Subject</td>
+          <td style="padding:5px 8px;font-family:monospace;font-size:10px">${escHtml(d.cert_info.subject)}</td>
+        </tr>`;
+      }
+      if (d.cert_info.fingerprint) {
+        html += `<tr>
+          <td style="padding:5px 8px;color:var(--mt)">Fingerprint</td>
+          <td style="padding:5px 8px;font-family:monospace;font-size:10px;word-break:break-all">${escHtml(d.cert_info.fingerprint)}</td>
+        </tr>`;
+      }
+    }
+    html += '</table>';
+
+    // Access URLs
+    html += `<div style="margin-top:12px;padding:8px 10px;background:var(--surf3);
+                         border-radius:4px;font-size:11px;font-family:monospace">`;
+    html += `<div style="color:var(--mt);margin-bottom:4px">Access URLs:</div>`;
+    html += `<div style="color:var(--cy)">http://${location.hostname}:8080 &nbsp;(direct, always available)</div>`;
+    if (d.nginx_running && d.cert_exists) {
+      html += `<div style="color:var(--gn)">https://${location.hostname} &nbsp;(HTTPS via nginx)</div>`;
+    } else {
+      html += `<div style="color:var(--mt)">https://${location.hostname} &nbsp;(nginx not running)</div>`;
+    }
+    html += '</div>';
+    body.innerHTML = html;
+
+    // Toggle button
+    toggle.textContent = d.nginx_running ? 'Stop nginx' : 'Start nginx';
+    toggle.style.color = d.nginx_running ? 'var(--rd)' : 'var(--gn)';
+    toggle.style.borderColor = d.nginx_running ? 'var(--rd)' : 'var(--gn)';
+
+    // Auto-fill CN with current hostname/IP
+    const cnInput = document.getElementById('https-cn');
+    if (cnInput && !cnInput.value) cnInput.value = location.hostname;
+    const sanInput = document.getElementById('https-san');
+    if (sanInput && !sanInput.value) sanInput.value = location.hostname;
+
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--rd);font-size:11px">Error loading status: ${e.message}</div>`;
+  }
+}
+
+async function toggleNginx() {
+  const toggle = document.getElementById('https-nginx-toggle');
+  toggle.disabled = true;
+  toggle.textContent = 'Working...';
+  try {
+    const endpoint = _nginxRunning ? '/api/https/nginx/stop' : '/api/https/nginx/start';
+    await apiFetch(endpoint, { method: 'POST' });
+    await new Promise(r => setTimeout(r, 1000));
+    await loadHTTPSStatus();
+  } catch(e) {
+    toast('nginx error: ' + e.message, 'err');
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
+async function generateCert() {
+  const cn     = document.getElementById('https-cn').value.trim();
+  const org    = document.getElementById('https-org').value.trim() || 'NetTest';
+  const days   = parseInt(document.getElementById('https-days').value) || 3650;
+  const sanRaw = document.getElementById('https-san').value.trim();
+  const status = document.getElementById('https-gen-status');
+
+  if (!cn) { alert('Common Name / IP is required.'); return; }
+
+  const san_ips = sanRaw ? sanRaw.split(',').map(s => s.trim()).filter(Boolean) : [cn];
+
+  status.style.color = 'var(--cy)';
+  status.textContent = 'Generating (this may take a few seconds)...';
+
+  try {
+    const res = await apiFetch('/api/https/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ cn, org, days, san_ips }),
+    });
+    if (res.ok) {
+      status.style.color = 'var(--gn)';
+      status.textContent = '✓ Certificate generated' + (res.nginx_ok ? ' and nginx reloaded' : ' (reload nginx manually)');
+      await loadHTTPSStatus();
+    } else {
+      status.style.color = 'var(--rd)';
+      status.textContent = '✗ ' + (res.error || 'Generation failed');
+    }
+  } catch(e) {
+    status.style.color = 'var(--rd)';
+    status.textContent = '✗ ' + e.message;
+  }
+}
+
+async function uploadCert() {
+  const certFile = document.getElementById('https-cert-file').files[0];
+  const keyFile  = document.getElementById('https-key-file').files[0];
+  const status   = document.getElementById('https-upload-status');
+
+  if (!certFile || !keyFile) { alert('Select both certificate and key files.'); return; }
+
+  status.style.color = 'var(--cy)';
+  status.textContent = 'Uploading...';
+
+  const fd = new FormData();
+  fd.append('cert', certFile);
+  fd.append('key',  keyFile);
+
+  try {
+    const res = await fetch('/api/https/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.ok) {
+      status.style.color = 'var(--gn)';
+      status.textContent = '✓ Certificate uploaded' + (data.nginx_ok ? ' and nginx reloaded' : '');
+      await loadHTTPSStatus();
+    } else {
+      status.style.color = 'var(--rd)';
+      status.textContent = '✗ ' + (data.error || 'Upload failed');
+    }
+  } catch(e) {
+    status.style.color = 'var(--rd)';
+    status.textContent = '✗ ' + e.message;
+  }
+}
+
+// ── Export / Import ────────────────────────────────────────
+let _importPreviewData = null;
+
+function updateExportWarning() {
+  const sensitive = ['exp-ssh-creds','exp-ssh-keys','exp-auth']
+    .some(id => document.getElementById(id)?.checked);
+  const warn = document.getElementById('exp-sensitive-warn');
+  if (warn) warn.style.display = sensitive ? '' : 'none';
+}
+
+// Wire up sensitive checkbox warning
+document.addEventListener('DOMContentLoaded', () => {
+  ['exp-ssh-creds','exp-ssh-keys','exp-auth'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', updateExportWarning);
+  });
+});
+
+async function doExport() {
+  const include = {
+    controller:      document.getElementById('exp-controller')?.checked,
+    schedule:        document.getElementById('exp-schedule')?.checked,
+    test_params:     document.getElementById('exp-test-params')?.checked,
+    ssh_credentials: document.getElementById('exp-ssh-creds')?.checked,
+    ssh_keys:        document.getElementById('exp-ssh-keys')?.checked,
+    auth:            document.getElementById('exp-auth')?.checked,
+  };
+
+  try {
+    const res = await fetch('/api/export', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ include }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert('Export failed: ' + (err.error || 'unknown'));
+      return;
+    }
+    const blob = await res.blob();
+    const cd   = res.headers.get('Content-Disposition') || '';
+    const name = cd.match(/filename=(.+)/)?.[1] || 'nettest-export.tar.gz';
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    alert('Export error: ' + e.message);
+  }
+}
+
+async function previewImport(input) {
+  const file   = input.files[0];
+  const status = document.getElementById('imp-parse-status');
+  const panel  = document.getElementById('imp-preview-panel');
+  if (!file) return;
+
+  status.style.color = 'var(--cy)';
+  status.textContent = 'Parsing bundle...';
+  panel.style.display = 'none';
+  _importPreviewData  = null;
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const res  = await fetch('/api/import/preview', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) {
+      status.style.color = 'var(--rd)';
+      status.textContent = '✗ ' + (data.error || 'Parse failed');
+      return;
+    }
+    _importPreviewData = data;
+    status.style.color = 'var(--gn)';
+    status.textContent = '✓ Bundle parsed';
+    renderImportPreview(data);
+    panel.style.display = '';
+  } catch(e) {
+    status.style.color = 'var(--rd)';
+    status.textContent = '✗ ' + e.message;
+  }
+}
+
+function renderImportPreview(data) {
+  // Sections grid
+  const sectionLabels = {
+    agents:          'Agents',
+    paths:           'Paths',
+    controller:      'Controller name/dirs',
+    schedule:        'Schedule',
+    test_params:     'Test parameters',
+    ssh_credentials: 'SSH credentials',
+    ssh_keys:        'SSH keys',
+    auth:            'Auth/RADIUS',
+  };
+  const sensitiveSections = ['ssh_credentials','ssh_keys','auth'];
+  let hasSensitive = false;
+
+  const grid = document.getElementById('imp-sections-grid');
+  grid.innerHTML = Object.entries(sectionLabels).map(([key, label]) => {
+    const avail = data.sections[key];
+    if (sensitiveSections.includes(key) && avail) hasSensitive = true;
+    return `
+      <label style="display:flex;align-items:center;gap:6px;font-size:11px;
+                    cursor:${avail?'pointer':'default'};opacity:${avail?1:0.4}">
+        <input type="checkbox" class="imp-section-cb" data-key="${key}"
+               ${avail ? 'checked' : 'disabled'}
+               style="accent-color:var(--cy)">
+        <span style="${avail?'':'color:var(--mt)'}">
+          ${label} ${avail?'<span style="color:var(--gn)">✓</span>':'<span style="color:var(--mt)">—</span>'}
+        </span>
+      </label>`;
+  }).join('');
+
+  document.getElementById('imp-sensitive-warn').style.display =
+    hasSensitive ? '' : 'none';
+
+  // Agent diff
+  const agentDiv = document.getElementById('imp-agent-diff');
+  if (!data.agent_diff.length) {
+    agentDiv.innerHTML = '<span style="color:var(--mt)">No agents in bundle</span>';
+  } else {
+    agentDiv.innerHTML = `
+      <div style="color:var(--mt);margin-bottom:4px">
+        ${data.agent_new} new, ${data.agent_exist} already exist
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        ${data.agent_diff.map(a => `
+          <tr style="border-bottom:1px solid var(--bdr)">
+            <td style="padding:4px 8px;width:24px">
+              <span style="color:${a.status==='new'?'var(--gn)':'var(--ye)'}">
+                ${a.status==='new'?'＋':'≈'}
+              </span>
+            </td>
+            <td style="padding:4px 8px">${escHtml(a.label)}</td>
+            <td style="padding:4px 8px;color:var(--mt);font-family:monospace;font-size:10px">${escHtml(a.host)}</td>
+            <td style="padding:4px 8px;color:var(--mt)">${escHtml(a.type)}</td>
+            <td style="padding:4px 8px;color:${a.status==='new'?'var(--gn)':'var(--ye)'};font-size:10px">
+              ${a.status==='new'?'will add':'already exists'}
+            </td>
+          </tr>`).join('')}
+      </table>`;
+  }
+
+  // Path diff
+  const pathDiv = document.getElementById('imp-path-diff');
+  if (!data.path_diff.length) {
+    pathDiv.innerHTML = '<span style="color:var(--mt)">No paths in bundle</span>';
+  } else {
+    pathDiv.innerHTML = `
+      <div style="color:var(--mt);margin-bottom:4px">
+        ${data.path_new} new, ${data.path_exist} already exist
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        ${data.path_diff.map(p => `
+          <tr style="border-bottom:1px solid var(--bdr)">
+            <td style="padding:4px 8px;width:24px">
+              <span style="color:${p.status==='new'?'var(--gn)':'var(--ye)'}">
+                ${p.status==='new'?'＋':'≈'}
+              </span>
+            </td>
+            <td style="padding:4px 8px">${escHtml(p.label)}</td>
+            <td style="padding:4px 8px;color:var(--mt);font-size:10px">
+              ${escHtml(p.source)} → ${escHtml(p.dest)}
+            </td>
+            <td style="padding:4px 8px;color:${p.status==='new'?'var(--gn)':'var(--ye)'};font-size:10px">
+              ${p.status==='new'?'will add':'already exists'}
+            </td>
+          </tr>`).join('')}
+      </table>`;
+  }
+}
+
+async function confirmImport() {
+  const status = document.getElementById('imp-confirm-status');
+  const mode   = document.getElementById('imp-mode').value;
+
+  // Gather selected sections
+  const include = {};
+  document.querySelectorAll('.imp-section-cb:not(:disabled)').forEach(cb => {
+    include[cb.dataset.key] = cb.checked;
+  });
+
+  status.style.color = 'var(--cy)';
+  status.textContent = 'Applying...';
+
+  try {
+    const res  = await apiFetch('/api/import/confirm', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ mode, include }),
+    });
+
+    if (res.ok) {
+      status.style.color = 'var(--gn)';
+      status.textContent = '✓ Import applied — config reloaded';
+
+      // If SSH keys were selected, re-upload the bundle for key extraction
+      if (include.ssh_keys) {
+        const file = document.getElementById('imp-file').files[0];
+        if (file) {
+          const fd = new FormData();
+          fd.append('file', file);
+          await fetch('/api/import/keys', { method: 'POST', body: fd });
+        }
+      }
+
+      // Reset preview
+      setTimeout(() => {
+        document.getElementById('imp-preview-panel').style.display = 'none';
+        document.getElementById('imp-file').value = '';
+        document.getElementById('imp-parse-status').textContent = '';
+        status.textContent = '';
+        _importPreviewData = null;
+      }, 3000);
+    } else {
+      status.style.color = 'var(--rd)';
+      status.textContent = '✗ ' + (res.error || 'Import failed');
+    }
+  } catch(e) {
+    status.style.color = 'var(--rd)';
+    status.textContent = '✗ ' + e.message;
+  }
+}
+
 // ── Save ───────────────────────────────────────────────────
 function markDirty() {
   setStatus('Unsaved changes', 'pending');
