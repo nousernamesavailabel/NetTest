@@ -287,10 +287,10 @@ select option{background:var(--bg)}
 
     <!-- ── SSH ── -->
     <div class="section" id="section-ssh">
+
+      <!-- SSH Defaults -->
       <div class="panel">
-        <div class="panel-header">
-          <span class="panel-title">SSH Defaults</span>
-        </div>
+        <div class="panel-header"><span class="panel-title">SSH Defaults</span></div>
         <div class="panel-body">
           <div class="form-row">
             <label>Username</label>
@@ -310,6 +310,89 @@ select option{background:var(--bg)}
           </div>
         </div>
       </div>
+
+      <!-- Key Info & Export -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">SSH Key</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn" style="font-size:11px" onclick="downloadPubKey()">⬇ Public Key</button>
+            <button class="btn" style="font-size:11px" onclick="downloadPrivKey()">⬇ Private Key</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="ssh-key-info" style="font-size:11px;color:var(--mt);margin-bottom:10px">Loading key info...</div>
+          <div style="font-size:10px;font-family:monospace;background:var(--surf3);padding:8px;
+                      border-radius:4px;word-break:break-all;color:var(--cy)" id="ssh-pubkey-preview">—</div>
+        </div>
+      </div>
+
+      <!-- Import Key -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Import Key</span></div>
+        <div class="panel-body">
+          <div style="background:#2a1500;border:1px solid #a05000;border-radius:4px;
+                      padding:8px 12px;font-size:11px;color:#e09050;margin-bottom:14px">
+            ⚠ Importing a new key will break SSH access to all onboarded agents until
+            you push the new public key to them (see below).
+          </div>
+          <div class="form-row">
+            <label>Private key file</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="file" id="ssh-import-file" accept=".pem,.key,*"
+                     style="font-size:11px;color:var(--tx)">
+              <button class="btn btn-primary" style="font-size:11px"
+                      onclick="importKey()">Import</button>
+            </div>
+          </div>
+          <div id="ssh-import-status" style="display:none;font-size:11px;margin-top:8px"></div>
+        </div>
+      </div>
+
+      <!-- Push Key to Agents -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Push Public Key to Agents</span></div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Deploy the current public key to an agent using admin credentials.
+            Use this after importing a new key or when re-deploying to an existing agent.
+          </p>
+          <div class="form-row">
+            <label>Agent</label>
+            <select id="pk-agent" style="flex:1">
+              <option value="__all__">— All endpoint agents —</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Admin user <span style="color:var(--rd)">*</span></label>
+            <input type="text" id="pk-admin-user" placeholder="jared" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <label>Admin password <span style="color:var(--rd)">*</span></label>
+            <input type="password" id="pk-admin-pass" placeholder="••••••••" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <label>Port</label>
+            <input type="number" id="pk-admin-port" value="22" style="width:80px">
+          </div>
+          <div style="margin-top:12px">
+            <button class="btn btn-primary" onclick="pushKey()">Push Public Key</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Push key live output -->
+      <div class="panel" id="pk-output-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Key Push Output</span>
+          <span id="pk-status" style="font-size:11px;color:var(--mt)">running...</span>
+        </div>
+        <div id="pk-output"
+             style="background:#080a0d;padding:12px 16px;font-family:monospace;
+                    font-size:11px;height:180px;overflow-y:scroll;
+                    border-radius:0 0 6px 6px"></div>
+      </div>
+
     </div>
 
 
@@ -574,6 +657,7 @@ function showSection(name, el) {
   document.getElementById('section-' + name).classList.add('active');
   el.classList.add('active');
   if (name === 'packages') loadPackages();
+  if (name === 'ssh') { loadSSHKeyInfo(); loadPushKeyAgents(); }
 }
 
 // ── Render all ─────────────────────────────────────────────
@@ -970,6 +1054,8 @@ function collectSchedule() {
 
 // ── SSH ────────────────────────────────────────────────────
 function renderSSH() {
+  loadSSHKeyInfo();
+  loadPushKeyAgents();
   setVal('ssh-user',    sshDefs.username || 'nettest');
   setVal('ssh-key',     sshDefs.key_file || '~/.ssh/nettest_key');
   setVal('ssh-port',    sshDefs.port     || 22);
@@ -1197,6 +1283,137 @@ async function pushPkgsAll() {
   }
 }
 
+// ── SSH Key Management ─────────────────────────────────────
+async function loadSSHKeyInfo() {
+  const info    = document.getElementById('ssh-key-info');
+  const preview = document.getElementById('ssh-pubkey-preview');
+  if (!info) return;
+  try {
+    const data = await apiFetch('/api/ssh/pubkey');
+    info.textContent = data.fingerprint || data.path || 'Key loaded';
+    preview.textContent = data.content || '—';
+  } catch(e) {
+    info.textContent = 'No key found — generate one with ssh-keygen or import below.';
+    preview.textContent = '—';
+  }
+}
+
+function downloadPubKey() {
+  window.open('/api/ssh/pubkey/download', '_blank');
+}
+
+function downloadPrivKey() {
+  if (!confirm('Download private key?\nKeep this file secure — anyone with it can access your agents.'))
+    return;
+  window.open('/api/ssh/privkey', '_blank');
+}
+
+async function importKey() {
+  const file      = document.getElementById('ssh-import-file').files[0];
+  const statusDiv = document.getElementById('ssh-import-status');
+  if (!file) { alert('Select a private key file first.'); return; }
+
+  statusDiv.style.display = 'block';
+  statusDiv.style.color   = 'var(--cy)';
+  statusDiv.textContent   = 'Importing...';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res  = await fetch('/api/ssh/import', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.ok) {
+      statusDiv.style.color = 'var(--gn)';
+      statusDiv.textContent = '✓ Key imported successfully. Push to agents below to restore access.';
+      loadSSHKeyInfo();
+    } else {
+      statusDiv.style.color = 'var(--rd)';
+      statusDiv.textContent = '✗ ' + (data.error || 'Import failed');
+    }
+  } catch(e) {
+    statusDiv.style.color = 'var(--rd)';
+    statusDiv.textContent = '✗ ' + e.message;
+  }
+}
+
+function loadPushKeyAgents() {
+  const sel = document.getElementById('pk-agent');
+  if (!sel) return;
+  // Rebuild agent options
+  const endpointAgents = agents.filter(a => a.type !== 'svi_adjacent');
+  const opts = ['<option value="__all__">— All endpoint agents —</option>'];
+  endpointAgents.forEach(a => {
+    opts.push(`<option value="${escHtml(a.id)}">${escHtml(a.label||a.id)} (${escHtml(a.host_mgmt_ip||a.host||'')})</option>`);
+  });
+  sel.innerHTML = opts.join('');
+}
+
+async function pushKey() {
+  const agentId   = document.getElementById('pk-agent').value;
+  const adminUser = document.getElementById('pk-admin-user').value.trim();
+  const adminPass = document.getElementById('pk-admin-pass').value;
+  const adminPort = parseInt(document.getElementById('pk-admin-port').value) || 22;
+
+  if (!adminUser) { alert('Admin username is required.'); return; }
+  if (!adminPass) { alert('Admin password is required.'); return; }
+
+  const panel  = document.getElementById('pk-output-panel');
+  const output = document.getElementById('pk-output');
+  const status = document.getElementById('pk-status');
+
+  panel.style.display = '';
+  output.innerHTML    = '';
+  status.textContent  = 'running...';
+  status.style.color  = 'var(--cy)';
+
+  const body = {
+    admin_user: adminUser,
+    admin_pass: adminPass,
+    admin_port: adminPort,
+    push_all:   agentId === '__all__',
+    agent_id:   agentId === '__all__' ? '' : agentId,
+  };
+
+  try {
+    const res  = await apiFetch('/api/ssh/push-key', { method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body) });
+    if (!res.job_id) { status.textContent = 'Error: ' + (res.error||'unknown'); return; }
+
+    // Stream output
+    const es = new EventSource('/api/jobs/' + res.job_id + '/stream');
+    es.onmessage = (e) => {
+      const text = e.data;
+      if (text === '[STREAM END]') {
+        es.close();
+        apiFetch('/api/jobs/' + res.job_id).then(job => {
+          if (job.status === 'done') {
+            status.textContent = '✓ done';
+            status.style.color = 'var(--gn)';
+          } else {
+            status.textContent = '✗ error';
+            status.style.color = 'var(--rd)';
+          }
+        });
+        return;
+      }
+      if (text === '[STREAM TIMEOUT]') { es.close(); return; }
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:1px 0;white-space:pre-wrap;word-break:break-all';
+      div.style.color = text.includes('✗') || text.includes('ERROR') ? 'var(--rd)'
+                      : text.includes('✓') ? 'var(--gn)' : 'var(--mt)';
+      div.textContent = text;
+      output.appendChild(div);
+      output.scrollTop = output.scrollHeight;
+    };
+    es.onerror = () => { es.close(); };
+  } catch(e) {
+    status.textContent = '✗ ' + e.message;
+    status.style.color = 'var(--rd)';
+  }
+}
+
+// Load SSH key info and agent list when SSH section is shown
 // ── Save ───────────────────────────────────────────────────
 function markDirty() {
   setStatus('Unsaved changes', 'pending');

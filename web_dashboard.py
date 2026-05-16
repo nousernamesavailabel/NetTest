@@ -422,6 +422,273 @@ def api_onboard():
     return jsonify({"job_id": job_id, "status": "queued"})
 
 
+# ── SSH Key Management API ───────────────────────────────
+
+@app.route("/api/ssh/pubkey")
+@login_required
+def api_ssh_pubkey():
+    """Return public key info and content."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+    pub_file = key_file + ".pub"
+    if not os.path.exists(pub_file):
+        return jsonify({"error": "Public key not found", "path": pub_file}), 404
+    content = open(pub_file).read().strip()
+    # Get fingerprint
+    try:
+        import subprocess
+        fp = subprocess.run(
+            ["ssh-keygen", "-l", "-f", pub_file],
+            capture_output=True, text=True, timeout=10
+        )
+        fingerprint = fp.stdout.strip() if fp.returncode == 0 else ""
+    except Exception:
+        fingerprint = ""
+    return jsonify({
+        "path":        pub_file,
+        "content":     content,
+        "fingerprint": fingerprint,
+    })
+
+
+@app.route("/api/ssh/pubkey/download")
+@login_required
+def api_ssh_pubkey_download():
+    """Download public key as a file."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+    pub_file = key_file + ".pub"
+    if not os.path.exists(pub_file):
+        return jsonify({"error": "Public key not found"}), 404
+    content = open(pub_file).read()
+    return Response(
+        content,
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=nettest_key.pub"}
+    )
+
+
+@app.route("/api/ssh/privkey")
+@login_required
+def api_ssh_privkey():
+    """Download private key file."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+    if not os.path.exists(key_file):
+        return jsonify({"error": "Private key not found"}), 404
+    content = open(key_file).read()
+    return Response(
+        content,
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename=nettest_key"}
+    )
+
+
+@app.route("/api/ssh/import", methods=["POST"])
+@login_required
+def api_ssh_import():
+    """Import a new private key. Derives and writes public key automatically."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+    pub_file = key_file + ".pub"
+
+    if "file" in request.files:
+        key_content = request.files["file"].read().decode("utf-8")
+    elif request.is_json:
+        key_content = request.get_json().get("key", "")
+    else:
+        return jsonify({"error": "No key provided"}), 400
+
+    if not key_content.strip().startswith("-----BEGIN"):
+        return jsonify({"error": "Invalid private key format"}), 400
+
+    # Write private key
+    os.makedirs(os.path.dirname(key_file), exist_ok=True)
+    with open(key_file, "w") as f:
+        f.write(key_content)
+    os.chmod(key_file, 0o600)
+
+    # Derive public key
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-f", key_file],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            return jsonify({"error": f"Failed to derive public key: {result.stderr}"}), 400
+        pub_content = result.stdout.strip()
+        with open(pub_file, "w") as f:
+            f.write(pub_content + "\n")
+        os.chmod(pub_file, 0o644)
+    except Exception as e:
+        return jsonify({"error": f"ssh-keygen error: {e}"}), 500
+
+    return jsonify({"ok": True, "pubkey": pub_content})
+
+
+@app.route("/api/ssh/push-key", methods=["POST"])
+@login_required
+def api_ssh_push_key():
+    """Push public key to an agent using admin credentials."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+
+    body       = request.get_json(silent=True) or {}
+    agent_id   = body.get("agent_id", "").strip()
+    admin_user = body.get("admin_user", "").strip()
+    admin_pass = body.get("admin_pass", "")
+    admin_port = int(body.get("admin_port", 22))
+    push_all   = bool(body.get("push_all", False))
+
+    if not admin_user: return jsonify({"error": "admin_user is required"}), 400
+    if not admin_pass: return jsonify({"error": "admin_pass is required"}), 400
+
+    # Get agents to push to
+    if push_all:
+        agents = [a for a in _config.agents if a.type != "svi_adjacent"]
+    else:
+        agent = _config.get_agent(agent_id)
+        if not agent: return jsonify({"error": f"Agent '{agent_id}' not found"}), 404
+        agents = [agent]
+
+    # Read public key
+    key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+    pub_file = key_file + ".pub"
+    if not os.path.exists(pub_file):
+        return jsonify({"error": "Public key not found — import a key first"}), 400
+    pub_key = open(pub_file).read().strip()
+
+    nettest_user = _config.ssh_defaults.username
+
+    job_id  = "push-key-" + str(uuid.uuid4())[:8]
+    log_q   = queue.Queue(maxsize=500)
+    handler = JobLogHandler(job_id)
+    handler.setLevel(logging.INFO)
+
+    with _job_logs_lock:
+        _job_logs[job_id] = log_q
+        if len(_job_log_history) >= _MAX_HISTORY_JOBS:
+            oldest = sorted(_job_log_history.keys())[0]
+            del _job_log_history[oldest]
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id":   job_id,
+            "path_id":  "push-key",
+            "label":    f"Push key → {len(agents)} agent(s)",
+            "status":   "queued",
+            "started":  datetime.now(timezone.utc).isoformat(),
+            "finished": None, "success": None, "error": None,
+        }
+
+    def run_push():
+        from netmiko import ConnectHandler, NetmikoTimeoutException, NetmikoAuthenticationException
+        # Attach handler directly to a named logger and ensure propagation
+        _log = logging.getLogger("push-key")
+        _log.setLevel(logging.DEBUG)
+        _log.addHandler(handler)
+        logging.getLogger("netmiko").setLevel(logging.WARNING)
+        logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+
+        target_desc = "all endpoint agents" if len(agents) > 1 else agents[0].label
+        _log.info(f"── Push Public Key ──")
+        _log.info(f"  Target  : {target_desc}")
+        _log.info(f"  User    : {admin_user}:{admin_port}")
+        _log.info(f"  NetTest : {nettest_user}")
+        _log.info(f"  Key     : {pub_file}")
+
+        all_ok = True
+        for i, agent in enumerate(agents, 1):
+            _log.info(f"")
+            _log.info(f"[{i}/{len(agents)}] {agent.label} ({agent.host_mgmt_ip})")
+            _log.info(f"  Connecting as {admin_user}...")
+            try:
+                conn = ConnectHandler(
+                    device_type="linux",
+                    host=agent.host_mgmt_ip,
+                    username=admin_user,
+                    password=admin_pass,
+                    port=admin_port,
+                    timeout=30,
+                )
+                _log.info(f"  ✓ Connected")
+
+                # Prime sudo
+                _log.info(f"  Priming sudo...")
+                conn.send_command_timing(
+                    f"echo '{admin_pass}' | sudo -S true 2>/dev/null",
+                    last_read=2.0
+                )
+
+                # Ensure .ssh directory exists with correct permissions
+                auth_keys = f"/home/{nettest_user}/.ssh/authorized_keys"
+                _log.info(f"  Creating .ssh directory for {nettest_user}...")
+                conn.send_command_timing(
+                    f"echo '{admin_pass}' | sudo -S bash -c "
+                    f"'mkdir -p /home/{nettest_user}/.ssh && "
+                    f"chmod 700 /home/{nettest_user}/.ssh && "
+                    f"chown {nettest_user}:{nettest_user} /home/{nettest_user}/.ssh'",
+                    read_timeout=15, last_read=2.0
+                )
+
+                # Write public key
+                _log.info(f"  Writing public key to {auth_keys}...")
+                deploy_cmd = (
+                    f"echo '{admin_pass}' | sudo -S bash -c "
+                    f"'echo {repr(pub_key)} > {auth_keys} && "
+                    f"chmod 600 {auth_keys} && "
+                    f"chown {nettest_user}:{nettest_user} {auth_keys}'"
+                )
+                conn.send_command_timing(deploy_cmd, read_timeout=15, last_read=2.0)
+
+                # Verify
+                _log.info(f"  Verifying key was written...")
+                check = conn.send_command_timing(
+                    f"echo '{admin_pass}' | sudo -S cat {auth_keys} 2>/dev/null",
+                    last_read=2.0
+                )
+                conn.disconnect()
+
+                if pub_key[:20] in check:
+                    _log.info(f"  ✓ Key verified in authorized_keys")
+                    _log.info(f"✓ {agent.label} — key deployed successfully")
+                else:
+                    _log.error(f"  ✗ Key not found in authorized_keys after write")
+                    _log.error(f"✗ {agent.label} — verification failed")
+                    all_ok = False
+
+            except NetmikoAuthenticationException:
+                _log.error(f"✗ {agent.label}: Authentication failed for {admin_user}@{agent.host_mgmt_ip}:{admin_port}")
+                all_ok = False
+            except Exception as e:
+                _log.error(f"✗ {agent.label}: {e}")
+                all_ok = False
+
+        _log.info(f"")
+        if all_ok:
+            _log.info(f"✓ All agents updated successfully")
+        else:
+            _log.error(f"✗ One or more agents failed — check output above")
+
+        with _jobs_lock:
+            _jobs[job_id]["status"]   = "done" if all_ok else "error"
+            _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+            _jobs[job_id]["success"]  = all_ok
+            _jobs[job_id]["error"]    = None if all_ok else "Key push failed on one or more agents"
+        _log.removeHandler(handler)
+        log_q.put(None)
+
+    threading.Thread(target=run_push, daemon=True, name="push-key").start()
+    return jsonify({"job_id": job_id, "status": "queued"})
+
+
 # ── Package management API ────────────────────────────────
 
 @app.route("/api/packages")

@@ -123,8 +123,8 @@
   td { padding: 7px 14px; text-align: right; white-space: nowrap;
        font-variant-numeric: tabular-nums; }
   td:first-child { text-align: left; }
-  .td-path { font-size: 12px; color: var(--text); max-width: 220px;
-             overflow: hidden; text-overflow: ellipsis; }
+  .td-path { font-size: 12px; color: var(--text); width: 240px; min-width: 180px; max-width: 280px;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .td-time { color: var(--muted); font-size: 11px; }
   .ok-dot   { color: var(--green); }
   .fail-dot { color: var(--red); }
@@ -1347,7 +1347,9 @@ function renderTable(records) {
       : '';
 
     rows.push(`<tr>
-      <td class="td-path" title="${r.path_label}">${r.path_label}${hopBtn}${trBtn}</td>
+      <td class="td-path" title="${r.path_label}" style="white-space:nowrap;overflow:hidden">
+        <span style="overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 70px);display:inline-block;vertical-align:middle">${r.path_label}</span>${hopBtn}${trBtn}
+      </td>
       <td class="td-time" style="color:var(--muted);font-size:10px">${r.timestamp_utc.slice(0,10)}</td>
       <td class="td-time">${ts}</td>
       <td>${r.success ? '<span class="ok-dot">✓</span>' : '<span class="fail-dot">✗</span>'}</td>
