@@ -197,7 +197,7 @@ cat > "${SUDOERS_FILE}" << SUDOERS
 # Allow nettest service user to restart the scheduler
 # (triggered automatically when config is saved from the web UI)
 # dpkg is needed for air-gapped agent package installation
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx
+${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm
 SUDOERS
 chmod 440 "${SUDOERS_FILE}"
 visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \

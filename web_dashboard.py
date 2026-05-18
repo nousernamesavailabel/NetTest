@@ -640,13 +640,20 @@ def api_ssh_push_key():
                     read_timeout=15, last_read=2.0
                 )
 
-                # Write public key
+                # Write public key — use printf to avoid quoting issues
                 _log.info(f"  Writing public key to {auth_keys}...")
+                # Copy key to a temp file first, then move into place with sudo
+                tmp_key = "/tmp/nettest_pubkey_tmp"
+                conn.send_command_timing(
+                    f"printf '%s\n' {repr(pub_key)} > {tmp_key}",
+                    read_timeout=10, last_read=2.0
+                )
                 deploy_cmd = (
                     f"echo '{admin_pass}' | sudo -S bash -c "
-                    f"'echo {repr(pub_key)} > {auth_keys} && "
+                    f"'cp {tmp_key} {auth_keys} && "
                     f"chmod 600 {auth_keys} && "
-                    f"chown {nettest_user}:{nettest_user} {auth_keys}'"
+                    f"chown {nettest_user}:{nettest_user} {auth_keys} && "
+                    f"rm -f {tmp_key}'"
                 )
                 conn.send_command_timing(deploy_cmd, read_timeout=15, last_read=2.0)
 
@@ -1123,6 +1130,8 @@ def api_https_generate():
     days       = int(body.get("days", 3650))
     san_ips    = body.get("san_ips", [])   # list of IP strings
 
+    # Ensure SSL dir exists and is writable
+    # Run: sudo chown nettest:nettest /opt/nettest/ssl  if this fails
     os.makedirs(SSL_DIR, exist_ok=True)
 
     san_str = ",".join(f"IP:{ip}" for ip in san_ips if ip)
@@ -1138,9 +1147,9 @@ def api_https_generate():
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
-        return jsonify({"error": result.stderr}), 500
+        return jsonify({"error": result.stderr.strip() or "openssl failed"}), 500
 
-    os.chmod(SSL_KEY, 0o600)
+    os.chmod(SSL_KEY,  0o600)
     os.chmod(SSL_CERT, 0o644)
 
     # Write nginx config if not present
@@ -1225,7 +1234,11 @@ def api_https_nginx_stop():
 
 
 def _write_nginx_conf():
-    """Write the nginx reverse proxy config if not already present."""
+    """Write the nginx reverse proxy config using sudo tee (file is root-owned)."""
+    # Skip if already present — install.sh writes this during initial setup
+    if os.path.exists(NGINX_CONF):
+        return
+
     conf = """server {
     listen 80;
     server_name _;
@@ -1259,15 +1272,20 @@ server {
     }
 }
 """
-    os.makedirs(os.path.dirname(NGINX_CONF), exist_ok=True)
-    with open(NGINX_CONF, "w") as f:
-        f.write(conf)
+    import subprocess
+    # Write via sudo tee since /etc/nginx is root-owned
+    proc = subprocess.run(
+        ["sudo", "tee", NGINX_CONF],
+        input=conf, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        raise PermissionError(f"Could not write nginx config: {proc.stderr}")
+
     link = "/etc/nginx/sites-enabled/nettest"
     if not os.path.exists(link):
-        os.symlink(NGINX_CONF, link)
-    default = "/etc/nginx/sites-enabled/default"
-    if os.path.exists(default):
-        os.remove(default)
+        subprocess.run(["sudo", "ln", "-sf", NGINX_CONF, link], capture_output=True)
+    subprocess.run(["sudo", "rm", "-f", "/etc/nginx/sites-enabled/default"],
+                   capture_output=True)
 
 
 # ── Package management API ────────────────────────────────
