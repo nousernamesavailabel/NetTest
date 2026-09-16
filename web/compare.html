@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTest — Compare Runs</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+:root {
+  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
+  --bdr:#2a3040; --bdr2:#3a4458;
+  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
+  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --cy:#06b6d4; --bl:#3b82f6;
+  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
+  /* User-pickable per-run colors — used consistently everywhere Run A / Run B
+     is identified (picker cards, hop diff, traceroute meta, chart lines). */
+  --run-a:#3b82f6; --run-b:#06b6d4;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--fn);font-size:13px;min-height:100vh}
+a{color:var(--cy);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.shell{display:grid;grid-template-rows:48px 1fr;min-height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;
+        padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf)}
+.topbar-left{display:flex;align-items:center;gap:14px}
+.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
+.logo span{color:var(--cy)}
+.topbar-right{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--mt)}
+.content{padding:20px;display:flex;flex-direction:column;gap:16px;max-width:1400px;width:100%;margin:0 auto}
+
+.picker-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:start}
+.picker-card{background:var(--surf);border:1px solid var(--bdr);border-radius:6px;padding:14px 16px;
+             display:flex;flex-direction:column;gap:8px}
+.picker-card.side-a{border-top:2px solid var(--run-a)}
+.picker-card.side-b{border-top:2px solid var(--run-b)}
+.picker-label-row{display:flex;align-items:center;justify-content:space-between}
+.picker-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mt)}
+.picker-card.side-a .picker-label{color:var(--run-a)}
+.picker-card.side-b .picker-label{color:var(--run-b)}
+.picker-mid{display:flex;align-items:center;justify-content:center;padding-top:34px}
+
+label{font-size:11px;color:var(--mt2)}
+input,select,textarea{background:var(--bg);border:1px solid var(--bdr2);border-radius:4px;
+             color:var(--tx);font-family:var(--fn);font-size:12px;
+             padding:6px 10px;width:100%;outline:none;transition:border-color .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--cy)}
+select option{background:var(--bg)}
+input[type=color]{width:30px;height:22px;padding:2px;width:auto;flex-shrink:0;cursor:pointer}
+
+/* ── Run filters ── */
+details.filters{border-top:1px solid var(--bdr);border-bottom:1px solid var(--bdr);
+                 padding:6px 0;margin:2px 0}
+details.filters summary{cursor:pointer;font-size:10px;font-weight:700;text-transform:uppercase;
+                         letter-spacing:.6px;color:var(--mt);list-style:none}
+details.filters summary::-webkit-details-marker{display:none}
+details.filters summary::before{content:'▸ '}
+details.filters[open] summary::before{content:'▾ '}
+details.filters summary:hover{color:var(--tx)}
+.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+.filter-field{display:flex;flex-direction:column;gap:3px}
+.filter-field label{font-size:9px;color:var(--mt);text-transform:uppercase;letter-spacing:.4px}
+.filter-field input{padding:4px 6px;font-size:11px}
+.test-chip-row{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0 4px}
+.test-chip{font-size:10px;padding:3px 9px;border-radius:12px;border:1px solid var(--bdr2);
+           color:var(--mt);cursor:pointer;user-select:none;transition:all .15s;white-space:nowrap}
+.test-chip:hover{border-color:var(--cy);color:var(--tx)}
+.test-chip.on{background:#0f1f30;border-color:var(--cy);color:var(--cy)}
+.filters-actions{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
+.run-count{font-size:10px;color:var(--mt)}
+.filters-actions .btn{padding:3px 10px;font-size:10px}
+
+.run-meta{font-size:11px;color:var(--mt2);border-top:1px solid var(--bdr);padding-top:8px;
+          display:flex;flex-direction:column;gap:3px;min-height:56px}
+.run-meta .rm-empty{color:var(--mt)}
+.rm-path{color:var(--tx);font-weight:600}
+.rm-hosts{color:var(--mt2)}
+.rm-ts{color:var(--mt);font-size:10px}
+.badge-ok{color:var(--gn)}
+.badge-fail{color:var(--rd)}
+.run-tag-chip{font-size:9px;padding:1px 7px;border-radius:8px;background:var(--surf2);
+              border:1px solid var(--bdr2);color:var(--cy);display:inline-block}
+.edit-link{font-size:10px;color:var(--mt);cursor:pointer;padding:1px 5px;border-radius:3px;
+           border:1px solid var(--bdr2);user-select:none}
+.edit-link:hover{background:var(--surf3);color:var(--tx)}
+
+.btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:4px;
+     font-size:11px;font-family:var(--fn);cursor:pointer;border:1px solid var(--bdr2);
+     transition:all .15s;white-space:nowrap;background:transparent;color:var(--mt)}
+.btn:hover{background:var(--surf3);color:var(--tx)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:disabled:hover{background:transparent;color:var(--mt)}
+.btn-go{background:#0d1f3c;color:var(--cy);border-color:#1a3a5c;font-size:13px;padding:9px 22px}
+.btn-go:hover:not(:disabled){background:#1a3a5c;color:var(--cy)}
+
+.go-row{display:flex;align-items:center;justify-content:center;gap:12px}
+.go-status{font-size:11px;color:var(--mt)}
+
+.panel{background:var(--surf);border:1px solid var(--bdr);border-radius:6px}
+.panel-header{display:flex;align-items:center;justify-content:space-between;
+              padding:10px 16px;border-bottom:1px solid var(--bdr)}
+.panel-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mt)}
+.panel-sub{font-size:11px;color:var(--mt)}
+.panel-body{padding:0}
+
+.empty{padding:40px;text-align:center;color:var(--mt);font-size:12px}
+
+/* ── Metrics table ── */
+.metrics-group-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
+                      color:var(--mt);background:var(--surf2);padding:6px 16px}
+table.metrics{width:100%;border-collapse:collapse;font-size:12px}
+table.metrics th{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
+                  color:var(--mt);text-align:right;padding:6px 16px;border-bottom:1px solid var(--bdr)}
+table.metrics th:first-child{text-align:left}
+table.metrics td{padding:6px 16px;text-align:right;border-bottom:1px solid var(--bdr);
+                  font-variant-numeric:tabular-nums}
+table.metrics td:first-child{text-align:left;color:var(--mt2)}
+table.metrics tr:last-child td{border-bottom:none}
+.c-gn{color:var(--gn)} .c-yw{color:var(--yw)} .c-rd{color:var(--rd)} .c-mt{color:var(--mt)}
+
+/* ── Traceroute diff ── */
+.cmp-tr-meta{display:flex;gap:24px;padding:10px 16px;font-size:11px;color:var(--mt2);
+             border-bottom:1px solid var(--bdr);flex-wrap:wrap}
+.cmp-tr-meta span:first-child{color:var(--run-a)}
+.cmp-tr-meta span:last-child{color:var(--run-b)}
+.cmp-tr-grid{display:flex;overflow-x:auto;padding:14px 16px;gap:6px}
+.cmp-hop-col{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:120px;flex-shrink:0}
+.cmp-hop-num{font-size:9px;color:var(--mt)}
+.cmp-hop-node{width:100%;border-radius:4px;padding:5px 8px;text-align:center;font-size:10px;
+              line-height:1.4;background:var(--surf2);border:1px solid var(--bdr2)}
+.cmp-hop-node.a{border-color:var(--run-a)}
+.cmp-hop-node.b{border-color:var(--run-b)}
+.cmp-hop-node.dead{opacity:.4;background:transparent}
+.cmp-hop-node.missing{opacity:.3;border-style:dashed}
+.cmp-hop-host{color:var(--tx);word-break:break-all}
+.cmp-hop-ip{color:var(--mt);font-size:9px}
+.cmp-hop-rtt{font-weight:600;margin-top:2px}
+.cmp-hop-delta{font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid var(--bdr2);white-space:nowrap}
+.cmp-hop-col.changed .cmp-hop-node{border-color:var(--yw)}
+.cmp-hop-col.changed .cmp-hop-delta{border-color:var(--yw);color:var(--yw)}
+
+.chart-wrap{position:relative;height:220px;padding:14px 16px}
+
+/* ── Notes/tags editor modal ── */
+.annotate-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);
+                   z-index:2500;align-items:center;justify-content:center}
+.annotate-overlay.open{display:flex}
+.annotate-modal{background:var(--surf);border:1px solid var(--bdr2);border-radius:8px;
+                width:420px;max-width:95vw;overflow:hidden}
+.annotate-header{display:flex;align-items:center;justify-content:space-between;
+                 padding:12px 16px;border-bottom:1px solid var(--bdr)}
+.annotate-title{font-size:12px;font-weight:700}
+.annotate-close{background:none;border:none;color:var(--mt);cursor:pointer;
+               font-size:18px;padding:0;font-family:var(--fn)}
+.annotate-body{padding:16px;display:flex;flex-direction:column;gap:10px}
+.annotate-body label{font-size:10px;color:var(--mt);text-transform:uppercase;letter-spacing:.5px}
+.annotate-body textarea{resize:vertical;min-height:64px}
+.annotate-footer{padding:10px 16px;border-top:1px solid var(--bdr);
+                 display:flex;justify-content:flex-end;gap:8px}
+
+@media (max-width:900px){
+  .picker-grid{grid-template-columns:1fr}
+  .picker-mid{padding-top:0}
+  table.metrics{font-size:11px}
+  table.metrics th,table.metrics td{padding:5px 10px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="logo">NET<span>TEST</span></span>
+      <span style="color:var(--mt);font-size:11px">Compare Runs</span>
+    </div>
+    <div class="topbar-right">
+      <a href="/">← Dashboard</a>
+      <span style="color:var(--bdr2)">|</span>
+      <a href="/config">⚙ Config</a>
+      <span style="color:var(--bdr2)">|</span>
+      <a href="/logout">Logout</a>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <div class="picker-grid">
+      <div class="picker-card side-a">
+        <div class="picker-label-row">
+          <div class="picker-label">Run A</div>
+          <input type="color" id="color-a" value="#3b82f6" title="Color for Run A" onchange="onColorChange('a')">
+        </div>
+        <label>Path</label>
+        <select id="path-select-a" onchange="onPathChange('a')"><option value="">All paths</option></select>
+
+        <details class="filters">
+          <summary>Filters</summary>
+          <div class="filter-grid">
+            <div class="filter-field"><label>From date</label><input type="date" id="date-from-a" onchange="onFilterChange('a')"></div>
+            <div class="filter-field"><label>To date</label><input type="date" id="date-to-a" onchange="onFilterChange('a')"></div>
+            <div class="filter-field"><label>From time (UTC)</label><input type="time" id="time-from-a" onchange="onFilterChange('a')"></div>
+            <div class="filter-field"><label>To time (UTC)</label><input type="time" id="time-to-a" onchange="onFilterChange('a')"></div>
+          </div>
+          <div class="filter-field"><label>Search notes/tags</label>
+            <input type="text" id="search-a" placeholder="e.g. pre-upgrade" onchange="onFilterChange('a')">
+          </div>
+          <div class="filter-field" style="margin-top:8px"><label>Tags</label></div>
+          <div class="test-chip-row" id="tag-filters-a"></div>
+          <div class="filter-field"><label>Only runs that include</label></div>
+          <div class="test-chip-row" id="test-filters-a"></div>
+          <div class="filters-actions">
+            <span class="run-count" id="run-count-a"></span>
+            <span class="btn btn-ghost" onclick="clearFilters('a')">Clear filters</span>
+          </div>
+        </details>
+
+        <label>Run</label>
+        <select id="run-select-a" onchange="onRunChange('a')"><option value="">— select a run —</option></select>
+        <div class="run-meta" id="meta-a"><span class="rm-empty">No run selected</span></div>
+      </div>
+
+      <div class="picker-mid">
+        <button class="btn" onclick="swapSides()" title="Swap Run A and Run B">⇄ Swap</button>
+      </div>
+
+      <div class="picker-card side-b">
+        <div class="picker-label-row">
+          <div class="picker-label">Run B</div>
+          <input type="color" id="color-b" value="#06b6d4" title="Color for Run B" onchange="onColorChange('b')">
+        </div>
+        <label>Path</label>
+        <select id="path-select-b" onchange="onPathChange('b')"><option value="">All paths</option></select>
+
+        <details class="filters">
+          <summary>Filters</summary>
+          <div class="filter-grid">
+            <div class="filter-field"><label>From date</label><input type="date" id="date-from-b" onchange="onFilterChange('b')"></div>
+            <div class="filter-field"><label>To date</label><input type="date" id="date-to-b" onchange="onFilterChange('b')"></div>
+            <div class="filter-field"><label>From time (UTC)</label><input type="time" id="time-from-b" onchange="onFilterChange('b')"></div>
+            <div class="filter-field"><label>To time (UTC)</label><input type="time" id="time-to-b" onchange="onFilterChange('b')"></div>
+          </div>
+          <div class="filter-field"><label>Search notes/tags</label>
+            <input type="text" id="search-b" placeholder="e.g. pre-upgrade" onchange="onFilterChange('b')">
+          </div>
+          <div class="filter-field" style="margin-top:8px"><label>Tags</label></div>
+          <div class="test-chip-row" id="tag-filters-b"></div>
+          <div class="filter-field"><label>Only runs that include</label></div>
+          <div class="test-chip-row" id="test-filters-b"></div>
+          <div class="filters-actions">
+            <span class="run-count" id="run-count-b"></span>
+            <span class="btn btn-ghost" onclick="clearFilters('b')">Clear filters</span>
+          </div>
+        </details>
+
+        <label>Run</label>
+        <select id="run-select-b" onchange="onRunChange('b')"><option value="">— select a run —</option></select>
+        <div class="run-meta" id="meta-b"><span class="rm-empty">No run selected</span></div>
+      </div>
+    </div>
+
+    <div class="go-row">
+      <button class="btn btn-go" id="go-btn" onclick="runCompare()" disabled>▶ Compare</button>
+      <span class="go-status" id="go-status">Select a run for both sides</span>
+    </div>
+
+    <div id="compare-empty" class="empty">Select two runs above, then click Compare.</div>
+
+    <div id="compare-results" style="display:none;display:flex;flex-direction:column;gap:16px">
+
+      <div class="panel" id="metrics-panel">
+        <div class="panel-header">
+          <span class="panel-title">Metric comparison</span>
+          <span class="panel-sub">Δ = Run B − Run A · green = improvement, red = regression</span>
+        </div>
+        <div class="panel-body" id="metrics-body"></div>
+      </div>
+
+      <div class="panel" id="tr-forward-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Traceroute — forward</span>
+          <span class="panel-sub">aligned by hop number</span>
+        </div>
+        <div class="panel-body" id="tr-forward-body"></div>
+      </div>
+
+      <div class="panel" id="tr-reverse-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Traceroute — reverse</span>
+          <span class="panel-sub">aligned by hop number</span>
+        </div>
+        <div class="panel-body" id="tr-reverse-body"></div>
+      </div>
+
+      <div class="panel" id="chart-forward-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Per-hop RTT — forward</span>
+          <span class="panel-sub"><span style="color:var(--run-a)">■</span> Run A &nbsp; <span style="color:var(--run-b)">■</span> Run B</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-forward"></canvas></div>
+      </div>
+
+      <div class="panel" id="chart-reverse-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Per-hop RTT — reverse</span>
+          <span class="panel-sub"><span style="color:var(--run-a)">■</span> Run A &nbsp; <span style="color:var(--run-b)">■</span> Run B</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-reverse"></canvas></div>
+      </div>
+
+      <div class="panel" id="mtr-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">MTR — latency under load</span>
+          <span class="panel-sub">aligned by hop number · captured while the link was saturated</span>
+        </div>
+        <div class="panel-body" id="mtr-body"></div>
+      </div>
+
+      <div class="panel" id="chart-mtr-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Per-hop RTT — MTR (under load)</span>
+          <span class="panel-sub"><span style="color:var(--run-a)">■</span> Run A &nbsp; <span style="color:var(--run-b)">■</span> Run B</span>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-mtr"></canvas></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Notes/tags editor -->
+<div class="annotate-overlay" id="annotate-overlay">
+  <div class="annotate-modal">
+    <div class="annotate-header">
+      <span class="annotate-title">Notes &amp; tags for this run</span>
+      <button class="annotate-close" onclick="closeAnnotateModal()" aria-label="Close">✕</button>
+    </div>
+    <div class="annotate-body">
+      <div>
+        <label>Notes</label>
+        <textarea id="annotate-notes" placeholder="What's notable about this run?"></textarea>
+      </div>
+      <div>
+        <label>Tags (comma-separated)</label>
+        <input type="text" id="annotate-tags" list="annotate-tag-suggestions" placeholder="e.g. baseline, pre-upgrade, incident-2026-09-10">
+        <datalist id="annotate-tag-suggestions"></datalist>
+      </div>
+    </div>
+    <div class="annotate-footer">
+      <button class="btn" onclick="closeAnnotateModal()">Cancel</button>
+      <button class="btn btn-go" onclick="saveAnnotation()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let recordA = null, recordB = null;
+const charts = {};
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+function fmt(v, unit='', dec=1) {
+  if (v == null || v === undefined || Number.isNaN(v)) return '—';
+  return Number(v).toFixed(dec) + unit;
+}
+
+// A record's throughput field can be a list (one entry per direction run) or,
+// for older records, a single object. Collapse to one summary for display.
+function throughputSummary(r) {
+  const raw = r && r.throughput;
+  if (!raw) return null;
+  const entries = Array.isArray(raw) ? raw : [raw];
+  if (!entries.length) return null;
+  const txVals = entries.map(e => e.tx_mbps).filter(v => v != null);
+  const rxVals = entries.map(e => e.rx_mbps).filter(v => v != null);
+  return {
+    tx_mbps:     txVals.length ? Math.max(...txVals) : null,
+    rx_mbps:     rxVals.length ? Math.max(...rxVals) : null,
+    retransmits: Math.max(...entries.map(e => e.retransmits || 0)),
+  };
+}
+
+// ── Pickers ────────────────────────────────────────────────
+
+async function loadPaths() {
+  const paths = await api('/api/paths');
+  const opts = '<option value="">All paths</option>' +
+    paths.map(p => `<option value="${p.id}">${escapeHtml(p.label)}</option>`).join('');
+  document.getElementById('path-select-a').innerHTML = opts;
+  document.getElementById('path-select-b').innerHTML = opts;
+}
+
+// ── Run filters (per side) ─────────────────────────────────
+// Narrows what shows up in that side's Run dropdown. Independent per side —
+// e.g. side A can be filtered to "only runs with latency_under_load" while
+// side B browses unfiltered.
+
+const TEST_FILTER_OPTIONS = [
+  { key: 'latency',             label: 'Latency' },
+  { key: 'throughput',          label: 'Throughput' },
+  { key: 'jitter',              label: 'Jitter' },
+  { key: 'latency_under_load',  label: 'Latency Under Load' },
+  { key: 'mtu',                 label: 'MTU' },
+  { key: 'traceroute',          label: 'Traceroute (fwd)' },
+  { key: 'traceroute_reverse',  label: 'Traceroute (rev)' },
+];
+
+const filterState = {
+  a: { tests: new Set(), tags: new Set() },
+  b: { tests: new Set(), tags: new Set() },
+};
+
+let ALL_TAGS = [];
+
+function renderTestFilterChips(side) {
+  const container = document.getElementById(`test-filters-${side}`);
+  container.innerHTML = TEST_FILTER_OPTIONS.map(opt => `
+    <span class="test-chip" data-test="${opt.key}" onclick="toggleTestFilter('${side}','${opt.key}')">${opt.label}</span>
+  `).join('');
+}
+
+function toggleTestFilter(side, key) {
+  const set = filterState[side].tests;
+  const chip = document.querySelector(`#test-filters-${side} [data-test="${key}"]`);
+  if (set.has(key)) { set.delete(key); chip.classList.remove('on'); }
+  else { set.add(key); chip.classList.add('on'); }
+  onFilterChange(side);
+}
+
+async function loadAllTags() {
+  try { ALL_TAGS = await api('/api/tags'); } catch (e) { ALL_TAGS = []; }
+  renderTagFilterChips('a');
+  renderTagFilterChips('b');
+}
+
+function renderTagFilterChips(side) {
+  const container = document.getElementById(`tag-filters-${side}`);
+  if (!ALL_TAGS.length) { container.innerHTML = '<span class="run-count">No tags used yet</span>'; return; }
+  container.innerHTML = ALL_TAGS.map(tag => `
+    <span class="test-chip${filterState[side].tags.has(tag) ? ' on' : ''}" data-tag="${escapeHtml(tag)}"
+          onclick="toggleTagFilter('${side}','${escapeHtml(tag)}')">${escapeHtml(tag)}</span>
+  `).join('');
+}
+
+function toggleTagFilter(side, tag) {
+  const set = filterState[side].tags;
+  const chip = document.querySelector(`#tag-filters-${side} [data-tag="${tag}"]`);
+  if (set.has(tag)) { set.delete(tag); chip.classList.remove('on'); }
+  else { set.add(tag); chip.classList.add('on'); }
+  onFilterChange(side);
+}
+
+function readFilterInputs(side) {
+  return {
+    dateFrom: document.getElementById(`date-from-${side}`).value,
+    dateTo:   document.getElementById(`date-to-${side}`).value,
+    timeFrom: document.getElementById(`time-from-${side}`).value,
+    timeTo:   document.getElementById(`time-to-${side}`).value,
+    search:   document.getElementById(`search-${side}`).value.trim(),
+  };
+}
+
+function onFilterChange(side) {
+  const pathId = document.getElementById(`path-select-${side}`).value;
+  populateRunSelect(side, pathId);
+}
+
+function clearFilters(side) {
+  ['date-from', 'date-to', 'time-from', 'time-to'].forEach(prefix => {
+    document.getElementById(`${prefix}-${side}`).value = '';
+  });
+  document.getElementById(`search-${side}`).value = '';
+  filterState[side].tests.clear();
+  filterState[side].tags.clear();
+  document.querySelectorAll(`#test-filters-${side} .test-chip.on`).forEach(c => c.classList.remove('on'));
+  document.querySelectorAll(`#tag-filters-${side} .test-chip.on`).forEach(c => c.classList.remove('on'));
+  onFilterChange(side);
+}
+
+async function populateRunSelect(side, pathId) {
+  const runSel = document.getElementById(`run-select-${side}`);
+  const countEl = document.getElementById(`run-count-${side}`);
+  const prevVal = runSel.value;
+
+  const { dateFrom, dateTo, timeFrom, timeTo, search } = readFilterInputs(side);
+  const qs = new URLSearchParams({ limit: 300 });
+  if (pathId)   qs.set('path_id', pathId);
+  if (dateFrom) qs.set('date_from', dateFrom);
+  if (dateTo)   qs.set('date_to', dateTo);
+  if (timeFrom) qs.set('time_from', timeFrom);
+  if (timeTo)   qs.set('time_to', timeTo);
+  if (search)   qs.set('q', search);
+  if (filterState[side].tests.size) qs.set('tests', [...filterState[side].tests].join(','));
+  if (filterState[side].tags.size)  qs.set('tag', [...filterState[side].tags].join(','));
+
+  const runs = await api(`/api/runs?${qs.toString()}`);
+  runSel.innerHTML = '<option value="">— select a run —</option>' + runs.map(r => {
+    const tagSuffix = r.tags && r.tags.length ? ` [${r.tags.join(', ')}]` : '';
+    return `<option value="${r.result_id}">${(r.timestamp_utc || '').replace('T',' ').slice(0,19)} UTC · ${escapeHtml(r.path_label)}${r.success ? '' : ' ✗'}${escapeHtml(tagSuffix)}</option>`;
+  }).join('');
+  if (prevVal && [...runSel.options].some(o => o.value === prevVal)) runSel.value = prevVal;
+
+  if (countEl) countEl.textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} match`;
+}
+
+function onPathChange(side) {
+  const pathId = document.getElementById(`path-select-${side}`).value;
+  populateRunSelect(side, pathId);
+}
+
+function onRunChange(side) {
+  const resultId = document.getElementById(`run-select-${side}`).value;
+  if (resultId) loadSide(side, resultId);
+}
+
+// ── Run colors ─────────────────────────────────────────────
+// Persisted per-browser so a returning user's picks stick; applied as CSS
+// custom properties so every element that references var(--run-a/--run-b)
+// (picker cards, hop diff, traceroute meta, chart legend) updates as one.
+function applyColor(side, value) {
+  document.documentElement.style.setProperty(`--run-${side}`, value);
+}
+
+function onColorChange(side) {
+  const value = document.getElementById(`color-${side}`).value;
+  applyColor(side, value);
+  try { localStorage.setItem(`nettest.compare.color${side}`, value); } catch (e) {}
+  // Chart colors are baked into the canvas at draw time, so only the chart
+  // needs an explicit re-render — CSS-based elements update automatically.
+  if (recordA && recordB) { renderHopChart('forward'); renderHopChart('reverse'); renderMtrChart(); }
+}
+
+function loadStoredColors() {
+  ['a', 'b'].forEach(side => {
+    let value;
+    try { value = localStorage.getItem(`nettest.compare.color${side}`); } catch (e) { value = null; }
+    if (value) {
+      document.getElementById(`color-${side}`).value = value;
+      applyColor(side, value);
+    }
+  });
+}
+
+// ── Explicit Compare (Go) gating ───────────────────────────
+// Selecting/loading a run only stages it — the comparison itself (metrics,
+// traceroute diff, chart) only (re)renders when the Compare button is
+// clicked, so flipping through dropdowns doesn't re-trigger it each time.
+function updateGoState() {
+  const btn    = document.getElementById('go-btn');
+  const status = document.getElementById('go-status');
+  const ready  = !!(recordA && recordB);
+  btn.disabled = !ready;
+  status.textContent = ready
+    ? 'Both runs loaded — click Compare to view the comparison'
+    : 'Select a run for both sides';
+}
+
+function resetComparisonView() {
+  document.getElementById('compare-results').style.display = 'none';
+  document.getElementById('compare-empty').style.display = '';
+  updateGoState();
+}
+
+function renderMeta(side, record) {
+  const el = document.getElementById(`meta-${side}`);
+  if (!record) { el.innerHTML = '<span class="rm-empty">No run selected</span>'; return; }
+  // record.error is the run's own "one of the sub-tests failed" note (set by
+  // path_tester at test time) — worth surfacing, but it's run data, not a
+  // reason to refuse loading the run.
+  const errLine = record.error
+    ? `<span class="rm-ts badge-fail" title="${escapeHtml(record.error)}">⚠ ${escapeHtml(record.error)}</span>`
+    : '';
+  const tags = record.tags || [];
+  const tagChips = tags.map(t => `<span class="run-tag-chip">${escapeHtml(t)}</span>`).join(' ');
+  const notesLine = record.notes
+    ? `<span class="rm-hosts" title="${escapeHtml(record.notes)}">📝 ${escapeHtml(record.notes)}</span>`
+    : '';
+  el.innerHTML = `
+    <span class="rm-path">${escapeHtml(record.path_label)}</span>
+    <span class="rm-hosts">${escapeHtml(record.source_host)} → ${escapeHtml(record.destination_host)}</span>
+    <span class="rm-ts">${(record.timestamp_utc||'').replace('T',' ').slice(0,19)} UTC ·
+      <span class="${record.success ? 'badge-ok' : 'badge-fail'}">${record.success ? '✓ success' : '✗ failed'}</span>
+    </span>
+    ${errLine}
+    ${notesLine}
+    <span>${tagChips} <span class="edit-link" onclick="openAnnotateModal('${side}')">🏷 edit notes/tags</span></span>`;
+}
+
+// ── Notes/tags editor ──────────────────────────────────────
+let annotateSide = null;
+let _tagSuggestionsLoaded = false;
+
+function loadTagSuggestions() {
+  if (_tagSuggestionsLoaded) return;
+  document.getElementById('annotate-tag-suggestions').innerHTML =
+    ALL_TAGS.map(t => `<option value="${escapeHtml(t)}">`).join('');
+  _tagSuggestionsLoaded = true;
+}
+
+function openAnnotateModal(side) {
+  const record = side === 'a' ? recordA : recordB;
+  if (!record) return;
+  annotateSide = side;
+  loadTagSuggestions();
+  document.getElementById('annotate-notes').value = record.notes || '';
+  document.getElementById('annotate-tags').value  = (record.tags || []).join(', ');
+  document.getElementById('annotate-overlay').classList.add('open');
+}
+
+function closeAnnotateModal() {
+  document.getElementById('annotate-overlay').classList.remove('open');
+  annotateSide = null;
+}
+
+async function saveAnnotation() {
+  if (!annotateSide) return;
+  const side   = annotateSide;
+  const record = side === 'a' ? recordA : recordB;
+  const notes  = document.getElementById('annotate-notes').value;
+  const tags   = document.getElementById('annotate-tags').value
+    .split(',').map(t => t.trim()).filter(Boolean);
+
+  try {
+    const r = await fetch(`/api/annotations/${encodeURIComponent(record.result_id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes, tags }),
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    const entry = await r.json();
+    record.notes = entry.notes;
+    record.tags  = entry.tags;
+
+    closeAnnotateModal();
+    renderMeta(side, record);
+
+    // New tags may have been introduced — refresh the tag facets and this
+    // side's run list so the dropdown label / filter chips stay current.
+    _tagSuggestionsLoaded = false;
+    await loadAllTags();
+    await populateRunSelect(side, document.getElementById(`path-select-${side}`).value);
+  } catch (e) {
+    alert('Could not save notes/tags: ' + e.message);
+  }
+}
+
+async function loadSide(side, resultId) {
+  if (!resultId) return;
+  let record;
+  try {
+    record = await api(`/api/result/${encodeURIComponent(resultId)}`);
+  } catch (e) {
+    alert('Could not load run: ' + e.message);
+    return;
+  }
+
+  if (side === 'a') recordA = record; else recordB = record;
+
+  const pathSel = document.getElementById(`path-select-${side}`);
+  const runSel  = document.getElementById(`run-select-${side}`);
+
+  if (pathSel.value !== (record.path_id || '')) {
+    pathSel.value = record.path_id || '';
+    await populateRunSelect(side, record.path_id);
+  }
+  if (![...runSel.options].some(o => o.value === resultId)) {
+    const opt = document.createElement('option');
+    opt.value = resultId;
+    opt.textContent = `${(record.timestamp_utc||'').replace('T',' ').slice(0,19)} UTC · ${record.path_label}`;
+    runSel.insertBefore(opt, runSel.firstChild.nextSibling);
+  }
+  runSel.value = resultId;
+
+  renderMeta(side, record);
+  resetComparisonView();
+}
+
+function swapFilterInputs() {
+  ['date-from', 'date-to', 'time-from', 'time-to', 'search'].forEach(prefix => {
+    const elA = document.getElementById(`${prefix}-a`);
+    const elB = document.getElementById(`${prefix}-b`);
+    const tmp = elA.value; elA.value = elB.value; elB.value = tmp;
+  });
+  const tmpTests = filterState.a.tests;
+  filterState.a.tests = filterState.b.tests;
+  filterState.b.tests = tmpTests;
+  const tmpTags = filterState.a.tags;
+  filterState.a.tags = filterState.b.tags;
+  filterState.b.tags = tmpTags;
+  ['a', 'b'].forEach(side => {
+    document.querySelectorAll(`#test-filters-${side} .test-chip`).forEach(chip => {
+      chip.classList.toggle('on', filterState[side].tests.has(chip.dataset.test));
+    });
+    document.querySelectorAll(`#tag-filters-${side} .test-chip`).forEach(chip => {
+      chip.classList.toggle('on', filterState[side].tags.has(chip.dataset.tag));
+    });
+  });
+}
+
+function swapSides() {
+  const a = document.getElementById('run-select-a').value;
+  const b = document.getElementById('run-select-b').value;
+  const pa = document.getElementById('path-select-a').value;
+  const pb = document.getElementById('path-select-b').value;
+  document.getElementById('path-select-a').value = pb;
+  document.getElementById('path-select-b').value = pa;
+  swapFilterInputs();
+  const tmpA = recordA, tmpB = recordB;
+  recordA = tmpB; recordB = tmpA;
+  Promise.all([
+    populateRunSelect('a', pb),
+    populateRunSelect('b', pa),
+  ]).then(() => {
+    document.getElementById('run-select-a').value = b;
+    document.getElementById('run-select-b').value = a;
+    renderMeta('a', recordA);
+    renderMeta('b', recordB);
+    resetComparisonView();
+  });
+}
+
+// ── Compare rendering (explicit — only on Go button click) ─
+
+function runCompare() {
+  if (!recordA || !recordB) return;
+
+  document.getElementById('compare-empty').style.display = 'none';
+  document.getElementById('compare-results').style.display = 'flex';
+
+  renderMetrics();
+  renderTraceroute('forward');
+  renderTraceroute('reverse');
+  renderHopChart('forward');
+  renderHopChart('reverse');
+  renderMtr();
+  renderMtrChart();
+}
+
+const METRIC_GROUPS = [
+  { title: 'Latency (ping)', rows: [
+      { label: 'Avg RTT',        unit: ' ms', dec: 2, lowerBetter: true,  get: r => r.latency?.rtt_avg_ms },
+      { label: 'Min RTT',        unit: ' ms', dec: 2, lowerBetter: null,  get: r => r.latency?.rtt_min_ms },
+      { label: 'Max RTT',        unit: ' ms', dec: 2, lowerBetter: true,  get: r => r.latency?.rtt_max_ms },
+      { label: 'Jitter (mdev)',  unit: ' ms', dec: 2, lowerBetter: true,  get: r => r.latency?.rtt_mdev_ms },
+      { label: 'Packet loss',    unit: '%',   dec: 2, lowerBetter: true,  get: r => r.latency?.packet_loss_pct },
+  ]},
+  { title: 'Jitter (UDP)', rows: [
+      { label: 'Jitter',      unit: ' ms', dec: 2, lowerBetter: true, get: r => r.jitter?.jitter_ms },
+      { label: 'Packet loss', unit: '%',   dec: 2, lowerBetter: true, get: r => r.jitter?.packet_loss_pct },
+  ]},
+  { title: 'Throughput', rows: [
+      { label: 'TX',          unit: ' Mbps', dec: 1, lowerBetter: false, get: r => throughputSummary(r)?.tx_mbps },
+      { label: 'RX',          unit: ' Mbps', dec: 1, lowerBetter: false, get: r => throughputSummary(r)?.rx_mbps },
+      { label: 'Retransmits', unit: '',      dec: 0, lowerBetter: true,  get: r => throughputSummary(r)?.retransmits },
+  ]},
+  { title: 'Latency Under Load', rows: [
+      { label: 'Idle RTT',            unit: ' ms', dec: 2, lowerBetter: true, get: r => r.latency_under_load?.idle_rtt_avg_ms },
+      { label: 'Loaded RTT',          unit: ' ms', dec: 2, lowerBetter: true, get: r => r.latency_under_load?.loaded_rtt_avg_ms },
+      { label: 'Bufferbloat Δ',       unit: ' ms', dec: 2, lowerBetter: true, get: r => r.latency_under_load?.delta_ms },
+      { label: 'Loaded packet loss',  unit: '%',   dec: 2, lowerBetter: true, get: r => r.latency_under_load?.loaded_packet_loss_pct },
+  ]},
+  { title: 'MTU', rows: [
+      { label: 'Effective MTU', unit: ' B', dec: 0, lowerBetter: false, get: r => r.mtu?.effective_mtu_bytes },
+  ]},
+];
+
+function deltaClass(delta, lowerBetter) {
+  if (delta === 0 || lowerBetter === null || lowerBetter === undefined) return 'c-mt';
+  const improved = lowerBetter ? delta < 0 : delta > 0;
+  return improved ? 'c-gn' : 'c-rd';
+}
+
+function renderMetrics() {
+  const body = document.getElementById('metrics-body');
+  let html = `<table class="metrics"><thead><tr>
+    <th>Metric</th><th style="color:var(--run-a)">Run A</th><th style="color:var(--run-b)">Run B</th><th>Δ (B − A)</th>
+  </tr></thead><tbody>`;
+
+  let anyRows = false;
+  METRIC_GROUPS.forEach(group => {
+    const rows = group.rows.filter(row => row.get(recordA) != null || row.get(recordB) != null);
+    if (!rows.length) return;
+    anyRows = true;
+    html += `<tr><td colspan="4" class="metrics-group-title">${group.title}</td></tr>`;
+    rows.forEach(row => {
+      const a = row.get(recordA);
+      const b = row.get(recordB);
+      let deltaTxt = '—', dClass = '';
+      if (a != null && b != null) {
+        const d = b - a;
+        deltaTxt = (d > 0 ? '+' : '') + fmt(d, row.unit, row.dec);
+        dClass = deltaClass(d, row.lowerBetter);
+      }
+      html += `<tr>
+        <td>${row.label}</td>
+        <td>${fmt(a, row.unit, row.dec)}</td>
+        <td>${fmt(b, row.unit, row.dec)}</td>
+        <td class="${dClass}">${deltaTxt}</td>
+      </tr>`;
+    });
+  });
+  html += '</tbody></table>';
+
+  body.innerHTML = anyRows ? html : '<div class="empty">No comparable metrics on either run.</div>';
+}
+
+function hopRttDeltaClass(delta) {
+  const ad = Math.abs(delta);
+  if (ad > 50) return 'c-rd';
+  if (ad > 15) return 'c-yw';
+  return 'c-gn';
+}
+
+function buildHopNode(h, side) {
+  if (!h) return `<div class="cmp-hop-node ${side} missing">—</div>`;
+  if (!h.responding) return `<div class="cmp-hop-node ${side} dead">* * *</div>`;
+  const host = h.hostname && h.hostname !== h.ip ? h.hostname : (h.ip || '?');
+  const ipLine = h.hostname && h.hostname !== h.ip ? `<div class="cmp-hop-ip">${escapeHtml(h.ip)}</div>` : '';
+  const rtt = h.rtt_avg_ms;
+  return `<div class="cmp-hop-node ${side}">
+    <div class="cmp-hop-host">${escapeHtml(host)}</div>
+    ${ipLine}
+    <div class="cmp-hop-rtt">${rtt != null ? rtt.toFixed(1) + ' ms' : '—'}</div>
+  </div>`;
+}
+
+function buildHopColumn(hopNum, ha, hb) {
+  let changed = false;
+  let deltaHtml = '<div class="cmp-hop-delta">—</div>';
+
+  if (!ha || !hb) {
+    changed = false; // extra hop on one side — shown via the "missing" style, not flagged yellow
+  } else if (ha.responding !== hb.responding) {
+    changed = true;
+    deltaHtml = `<div class="cmp-hop-delta">responsiveness changed</div>`;
+  } else if (ha.responding && hb.responding) {
+    const sameHost = (ha.ip && ha.ip === hb.ip) || (ha.hostname && ha.hostname === hb.hostname);
+    if (!sameHost) {
+      changed = true;
+      deltaHtml = `<div class="cmp-hop-delta">route changed</div>`;
+    } else if (ha.rtt_avg_ms != null && hb.rtt_avg_ms != null) {
+      const d = hb.rtt_avg_ms - ha.rtt_avg_ms;
+      deltaHtml = `<div class="cmp-hop-delta ${hopRttDeltaClass(d)}">${d >= 0 ? '+' : ''}${d.toFixed(1)} ms</div>`;
+    }
+  }
+
+  return `<div class="cmp-hop-col${changed ? ' changed' : ''}">
+    <div class="cmp-hop-num">hop ${hopNum}</div>
+    ${buildHopNode(ha, 'a')}
+    ${deltaHtml}
+    ${buildHopNode(hb, 'b')}
+  </div>`;
+}
+
+function renderTraceroute(direction) {
+  const key   = direction === 'forward' ? 'traceroute_forward' : 'traceroute_reverse';
+  const panel = document.getElementById(`tr-${direction}-panel`);
+  const body  = document.getElementById(`tr-${direction}-body`);
+
+  const a = recordA[key], b = recordB[key];
+  const hopsA = a?.hops || [];
+  const hopsB = b?.hops || [];
+
+  if (!hopsA.length && !hopsB.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+
+  const maxLen = Math.max(hopsA.length, hopsB.length);
+  let html = `<div class="cmp-tr-meta">
+    <span>A: ${escapeHtml(a?.source_host || '?')} → ${escapeHtml(a?.dest_host || '?')}</span>
+    <span>B: ${escapeHtml(b?.source_host || '?')} → ${escapeHtml(b?.dest_host || '?')}</span>
+  </div><div class="cmp-tr-grid">`;
+  for (let i = 0; i < maxLen; i++) {
+    html += buildHopColumn(i + 1, hopsA[i], hopsB[i]);
+  }
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+// ── MTR (latency-under-load) diff ──────────────────────────
+// MTR hops carry a different shape than traceroute hops (host + loss/avg/
+// best/worst/stddev, no per-probe rtt list or explicit "responding" flag —
+// mtr reports a hop as "???" host with no timing when it never replied).
+
+function mtrHostOf(h) {
+  return (h && h.host && h.host !== '???') ? h.host : null;
+}
+
+function buildMtrNode(h, side) {
+  if (!h) return `<div class="cmp-hop-node ${side} missing">—</div>`;
+  const host = mtrHostOf(h);
+  if (!host && h.avg_ms == null) return `<div class="cmp-hop-node ${side} dead">* * *</div>`;
+
+  const lossPct   = h.loss_pct;
+  const lossClass = lossPct > 5 ? 'c-rd' : lossPct > 0 ? 'c-yw' : '';
+  return `<div class="cmp-hop-node ${side}">
+    <div class="cmp-hop-host">${escapeHtml(host || '?')}</div>
+    <div class="cmp-hop-rtt">${h.avg_ms != null ? h.avg_ms.toFixed(1) + ' ms' : '—'}</div>
+    ${lossPct != null ? `<div class="cmp-hop-ip ${lossClass}">${lossPct}% loss</div>` : ''}
+  </div>`;
+}
+
+function buildMtrColumn(hopNum, ha, hb) {
+  let changed = false;
+  let deltaHtml = '<div class="cmp-hop-delta">—</div>';
+
+  if (ha && hb) {
+    const hostA = mtrHostOf(ha), hostB = mtrHostOf(hb);
+    if (hostA && hostB && hostA !== hostB) {
+      changed = true;
+      deltaHtml = `<div class="cmp-hop-delta">route changed</div>`;
+    } else if (ha.avg_ms != null && hb.avg_ms != null) {
+      const d = hb.avg_ms - ha.avg_ms;
+      deltaHtml = `<div class="cmp-hop-delta ${hopRttDeltaClass(d)}">${d >= 0 ? '+' : ''}${d.toFixed(1)} ms</div>`;
+    }
+  }
+
+  return `<div class="cmp-hop-col${changed ? ' changed' : ''}">
+    <div class="cmp-hop-num">hop ${hopNum}</div>
+    ${buildMtrNode(ha, 'a')}
+    ${deltaHtml}
+    ${buildMtrNode(hb, 'b')}
+  </div>`;
+}
+
+function renderMtr() {
+  const panel = document.getElementById('mtr-panel');
+  const body  = document.getElementById('mtr-body');
+
+  const hopsA = recordA.latency_under_load?.mtr_hops || [];
+  const hopsB = recordB.latency_under_load?.mtr_hops || [];
+
+  if (!hopsA.length && !hopsB.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+
+  const maxLen = Math.max(hopsA.length, hopsB.length);
+  let html = '<div class="cmp-tr-grid">';
+  for (let i = 0; i < maxLen; i++) {
+    html += buildMtrColumn(i + 1, hopsA[i], hopsB[i]);
+  }
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+function buildHopLineChart(canvasId, panelId, hopsA, hopsB, valueKey) {
+  const panel  = document.getElementById(panelId);
+  const maxLen = Math.max(hopsA.length, hopsB.length);
+
+  if (!maxLen) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+
+  const labels = Array.from({ length: maxLen }, (_, i) => `Hop ${i + 1}`);
+  const dataA  = Array.from({ length: maxLen }, (_, i) => hopsA[i]?.[valueKey] ?? null);
+  const dataB  = Array.from({ length: maxLen }, (_, i) => hopsB[i]?.[valueKey] ?? null);
+
+  if (charts[canvasId]) { charts[canvasId].destroy(); }
+
+  const colorA = document.getElementById('color-a').value;
+  const colorB = document.getElementById('color-b').value;
+
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Run A', data: dataA, borderColor: colorA, backgroundColor: colorA,
+          spanGaps: false, tension: .25, pointRadius: 3 },
+        { label: 'Run B', data: dataB, borderColor: colorB, backgroundColor: colorB,
+          spanGaps: false, tension: .25, pointRadius: 3 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#2a3040' } },
+        y: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#2a3040' },
+             title: { display: true, text: 'ms', color: '#64748b', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+function renderHopChart(direction) {
+  const key = direction === 'forward' ? 'traceroute_forward' : 'traceroute_reverse';
+  const hopsA = recordA[key]?.hops || [];
+  const hopsB = recordB[key]?.hops || [];
+  buildHopLineChart(`chart-${direction}`, `chart-${direction}-panel`, hopsA, hopsB, 'rtt_avg_ms');
+}
+
+function renderMtrChart() {
+  const hopsA = recordA.latency_under_load?.mtr_hops || [];
+  const hopsB = recordB.latency_under_load?.mtr_hops || [];
+  buildHopLineChart('chart-mtr', 'chart-mtr-panel', hopsA, hopsB, 'avg_ms');
+}
+
+// ── Init ───────────────────────────────────────────────────
+
+async function init() {
+  loadStoredColors();
+  updateGoState();
+  renderTestFilterChips('a');
+  renderTestFilterChips('b');
+  await loadAllTags();
+  await loadPaths();
+  await Promise.all([populateRunSelect('a'), populateRunSelect('b')]);
+
+  const params = new URLSearchParams(window.location.search);
+  const aId = params.get('a');
+  const bId = params.get('b');
+  if (aId) await loadSide('a', aId);
+  if (bId) await loadSide('b', bId);
+}
+
+init();
+</script>
+</body>
+</html>

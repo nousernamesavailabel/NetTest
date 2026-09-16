@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetTest — Speed Test</title>
+<style>
+:root {
+  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
+  --bdr:#2a3040; --bdr2:#3a4458;
+  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
+  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --cy:#06b6d4; --bl:#3b82f6;
+  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--fn);font-size:13px;min-height:100vh}
+a{color:var(--cy);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.shell{display:grid;grid-template-rows:48px 1fr;min-height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;
+        padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf)}
+.topbar-left{display:flex;align-items:center;gap:14px}
+.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
+.logo span{color:var(--cy)}
+.topbar-right{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--mt)}
+
+.content{padding:20px;display:flex;flex-direction:column;gap:20px;max-width:900px;width:100%;margin:0 auto}
+
+.hero{background:var(--surf);border:1px solid var(--bdr);border-radius:8px;padding:32px 20px 26px;
+      display:flex;flex-direction:column;align-items:center;gap:16px}
+.hero-sub{color:var(--mt);font-size:11px;text-align:center;max-width:480px;line-height:1.5}
+.hero-sub .ip{color:var(--mt2)}
+
+/* ── Speedometer-style gauge ── */
+.go-wrap{display:flex;justify-content:center}
+.go-ring{width:180px;height:180px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+         position:relative;transition:background .18s ease-out}
+.go-ring::before{content:'';position:absolute;inset:10px;border-radius:50%;background:var(--surf);
+                  box-shadow:inset 0 0 0 1px var(--bdr)}
+.go-ring.done{animation:pulse-glow 1.4s ease-out 1}
+@keyframes pulse-glow{
+  0%{box-shadow:0 0 0 0 rgba(34,197,94,.45)}
+  70%{box-shadow:0 0 0 14px rgba(34,197,94,0)}
+  100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}
+}
+
+.go-btn{position:relative;z-index:1;width:150px;height:150px;border-radius:50%;
+        border:2px solid var(--bdr2);background:transparent;color:var(--cy);
+        font-family:var(--fn);cursor:pointer;transition:border-color .15s;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.go-btn:hover:not(:disabled){border-color:var(--cy)}
+.go-btn:disabled{cursor:not-allowed}
+.go-btn.running{border-color:var(--yw)}
+.go-value{font-size:23px;font-weight:700;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.go-value.pop{animation:pop .2s ease-out}
+@keyframes pop{0%{transform:scale(1.15)}100%{transform:scale(1)}}
+.go-unit{font-size:10px;color:var(--mt2);letter-spacing:.5px}
+
+.phase-label{font-size:11px;color:var(--mt);text-transform:uppercase;letter-spacing:1px;min-height:14px}
+.phase-label.active{color:var(--yw)}
+
+.stat-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;width:100%}
+.stat-card{background:var(--surf2);border:1px solid var(--bdr);border-radius:6px;
+           padding:14px 8px;display:flex;flex-direction:column;align-items:center;gap:4px;
+           transition:border-color .2s}
+.stat-card.active{border-color:var(--yw)}
+.stat-label{font-size:9px;color:var(--mt);text-transform:uppercase;letter-spacing:.8px}
+.stat-value{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--tx);
+            display:inline-block}
+.stat-value.pop{animation:pop .22s ease-out}
+.stat-value .unit{font-size:11px;color:var(--mt2);font-weight:400;margin-left:2px}
+.stat-value.pg{color:var(--gn)} .stat-value.dl{color:var(--cy)} .stat-value.ul{color:var(--bl)}
+.stat-sub{font-size:9px;color:var(--mt);text-align:center;line-height:1.4}
+
+.grade-Ap{color:var(--gn)} .grade-A{color:var(--gn)}
+.grade-B{color:var(--yw)} .grade-C{color:var(--yw)}
+.grade-D{color:var(--rd)} .grade-F{color:var(--rd)}
+
+.chart-panel{background:var(--surf);border:1px solid var(--bdr);border-radius:6px;padding:12px 14px}
+.chart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.chart-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mt)}
+.chart-legend{display:flex;gap:14px;font-size:10px;color:var(--mt2)}
+.legend-sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+#spark{width:100%;height:140px;display:block;border-radius:4px;background:var(--surf2)}
+
+.result-note{font-size:11px;color:var(--mt);text-align:center}
+.result-note .ok{color:var(--gn)}
+.result-note .err{color:var(--rd)}
+
+/* ── Bufferbloat explainer ── */
+.info-panel{background:var(--surf);border:1px solid var(--bdr);border-radius:6px;
+            padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.info-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mt)}
+.info-text{font-size:11.5px;color:var(--mt2);line-height:1.65}
+.grade-legend{display:flex;flex-direction:column;gap:7px;margin-top:2px}
+.grade-row{display:grid;grid-template-columns:46px 62px 1fr;align-items:center;gap:12px;font-size:11px}
+.grade-chip{font-weight:700;font-size:13px;text-align:center;padding:2px 0;border-radius:4px;
+            background:var(--surf2);border:1px solid var(--bdr2)}
+.grade-range{color:var(--mt);font-size:10px;white-space:nowrap}
+.grade-desc{color:var(--mt2)}
+
+@media (max-width:760px){
+  .stat-row{grid-template-columns:repeat(3,1fr)}
+}
+@media (max-width:480px){
+  .stat-row{grid-template-columns:repeat(2,1fr)}
+}
+@media (max-width:480px){
+  .go-ring{width:150px;height:150px}
+  .go-btn{width:124px;height:124px}
+  .go-value{font-size:19px}
+  .stat-value{font-size:19px}
+  .grade-row{grid-template-columns:1fr;gap:2px;padding-bottom:6px;border-bottom:1px solid var(--bdr)}
+  .grade-row:last-child{border-bottom:none}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="logo">NET<span>TEST</span></span>
+      <span style="color:var(--mt);font-size:11px">Speed Test</span>
+    </div>
+    <div class="topbar-right">
+      <a href="/">← Dashboard</a>
+      <span style="color:var(--bdr2)">|</span>
+      <a href="/compare">⇄ Compare</a>
+      <span style="color:var(--bdr2)">|</span>
+      <a href="/config">⚙ Config</a>
+      <span style="color:var(--bdr2)">|</span>
+      <a href="/logout">Logout</a>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <div class="hero">
+      <div class="go-wrap">
+        <div class="go-ring" id="go-ring">
+          <button class="go-btn" id="go-btn" onclick="runSpeedTest()">
+            <span class="go-value" id="go-value">GO</span>
+            <span class="go-unit" id="go-unit"></span>
+          </button>
+        </div>
+      </div>
+      <div class="phase-label" id="phase-label">Ready</div>
+      <div class="hero-sub" id="hero-sub">
+        Tests the link between this browser and the NetTest server (<span id="server-host"></span>) —
+        not general internet speed. Run it from the machine/network whose connection you want to check.
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card" id="card-ping">
+        <div class="stat-label">Ping</div>
+        <div class="stat-value pg" id="val-ping">—<span class="unit">ms</span></div>
+        <div class="stat-sub" id="sub-ping">jitter —</div>
+      </div>
+      <div class="stat-card" id="card-mtu">
+        <div class="stat-label">MTU</div>
+        <div class="stat-value" id="val-mtu" style="color:var(--mt2)">—<span class="unit">B</span></div>
+        <div class="stat-sub" id="sub-mtu">range 1000–1500 B</div>
+      </div>
+      <div class="stat-card" id="card-bufferbloat">
+        <div class="stat-label">Bufferbloat</div>
+        <div class="stat-value" id="val-bufferbloat" style="color:var(--mt2)">—</div>
+        <div class="stat-sub" id="sub-bufferbloat">idle → loaded</div>
+      </div>
+      <div class="stat-card" id="card-download">
+        <div class="stat-label">Download</div>
+        <div class="stat-value dl" id="val-download">—<span class="unit">Mbps</span></div>
+        <div class="stat-sub" id="sub-download">&nbsp;</div>
+      </div>
+      <div class="stat-card" id="card-upload">
+        <div class="stat-label">Upload</div>
+        <div class="stat-value ul" id="val-upload">—<span class="unit">Mbps</span></div>
+        <div class="stat-sub" id="sub-upload">&nbsp;</div>
+      </div>
+    </div>
+
+    <div class="chart-panel">
+      <div class="chart-head">
+        <span class="chart-title">Live Throughput</span>
+        <span class="chart-legend">
+          <span><span class="legend-sw" style="background:#06b6d4"></span>Download</span>
+          <span><span class="legend-sw" style="background:#3b82f6"></span>Upload</span>
+        </span>
+      </div>
+      <canvas id="spark" width="1200" height="140"></canvas>
+    </div>
+
+    <div class="result-note" id="result-note">&nbsp;</div>
+
+    <div class="info-panel">
+      <div class="info-title">What is Bufferbloat?</div>
+      <div class="info-text">
+        Bufferbloat happens when a router or modem queues far more data than it needs to before
+        dropping anything. Under a quiet link your ping is low and steady — but the moment a big
+        download or upload saturates that link, its oversized buffers fill up, and every other
+        packet (a video call, a game, a voice call) has to wait in line behind them. Ping can jump
+        from a few milliseconds to hundreds of milliseconds for as long as the link stays busy,
+        even though your "speed" looks fine.
+      </div>
+      <div class="info-text">
+        This test measures it directly: it records your idle ping before the download/upload
+        starts, then keeps pinging in the background while the link is fully loaded. The
+        <strong>Bufferbloat</strong> score above is the worst-case increase between the two,
+        graded like this:
+      </div>
+      <div class="grade-legend">
+        <div class="grade-row"><span class="grade-chip grade-Ap">A+</span><span class="grade-range">&lt; 5 ms</span><span class="grade-desc">Imperceptible — rock solid for gaming and video calls even at full load.</span></div>
+        <div class="grade-row"><span class="grade-chip grade-A">A</span><span class="grade-range">&lt; 30 ms</span><span class="grade-desc">Great — very unlikely you'd ever notice added lag.</span></div>
+        <div class="grade-row"><span class="grade-chip grade-B">B</span><span class="grade-range">&lt; 60 ms</span><span class="grade-desc">Good — minor lag possible in the most latency-sensitive apps.</span></div>
+        <div class="grade-row"><span class="grade-chip grade-C">C</span><span class="grade-range">&lt; 200 ms</span><span class="grade-desc">Fair — noticeable lag in games or calls while the link is busy.</span></div>
+        <div class="grade-row"><span class="grade-chip grade-D">D</span><span class="grade-range">&lt; 400 ms</span><span class="grade-desc">Poor — video calls stutter and games get hard to play under load.</span></div>
+        <div class="grade-row"><span class="grade-chip grade-F">F</span><span class="grade-range">≥ 400 ms</span><span class="grade-desc">Bad — the connection feels like it stalls whenever it's busy.</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+document.getElementById('server-host').textContent = window.location.host;
+
+const DOWNLOAD_STREAMS   = 4;
+const DOWNLOAD_CHUNK     = 20_000_000;   // bytes requested per fetch (looped until duration elapses)
+const DOWNLOAD_DURATION  = 8000;         // ms
+const UPLOAD_STREAMS     = 4;
+const UPLOAD_CHUNK       = 800_000;      // bytes per POST — stays under nginx's 1MB body cap
+const UPLOAD_DURATION    = 8000;         // ms
+const PING_SAMPLES       = 10;
+const LOAD_PING_INTERVAL = 400;          // ms between background pings during dl/ul
+const PING_GAUGE_MAX_MS  = 150;          // ping value that pins the gauge at max (red)
+const MTU_MIN            = 1000;         // bytes — matches the server's probe range
+const MTU_MAX            = 1500;         // standard Ethernet MTU
+
+let running = false;
+
+// ── Small helpers ───────────────────────────────────────────
+
+function setPhase(text, active) {
+  const el = document.getElementById('phase-label');
+  el.textContent = text;
+  el.classList.toggle('active', !!active);
+}
+
+function setCardActive(id, active) {
+  document.getElementById('card-' + id).classList.toggle('active', !!active);
+}
+
+function fmtMbps(v) {
+  return v >= 100 ? v.toFixed(0) : v.toFixed(1);
+}
+
+function setStat(id, value, unit) {
+  const el = document.getElementById('val-' + id);
+  el.innerHTML = unit ? `${value}<span class="unit">${unit}</span>` : value;
+  el.classList.remove('pop');
+  void el.offsetWidth;
+  el.classList.add('pop');
+}
+
+function setGoValue(value, unit) {
+  const valEl = document.getElementById('go-value');
+  valEl.textContent = value;
+  document.getElementById('go-unit').textContent = unit || '';
+  valEl.classList.remove('pop');
+  void valEl.offsetWidth;
+  valEl.classList.add('pop');
+}
+
+// ── Speedometer-style gauge ring ─────────────────────────────
+// A 240° arc (with a gap at the bottom, like a car speedometer) that
+// always shows the green/yellow/red zones, plus a bright marker riding
+// along it at the current reading's position.
+
+const ringEl     = document.getElementById('go-ring');
+const GAUGE_FROM = 240;   // conic-gradient start angle -> arc runs bottom-left to bottom-right
+const GAUGE_SWEEP = 240;  // degrees of visible arc (leaves a 120° gap at the bottom)
+
+function zoneColor(deg) {
+  if (deg < GAUGE_SWEEP / 3)     return '#22c55e';
+  if (deg < GAUGE_SWEEP * 2 / 3) return '#eab308';
+  return '#ef4444';
+}
+
+function gaugeIdle() {
+  ringEl.classList.remove('done');
+  ringEl.style.background =
+    `conic-gradient(from ${GAUGE_FROM}deg, rgba(255,255,255,.06) 0deg ${GAUGE_SWEEP}deg, transparent ${GAUGE_SWEEP}deg 360deg)`;
+}
+
+function gaugeSet(fraction) {
+  ringEl.classList.remove('done');
+  const deg  = Math.max(0, Math.min(1, fraction)) * GAUGE_SWEEP;
+  const tip  = zoneColor(deg);
+  const tipA = Math.max(0, deg - 4);
+  const tipB = Math.min(GAUGE_SWEEP, deg + 4);
+  const third1 = GAUGE_SWEEP / 3, third2 = GAUGE_SWEEP * 2 / 3;
+  ringEl.style.background = `
+    conic-gradient(from ${GAUGE_FROM}deg, transparent 0deg ${tipA}deg, ${tip} ${tipA}deg ${tipB}deg, transparent ${tipB}deg 360deg),
+    conic-gradient(from ${GAUGE_FROM}deg, rgba(34,197,94,.3) 0deg ${third1}deg, rgba(234,179,8,.3) ${third1}deg ${third2}deg, rgba(239,68,68,.3) ${third2}deg ${GAUGE_SWEEP}deg, transparent ${GAUGE_SWEEP}deg 360deg)
+  `;
+}
+
+function gaugeDone() {
+  ringEl.style.background = 'conic-gradient(#22c55e 360deg, #22c55e 360deg)';
+  void ringEl.offsetWidth;
+  ringEl.classList.add('done');
+}
+
+// ── Live throughput sparkline ────────────────────────────────
+
+const spark   = document.getElementById('spark');
+const sctx    = spark.getContext('2d');
+const SPARK_MAX_POINTS = 240;
+let sparkPoints = [];   // {mbps, color}
+let sparkCeil   = 10;
+
+function resetSpark() {
+  sparkPoints = [];
+  sparkCeil = 10;
+  drawSpark();
+}
+
+function pushSpark(mbps, color) {
+  sparkPoints.push({ mbps, color });
+  if (sparkPoints.length > SPARK_MAX_POINTS) sparkPoints.shift();
+  sparkCeil = Math.max(10, sparkCeil, mbps * 1.15);
+  drawSpark();
+}
+
+function drawSpark() {
+  const w = spark.width, h = spark.height;
+  sctx.clearRect(0, 0, w, h);
+  sctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  sctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const y = Math.round(h - (h * i / 4)) + 0.5;
+    sctx.beginPath(); sctx.moveTo(0, y); sctx.lineTo(w, y); sctx.stroke();
+  }
+  if (sparkPoints.length < 2) return;
+  const stepX = w / (SPARK_MAX_POINTS - 1);
+  const offset = SPARK_MAX_POINTS - sparkPoints.length;
+  sctx.lineWidth = 2.5;
+  sctx.lineJoin = 'round';
+  for (let i = 1; i < sparkPoints.length; i++) {
+    const p0 = sparkPoints[i - 1], p1 = sparkPoints[i];
+    const x0 = (offset + i - 1) * stepX, x1 = (offset + i) * stepX;
+    const y0 = h - (p0.mbps / sparkCeil) * h, y1 = h - (p1.mbps / sparkCeil) * h;
+    sctx.strokeStyle = p1.color;
+    sctx.beginPath(); sctx.moveTo(x0, y0); sctx.lineTo(x1, y1); sctx.stroke();
+  }
+}
+
+// ── Bufferbloat grade ────────────────────────────────────────
+
+function bufferbloatGrade(deltaMs) {
+  if (deltaMs < 5)   return { grade: 'A+', cls: 'grade-Ap' };
+  if (deltaMs < 30)  return { grade: 'A',  cls: 'grade-A'  };
+  if (deltaMs < 60)  return { grade: 'B',  cls: 'grade-B'  };
+  if (deltaMs < 200) return { grade: 'C',  cls: 'grade-C'  };
+  if (deltaMs < 400) return { grade: 'D',  cls: 'grade-D'  };
+  return { grade: 'F', cls: 'grade-F' };
+}
+
+function avg(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null; }
+
+// ── Ping ─────────────────────────────────────────────────────
+
+async function measurePing(samples, onSample) {
+  const times = [];
+  let clientIp = null;
+  for (let i = 0; i < samples; i++) {
+    const t0 = performance.now();
+    try {
+      const res = await fetch('/api/speedtest/ping?_=' + Math.random(), { cache: 'no-store' });
+      const dt = performance.now() - t0;
+      times.push(dt);
+      if (onSample) onSample(dt);
+      if (!clientIp) {
+        try { clientIp = (await res.json()).client_ip; } catch (e) {}
+      }
+    } catch (e) { continue; }
+  }
+  if (!times.length) return null;
+  const min = Math.min(...times);
+  let jitterSum = 0;
+  for (let i = 1; i < times.length; i++) jitterSum += Math.abs(times[i] - times[i - 1]);
+  const jitter = times.length > 1 ? jitterSum / (times.length - 1) : 0;
+  return { min, avg: avg(times), jitter, clientIp };
+}
+
+async function backgroundPinger(deadline, stopFlag, out) {
+  while (performance.now() < deadline && !stopFlag.stop) {
+    const t0 = performance.now();
+    try {
+      await fetch('/api/speedtest/ping?_=' + Math.random(), { cache: 'no-store' });
+      out.push(performance.now() - t0);
+    } catch (e) { /* ignore */ }
+    await new Promise(r => setTimeout(r, LOAD_PING_INTERVAL));
+  }
+}
+
+// ── MTU discovery ────────────────────────────────────────────
+// Binary search over DF-flagged ping probes, mirroring MTURunner's
+// approach (core/runners) but run client-driven so each probe can be
+// shown live instead of blocking on one long request.
+
+async function probeMtu(size) {
+  try {
+    const res = await fetch(`/api/speedtest/mtu/probe?size=${size}&_=${Math.random()}`, { cache: 'no-store' });
+    const data = await res.json();
+    return !!data.success;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function testMtu(onProbe) {
+  // Most paths carry a full 1500B frame unfragmented — check that first
+  // so the common case finishes in one probe instead of a full binary
+  // search, and only search downward when it actually fails.
+  const maxOk = await probeMtu(MTU_MAX);
+  if (onProbe) onProbe(MTU_MAX, maxOk);
+  if (maxOk) {
+    return { mtu: MTU_MAX, fragmented: false };
+  }
+
+  let lo = MTU_MIN, hi = MTU_MAX - 1, result = MTU_MIN;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const ok = await probeMtu(mid);
+    if (onProbe) onProbe(mid, ok);
+    if (ok) { result = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return { mtu: result, fragmented: true };
+}
+
+// ── Download ─────────────────────────────────────────────────
+
+async function downloadWorker(streamIndex, deadline, loadedByStream, stopFlag) {
+  let completed = 0;
+  while (performance.now() < deadline && !stopFlag.stop) {
+    try {
+      const res = await fetch(`/api/speedtest/download?size=${DOWNLOAD_CHUNK}&_=${Math.random()}`,
+        { cache: 'no-store' });
+      const reader = res.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        completed += value.length;
+        loadedByStream[streamIndex] = completed;
+        if (performance.now() >= deadline || stopFlag.stop) {
+          await reader.cancel();
+          break;
+        }
+      }
+    } catch (e) {
+      break;
+    }
+  }
+}
+
+async function testDownload(onTick) {
+  const loadedByStream = new Array(DOWNLOAD_STREAMS).fill(0);
+  const loadedPings = [];
+  const stopFlag = { stop: false };
+  const start = performance.now();
+  const deadline = start + DOWNLOAD_DURATION;
+  let peak = 0;
+
+  const ticker = setInterval(() => {
+    const elapsed = (performance.now() - start) / 1000;
+    const total = loadedByStream.reduce((a, b) => a + b, 0);
+    if (elapsed > 0.3) {
+      const mbps = (total * 8 / 1e6) / elapsed;
+      peak = Math.max(peak, mbps);
+      onTick(mbps);
+    }
+  }, 200);
+
+  await Promise.all([
+    ...Array.from({ length: DOWNLOAD_STREAMS }, (_, i) => downloadWorker(i, deadline, loadedByStream, stopFlag)),
+    backgroundPinger(deadline, stopFlag, loadedPings),
+  ]);
+  clearInterval(ticker);
+
+  const elapsed = (performance.now() - start) / 1000;
+  const total = loadedByStream.reduce((a, b) => a + b, 0);
+  const mbps = elapsed > 0 ? (total * 8 / 1e6) / elapsed : 0;
+  return { mbps, peak: Math.max(peak, mbps), totalMB: total / 1e6, loadedPingAvg: avg(loadedPings) };
+}
+
+// ── Upload ───────────────────────────────────────────────────
+
+function randomChunk(size) {
+  const arr = new Uint8Array(size);
+  for (let off = 0; off < size; off += 65536) {
+    crypto.getRandomValues(arr.subarray(off, Math.min(off + 65536, size)));
+  }
+  return arr;
+}
+
+function uploadOnce(blob) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/speedtest/upload');
+    xhr.onloadend = () => resolve();
+    xhr.onerror = () => resolve();
+    xhr.send(blob);
+  });
+}
+
+async function uploadWorker(streamIndex, deadline, loadedByStream, blob, stopFlag) {
+  let completed = 0;
+  while (performance.now() < deadline && !stopFlag.stop) {
+    await uploadOnce(blob);
+    completed += blob.size;
+    loadedByStream[streamIndex] = completed;
+  }
+}
+
+async function testUpload(onTick) {
+  const chunk = randomChunk(UPLOAD_CHUNK);
+  const blob = new Blob([chunk]);
+  const loadedByStream = new Array(UPLOAD_STREAMS).fill(0);
+  const loadedPings = [];
+  const stopFlag = { stop: false };
+  const start = performance.now();
+  const deadline = start + UPLOAD_DURATION;
+  let peak = 0;
+
+  const ticker = setInterval(() => {
+    const elapsed = (performance.now() - start) / 1000;
+    const total = loadedByStream.reduce((a, b) => a + b, 0);
+    if (elapsed > 0.3) {
+      const mbps = (total * 8 / 1e6) / elapsed;
+      peak = Math.max(peak, mbps);
+      onTick(mbps);
+    }
+  }, 200);
+
+  await Promise.all([
+    ...Array.from({ length: UPLOAD_STREAMS }, (_, i) => uploadWorker(i, deadline, loadedByStream, blob, stopFlag)),
+    backgroundPinger(deadline, stopFlag, loadedPings),
+  ]);
+  clearInterval(ticker);
+
+  const elapsed = (performance.now() - start) / 1000;
+  const total = loadedByStream.reduce((a, b) => a + b, 0);
+  const mbps = elapsed > 0 ? (total * 8 / 1e6) / elapsed : 0;
+  return { mbps, peak: Math.max(peak, mbps), totalMB: total / 1e6, loadedPingAvg: avg(loadedPings) };
+}
+
+// ── Orchestration ────────────────────────────────────────────
+
+async function runSpeedTest() {
+  if (running) return;
+  running = true;
+
+  const btn = document.getElementById('go-btn');
+  btn.disabled = true;
+  btn.classList.add('running');
+  setGoValue('...', '');
+  document.getElementById('result-note').innerHTML = '&nbsp;';
+  setStat('ping', '—', 'ms');
+  setStat('mtu', '—', 'B');
+  document.getElementById('val-mtu').style.color = 'var(--mt2)';
+  setStat('bufferbloat', '—');
+  document.getElementById('val-bufferbloat').className = 'stat-value';
+  document.getElementById('val-bufferbloat').style.color = 'var(--mt2)';
+  setStat('download', '—', 'Mbps');
+  setStat('upload', '—', 'Mbps');
+  document.getElementById('sub-ping').textContent = 'jitter —';
+  document.getElementById('sub-mtu').textContent = `range ${MTU_MIN}–${MTU_MAX} B`;
+  document.getElementById('sub-bufferbloat').textContent = 'idle → loaded';
+  document.getElementById('sub-download').innerHTML = '&nbsp;';
+  document.getElementById('sub-upload').innerHTML = '&nbsp;';
+  resetSpark();
+  gaugeIdle();
+
+  try {
+    setPhase('Testing ping…', true);
+    setCardActive('ping', true);
+    const ping = await measurePing(PING_SAMPLES, (ms) => {
+      setGoValue(ms.toFixed(0), 'ms');
+      gaugeSet(ms / PING_GAUGE_MAX_MS);
+    });
+    setCardActive('ping', false);
+    if (ping) {
+      setStat('ping', ping.min.toFixed(1), 'ms');
+      document.getElementById('sub-ping').textContent = `jitter ${ping.jitter.toFixed(1)} ms`;
+      if (ping.clientIp) {
+        document.getElementById('hero-sub').innerHTML =
+          `Testing from <span class="ip">${ping.clientIp}</span> to <span class="ip">${window.location.host}</span> — ` +
+          `not general internet speed.`;
+      }
+    } else {
+      setStat('ping', 'err', '');
+    }
+
+    setPhase('Testing MTU…', true);
+    setCardActive('mtu', true);
+    const mtuResult = await testMtu((size, ok) => {
+      setGoValue(size, 'bytes');
+      gaugeSet((size - MTU_MIN) / (MTU_MAX - MTU_MIN));
+    });
+    setCardActive('mtu', false);
+    const mtuEl = document.getElementById('val-mtu');
+    mtuEl.style.color = mtuResult.fragmented ? 'var(--yw)' : 'var(--gn)';
+    setStat('mtu', mtuResult.mtu, 'B');
+    document.getElementById('sub-mtu').textContent = mtuResult.fragmented
+      ? '⚠ below 1500 — check VPN/tunnel'
+      : 'full-size, no fragmentation';
+
+    setPhase('Testing download…', true);
+    setCardActive('download', true);
+    const dl = await testDownload((mbps) => {
+      setStat('download', fmtMbps(mbps), 'Mbps');
+      setGoValue(fmtMbps(mbps), 'Mbps ↓');
+      gaugeSet(mbps / sparkCeil);
+      pushSpark(mbps, '#06b6d4');
+    });
+    setCardActive('download', false);
+    setStat('download', fmtMbps(dl.mbps), 'Mbps');
+    document.getElementById('sub-download').textContent =
+      `peak ${fmtMbps(dl.peak)} · ${dl.totalMB.toFixed(0)} MB`;
+
+    setPhase('Testing upload…', true);
+    setCardActive('upload', true);
+    const ul = await testUpload((mbps) => {
+      setStat('upload', fmtMbps(mbps), 'Mbps');
+      setGoValue(fmtMbps(mbps), 'Mbps ↑');
+      gaugeSet(mbps / sparkCeil);
+      pushSpark(mbps, '#3b82f6');
+    });
+    setCardActive('upload', false);
+    setStat('upload', fmtMbps(ul.mbps), 'Mbps');
+    document.getElementById('sub-upload').textContent =
+      `peak ${fmtMbps(ul.peak)} · ${ul.totalMB.toFixed(0)} MB`;
+
+    // Bufferbloat: how much latency degraded under load vs the idle baseline.
+    if (ping && (dl.loadedPingAvg != null || ul.loadedPingAvg != null)) {
+      const dlDelta = dl.loadedPingAvg != null ? dl.loadedPingAvg - ping.min : null;
+      const ulDelta = ul.loadedPingAvg != null ? ul.loadedPingAvg - ping.min : null;
+      const worst = Math.max(dlDelta || 0, ulDelta || 0);
+      const g = bufferbloatGrade(worst);
+      const bfEl = document.getElementById('val-bufferbloat');
+      bfEl.className = 'stat-value ' + g.cls;
+      bfEl.style.color = '';
+      setStat('bufferbloat', g.grade);
+      const parts = [];
+      if (dlDelta != null) parts.push(`dl +${dlDelta.toFixed(0)}ms`);
+      if (ulDelta != null) parts.push(`ul +${ulDelta.toFixed(0)}ms`);
+      document.getElementById('sub-bufferbloat').textContent = parts.join(' · ');
+    }
+
+    setPhase('Done');
+    setGoValue('GO', '');
+    gaugeDone();
+    document.getElementById('result-note').innerHTML =
+      `<span class="ok">✓ Test complete</span> — ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    setPhase('Error');
+    setGoValue('GO', '');
+    document.getElementById('result-note').innerHTML =
+      `<span class="err">✗ Test failed: ${(e && e.message) || e}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('running');
+    running = false;
+  }
+}
+
+gaugeIdle();
+</script>
+</body>
+</html>

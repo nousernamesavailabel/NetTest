@@ -60,6 +60,7 @@ a:hover{text-decoration:underline}
        text-transform:uppercase;letter-spacing:.5px}
 .badge-endpoint  {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
 .badge-svi       {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
+.badge-noagent   {background:#1e0d3c;color:#b48ae0;border:1px solid #5a2a9a}
 .badge-source    {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
 .badge-dest      {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
 
@@ -119,6 +120,32 @@ select option{background:var(--bg)}
 .ping-err{background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a}
 .ping-pending{background:#1a1a00;color:var(--yw);border:1px solid #3a3a00}
 
+/* ── Per-path schedule grid ── */
+.sg-daytabs{display:flex;gap:4px;margin-bottom:14px}
+.sg-daytab{padding:5px 14px;border-radius:4px;border:1px solid var(--bdr2);
+           background:var(--surf2);color:var(--mt);font-size:11px;cursor:pointer;
+           font-family:var(--fn);transition:all .15s}
+.sg-daytab:hover{color:var(--tx)}
+.sg-daytab.active{background:#0d1f3c;border-color:var(--cy);color:var(--cy)}
+.sg-wrap{overflow-x:auto;padding-bottom:4px}
+.sg-grid{display:grid;grid-template-columns:220px repeat(48,minmax(11px,1fr));
+         min-width:960px;user-select:none;row-gap:2px}
+.sg-corner{background:var(--surf)}
+.sg-hourlabel{font-size:9px;color:var(--mt);text-align:center;grid-column:span 2;
+              padding-bottom:4px;border-left:1px solid var(--bdr)}
+.sg-rowlabel{font-size:11px;color:var(--tx);display:flex;align-items:center;
+             gap:4px;padding-right:8px;min-width:0}
+.sg-rowlabel-text{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sg-cell{height:18px;background:var(--surf3);cursor:pointer;border-left:1px solid var(--bg)}
+.sg-cell.hour-end{border-left:1px solid var(--bdr)}
+.sg-cell.on{background:var(--cy)}
+.sg-cell:hover{outline:1px solid var(--tx);outline-offset:-1px}
+.sg-rowbtn{font-size:9px;padding:1px 5px;border-radius:3px;border:1px solid var(--bdr2);
+           background:transparent;color:var(--mt);cursor:pointer;font-family:var(--fn);
+           flex:0 0 auto}
+.sg-rowbtn:hover{background:var(--surf3);color:var(--tx)}
+.sg-legend{font-size:11px;color:var(--mt);margin-bottom:12px}
+
 /* ── Empty state ── */
 .empty-state{text-align:center;padding:32px;color:var(--mt);font-size:12px}
 .empty-state .big{font-size:28px;margin-bottom:8px}
@@ -174,6 +201,8 @@ select option{background:var(--bg)}
   <div class="topbar-right">
     <a href="/">← Back to Dashboard</a>
     <span style="color:var(--bdr2)">|</span>
+    <a href="/compare">⇄ Compare</a>
+    <span style="color:var(--bdr2)">|</span>
     <a href="/logout">Logout</a>
   </div>
 </div>
@@ -183,7 +212,7 @@ select option{background:var(--bg)}
   <!-- Sidebar -->
   <nav class="sidebar">
     <div class="tab active" onclick="showSection('agents',this)">
-      <span class="tab-icon">⬡</span> Agents
+      <span class="tab-icon">⬡</span> Endpoints
     </div>
     <div class="tab" onclick="showSection('paths',this)">
       <span class="tab-icon">→</span> Paths
@@ -206,6 +235,10 @@ select option{background:var(--bg)}
     <div class="tab" onclick="showSection('exportimport',this)">
       <span class="tab-icon">⇅</span> Export/Import
     </div>
+    <div class="tab" onclick="showSection('updates',this)">
+      <span class="tab-icon">⬆</span> Updates
+    </div>
+
   </nav>
 
   <!-- Content -->
@@ -215,14 +248,14 @@ select option{background:var(--bg)}
     <div class="section active" id="section-agents">
       <div class="panel">
         <div class="panel-header">
-          <span class="panel-title">Agents <span id="agent-count" style="color:var(--mt);font-weight:400">(0)</span></span>
+          <span class="panel-title">Endpoints <span id="agent-count" style="color:var(--mt);font-weight:400">(0)</span></span>
           <div style="display:flex;gap:8px">
-            <button class="btn btn-success" onclick="openWizard()">+ Onboard New Agent</button>
+            <button class="btn btn-success" onclick="openWizard()">+ Onboard New Endpoint</button>
             <button class="btn btn-primary" onclick="addAgent()">+ Add Manually</button>
           </div>
         </div>
         <div class="panel-body" id="agents-list">
-          <div class="empty-state"><div class="big">⬡</div>No agents yet — add one above</div>
+          <div class="empty-state"><div class="big">⬡</div>No endpoints yet — add one above</div>
         </div>
       </div>
     </div>
@@ -285,7 +318,26 @@ select option{background:var(--bg)}
           </div>
           <div class="form-row">
             <label>Timezone</label>
-            <input type="text" id="sch-tz" placeholder="America/Chicago">
+            <select id="sch-tz"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-path schedule grid -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Per-Path Schedule Grid</span>
+        </div>
+        <div class="panel-body" id="sched-grid-panel">
+          <div class="sg-legend">
+            Click or drag across a row to toggle 30-minute slots for that path. Slots outside
+            a path's active grid are skipped on every run, regardless of the full/latency-only
+            interval settings above. Times are evaluated in the timezone set above. A path with
+            no grid configured always runs.
+          </div>
+          <div class="sg-daytabs" id="sg-daytabs"></div>
+          <div class="sg-wrap">
+            <div class="sg-grid" id="sg-grid"></div>
           </div>
         </div>
       </div>
@@ -496,11 +548,8 @@ select option{background:var(--bg)}
             <input type="number" id="tp-tput-streams" min="1" max="32" style="width:80px">
           </div>
           <div class="form-row">
-            <label>Bidirectional</label>
-            <div style="display:flex;align-items:center;gap:8px">
-              <input type="checkbox" id="tp-tput-bidir" style="width:auto;accent-color:var(--cy)">
-              <span style="color:var(--mt);font-size:11px">test upload and download simultaneously</span>
-            </div>
+            <label>Direction</label>
+            <span style="color:var(--mt);font-size:11px">set per path below (Test Paths section)</span>
           </div>
         </div>
       </div>
@@ -541,6 +590,25 @@ select option{background:var(--bg)}
             <div style="display:flex;align-items:center;gap:8px">
               <input type="number" id="tp-mtu-max" min="576" max="9000" style="width:80px">
               <span style="color:var(--mt);font-size:11px">bytes</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Agent Not Installed</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>
+              iPerf3 busy retry
+              <div style="font-size:10px;color:var(--mt);font-weight:400;margin-top:2px">
+                Seconds to retry if iPerf3 server is busy (agent_not_installed only, 0 = disabled)
+              </div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-busy-retry" min="0" max="60" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">seconds</span>
             </div>
           </div>
         </div>
@@ -800,6 +868,114 @@ select option{background:var(--bg)}
 
     </div>
 
+    <!-- ── Updates ── -->
+    <div class="section" id="section-updates">
+
+      <!-- Current version -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Current Version</span>
+          <span id="upd-current-ver" style="font-size:12px;font-family:monospace;
+                color:var(--cy)">Loading...</span>
+        </div>
+        <div class="panel-body" id="upd-changelog"
+             style="font-size:11px;color:var(--mt);white-space:pre-wrap;
+                    font-family:monospace;max-height:200px;overflow-y:auto">
+          Loading changelog...
+        </div>
+      </div>
+
+      <!-- Upload update bundle -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Install Update</span>
+        </div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Upload a NetTest release bundle (<code style="color:var(--cy)">nettest-vX.Y.Z.tar.gz</code>).
+            The current version will be snapshotted automatically before applying.
+          </p>
+          <div class="form-row">
+            <label>Bundle file</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="file" id="upd-file" accept=".tar.gz,.tgz"
+                     style="font-size:11px;color:var(--tx)"
+                     onchange="previewUpdate(this)">
+              <span id="upd-parse-status" style="font-size:11px;color:var(--mt)"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preview panel -->
+      <div class="panel" id="upd-preview-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Update Preview</span>
+        </div>
+        <div class="panel-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px">
+            <div>
+              <div style="font-size:10px;color:var(--mt);text-transform:uppercase;
+                          letter-spacing:.5px;margin-bottom:4px">Current</div>
+              <div id="upd-from-ver" style="font-size:16px;font-family:monospace;
+                          color:var(--mt)">—</div>
+            </div>
+            <div>
+              <div style="font-size:10px;color:var(--mt);text-transform:uppercase;
+                          letter-spacing:.5px;margin-bottom:4px">Incoming</div>
+              <div id="upd-to-ver" style="font-size:16px;font-family:monospace;
+                          color:var(--cy)">—</div>
+            </div>
+          </div>
+          <div style="font-size:11px;font-weight:700;color:var(--mt);
+                      text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+            What's new
+          </div>
+          <div id="upd-incoming-changelog"
+               style="font-size:11px;color:var(--tx);white-space:pre-wrap;
+                      font-family:monospace;background:var(--surf3);
+                      padding:10px;border-radius:4px;max-height:200px;
+                      overflow-y:auto;margin-bottom:16px"></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary" onclick="applyUpdate()">
+              ⬆ Apply Update
+            </button>
+            <span id="upd-apply-status" style="font-size:11px;color:var(--mt)"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live output -->
+      <div class="panel" id="upd-output-panel" style="display:none">
+        <div class="panel-header">
+          <span class="panel-title">Update Progress</span>
+          <span id="upd-job-status" style="font-size:11px;color:var(--mt)">running...</span>
+        </div>
+        <div id="upd-output"
+             style="background:#080a0d;padding:12px 16px;font-family:monospace;
+                    font-size:11px;height:200px;overflow-y:scroll;
+                    border-radius:0 0 6px 6px"></div>
+      </div>
+
+      <!-- Rollback -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Rollback</span>
+        </div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Restore a previous version. Only code files are restored —
+            your config, results, and SSH keys are preserved.
+          </p>
+          <div id="upd-snapshots">
+            <div style="color:var(--mt);font-size:11px">No snapshots available yet.
+            Snapshots are created automatically when you apply an update.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
     <!-- ── Save bar (always visible) ── -->
     <div class="save-bar">
       <span class="save-status" id="save-status"></span>
@@ -824,7 +1000,8 @@ let sshDefs    = {};
 let testParams = {};
 
 const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu','traceroute'];
-const SVI_TESTS  = ['latency','mtu','traceroute'];   // tests supported by svi_adjacent agents
+const SVI_TESTS  = ['latency','mtu','traceroute'];   // tests supported by switch_router agents
+const NO_AGENT_TESTS = ['latency','mtu','traceroute','throughput','jitter','latency_under_load'];
 const TEST_LABELS = {
   throughput:          'Throughput',
   latency:             'Latency',
@@ -832,6 +1009,11 @@ const TEST_LABELS = {
   jitter:              'Jitter',
   mtu:                 'MTU',
   traceroute:          'Traceroute',
+};
+const THROUGHPUT_DIRECTIONS = {
+  upload:   'Upload only',
+  download: 'Download only',
+  bidir:    'Bidirectional',
 };
 
 // ── Boot ───────────────────────────────────────────────────
@@ -863,6 +1045,8 @@ function showSection(name, el) {
   if (name === 'packages') loadPackages();
   if (name === 'ssh') { loadSSHKeyInfo(); loadPushKeyAgents(); }
   if (name === 'https') loadHTTPSStatus();
+  if (name === 'updates') loadUpdateStatus();
+  if (name === 'schedule') renderScheduleGrid();
 }
 
 // ── Render all ─────────────────────────────────────────────
@@ -880,7 +1064,7 @@ function renderAgents() {
   document.getElementById('agent-count').textContent = '(' + agents.length + ')';
 
   if (!agents.length) {
-    list.innerHTML = '<div class="empty-state"><div class="big">⬡</div>No agents yet — add one above</div>';
+    list.innerHTML = '<div class="empty-state"><div class="big">⬡</div>No endpoints yet — add one above</div>';
     return;
   }
 
@@ -890,8 +1074,8 @@ function renderAgents() {
         <div class="card-title">
           <span class="card-chevron" id="agent-chev-${i}">▶</span>
           <span>${escHtml(a.label || a.id || 'Agent ' + (i+1))}</span>
-          <span class="badge ${a.type === 'svi_adjacent' ? 'badge-svi' : 'badge-endpoint'}">
-            ${a.type === 'svi_adjacent' ? 'SVI' : 'endpoint'}
+          <span class="badge ${a.type === 'switch_router' ? 'badge-svi' : a.type === 'agent_not_installed' ? 'badge-noagent' : 'badge-endpoint'}">
+            ${a.type === 'switch_router' ? 'SVI' : a.type === 'agent_not_installed' ? 'NO AGENT' : 'AGENT'}
           </span>
           <span style="color:var(--mt);font-size:11px">${escHtml(a.host_mgmt_ip || a.host || '')}</span>
         </div>
@@ -926,11 +1110,20 @@ function renderAgents() {
             oninput="agents[${i}].host_test_ip=this.value;markDirty()"
             title="iPerf3 and ping target this IP — use client network IP. Leave blank to use Management IP.">
         </div>
+        ${a.type === 'agent_not_installed' ? `
+        <div class="form-row">
+          <label>iPerf3 Port</label>
+          <input type="number" value="${a.iperf3_port||''}" placeholder="5201 (default)"
+            oninput="agents[${i}].iperf3_port=parseInt(this.value)||null;markDirty()"
+            style="width:100px"
+            title="Port the persistent iPerf3 server is listening on">
+        </div>` : ''}
         <div class="form-row">
           <label>Type</label>
-          <select onchange="agents[${i}].type=this.value;updateAgentHeader(${i});markDirty()">
-            <option value="endpoint"    ${a.type!=='svi_adjacent'?'selected':''}>endpoint</option>
-            <option value="svi_adjacent"${a.type==='svi_adjacent'?'selected':''}>svi_adjacent</option>
+          <select onchange="agents[${i}].type=this.value;updateAgentHeader(${i});markDirty();toggleIperf3Port(${i})">
+            <option value="agent_installed"    ${a.type==='agent_installed'||a.type==='endpoint'?'selected':''}>Agent Installed</option>
+            <option value="switch_router"         ${a.type==='switch_router'?'selected':''}>Switch/Router</option>
+            <option value="agent_not_installed"   ${a.type==='agent_not_installed'?'selected':''}>Agent Not Installed</option>
           </select>
         </div>
         <div id="agent-ping-${i}"></div>
@@ -940,7 +1133,7 @@ function renderAgents() {
 }
 
 function addAgent() {
-  agents.push({ id: '', label: '', host_mgmt_ip: '', host_test_ip: '', type: 'endpoint' });
+  agents.push({ id: '', label: '', host_mgmt_ip: '', host_test_ip: '', type: 'agent_installed', iperf3_port: null });
   renderAgents();
   // Auto-expand the new card
   const i = agents.length - 1;
@@ -1070,12 +1263,16 @@ function renderPaths() {
           <div class="test-toggles">
             ${ALL_TESTS.map(t => {
               const dstAgent  = agents.find(a => a.id === p.destination);
-              const isSvi     = dstAgent && dstAgent.type === 'svi_adjacent';
-              const supported = !isSvi || SVI_TESTS.includes(t);
+              const isSvi     = dstAgent && dstAgent.type === 'switch_router';
+              const isNoAgent = dstAgent && dstAgent.type === 'agent_not_installed';
+              const supported = isSvi ? SVI_TESTS.includes(t)
+                              : isNoAgent ? NO_AGENT_TESTS.includes(t)
+                              : true;
               const on        = tests.includes(t) && supported;
               const disabled  = !supported;
               const title     = disabled
-                ? `${TEST_LABELS[t]} is not supported for svi_adjacent agents (ping target only)`
+                ? (isSvi ? `${TEST_LABELS[t]} is not supported for Switch/Router agents (ping target only)`
+                         : `${TEST_LABELS[t]} is not supported for Agent Not Installed endpoints`)
                 : '';
               return `<label class="test-toggle ${on?'on':''} ${disabled?'svi-disabled':''}"
                         title="${title}"
@@ -1085,6 +1282,23 @@ function renderPaths() {
                 ${TEST_LABELS[t]}${disabled?' ✕':''}
               </label>`;
             }).join('')}
+          </div>
+        </div>
+
+        <div class="form-row tall">
+          <label>Throughput direction${(!p.directions||!p.directions.length)?' <span style="color:var(--rd)">*</span>':''}</label>
+          <div>
+            <div class="test-toggles">
+              ${Object.entries(THROUGHPUT_DIRECTIONS).map(([v,lbl]) => {
+                const on = (p.directions||[]).includes(v);
+                return `<label class="test-toggle ${on?'on':''}">
+                  <input type="checkbox" ${on?'checked':''}
+                    onchange="toggleDirection(${i},'${v}',this.checked)">
+                  ${lbl}
+                </label>`;
+              }).join('')}
+            </div>
+            <div style="color:var(--mt);font-size:11px;margin-top:4px">Each checked direction runs as its own iPerf3 test — select more than one to run them all. Duration/streams stay global, set above in Throughput test params.</div>
           </div>
         </div>
 
@@ -1153,17 +1367,19 @@ function rebuildHopsContainer(pathIdx, container) {
 function enforceSviTests(pathIdx) {
   const p = paths[pathIdx];
   const dstAgent = agents.find(a => a.id === p.destination);
-  const isSvi = dstAgent && dstAgent.type === 'svi_adjacent';
+  const isSvi    = dstAgent && dstAgent.type === 'switch_router';
+              const isNoAgent = dstAgent && dstAgent.type === 'agent_not_installed';
 
-  if (isSvi) {
+  if (isSvi || isNoAgent) {
+    const allowed = isSvi ? SVI_TESTS : NO_AGENT_TESTS;
     const before = p.tests.length;
-    p.tests = p.tests.filter(t => SVI_TESTS.includes(t));
+    p.tests = p.tests.filter(t => allowed.includes(t));
     if (!p.tests.length) p.tests = ['latency'];
     if (p.tests.length < before) {
       const removed = before - p.tests.length;
       const errBar = document.getElementById('save-errors');
       if (errBar) {
-        errBar.textContent = `Note: removed ${removed} unsupported test${removed>1?'s':''} — '${dstAgent.label}' is svi_adjacent (latency and MTU only)`;
+        errBar.textContent = `Note: removed ${removed} unsupported test${removed>1?'s':''} — '${dstAgent.label}' is Switch/Router (latency/MTU/traceroute only)`;
         errBar.style.background = '#2a1f00';
         errBar.style.color = 'var(--yw)';
         errBar.style.display = 'block';
@@ -1176,11 +1392,13 @@ function enforceSviTests(pathIdx) {
   const container = document.querySelector(`#path-body-${pathIdx} .test-toggles`);
   if (!container) return;
   container.innerHTML = ALL_TESTS.map(t => {
-    const supported = !isSvi || SVI_TESTS.includes(t);
+    const supported = isSvi ? SVI_TESTS.includes(t)
+                              : isNoAgent ? NO_AGENT_TESTS.includes(t)
+                              : true;
     const on        = p.tests.includes(t) && supported;
     const disabled  = !supported;
     const title     = disabled
-      ? `${TEST_LABELS[t]} is not supported for svi_adjacent agents (ping target only)`
+      ? `${TEST_LABELS[t]} is not supported for Switch/Router agents (ping target only)`
       : '';
     return `<label class="test-toggle ${on?'on':''} ${disabled?'svi-disabled':''}"
               title="${title}"
@@ -1193,7 +1411,7 @@ function enforceSviTests(pathIdx) {
 }
 
 function addPath() {
-  paths.push({ id: '', label: '', source: '', hops: [], destination: '', tests: ['latency','jitter'] });
+  paths.push({ id: '', label: '', source: '', hops: [], destination: '', tests: ['latency','jitter'], directions: ['upload'] });
   renderPaths();
   const i = paths.length - 1;
   toggleCard('path-body-' + i, 'path-chev-' + i);
@@ -1224,12 +1442,51 @@ function toggleTest(pathIdx, testName, checked) {
   markDirty();
 }
 
+function toggleDirection(pathIdx, dirValue, checked) {
+  const p = paths[pathIdx];
+  if (!p.directions) p.directions = [];
+  if (checked && !p.directions.includes(dirValue)) {
+    p.directions.push(dirValue);
+  } else if (!checked) {
+    p.directions = p.directions.filter(d => d !== dirValue);
+  }
+  const label = event.target.closest('.test-toggle');
+  if (label) label.classList.toggle('on', checked);
+  markDirty();
+}
+
 // ── Schedule ───────────────────────────────────────────────
+// Fallback list if the browser doesn't support Intl.supportedValuesOf('timeZone')
+const TZ_FALLBACK = [
+  'UTC','America/New_York','America/Chicago','America/Denver','America/Los_Angeles',
+  'America/Anchorage','America/Phoenix','America/Sao_Paulo','America/Mexico_City',
+  'America/Toronto','America/Vancouver','Europe/London','Europe/Dublin','Europe/Paris',
+  'Europe/Berlin','Europe/Madrid','Europe/Rome','Europe/Amsterdam','Europe/Warsaw',
+  'Europe/Moscow','Europe/Istanbul','Africa/Cairo','Africa/Johannesburg','Africa/Lagos',
+  'Asia/Jerusalem','Asia/Dubai','Asia/Karachi','Asia/Kolkata','Asia/Dhaka','Asia/Bangkok',
+  'Asia/Jakarta','Asia/Shanghai','Asia/Hong_Kong','Asia/Singapore','Asia/Tokyo','Asia/Seoul',
+  'Australia/Perth','Australia/Sydney','Australia/Melbourne','Pacific/Auckland',
+];
+
+function populateTimezoneSelect(current) {
+  const sel = document.getElementById('sch-tz');
+  let zones;
+  try {
+    zones = Intl.supportedValuesOf('timeZone');
+  } catch (e) {
+    zones = TZ_FALLBACK.slice();
+  }
+  if (current && !zones.includes(current)) zones = [current, ...zones];
+  zones = [...new Set(zones)].sort();
+  sel.innerHTML = zones.map(z => `<option value="${escHtml(z)}">${escHtml(z)}</option>`).join('');
+}
+
 function renderSchedule() {
   const s = schedule;
   setVal('sch-full',    s.full_test_interval_minutes    || 60);
   setVal('sch-lat',     s.latency_only_interval_minutes || 5);
   setVal('sch-stagger', s.stagger_seconds               || 15);
+  populateTimezoneSelect(s.timezone || 'America/Chicago');
   setVal('sch-tz',      s.timezone                      || 'America/Chicago');
   setVal('sch-start',   s.business_hours_start          || '08:00');
   setVal('sch-end',     s.business_hours_end            || '18:00');
@@ -1243,6 +1500,8 @@ function renderSchedule() {
   document.getElementById('sch-biz').addEventListener('change', () => {
     collectSchedule(); markDirty();
   });
+
+  renderScheduleGrid();
 }
 
 function collectSchedule() {
@@ -1255,6 +1514,106 @@ function collectSchedule() {
     business_hours_start:          getVal('sch-start')             || '08:00',
     business_hours_end:            getVal('sch-end')               || '18:00',
   };
+}
+
+// ── Per-path schedule grid ────────────────────────────────
+const SG_DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
+const SG_DAY_LABELS = {mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat',sun:'Sun'};
+let sgDay = 'mon';
+let sgPaint = null; // '1' or '0' while dragging
+
+function ensurePathSchedule(p) {
+  if (!p.schedule) p.schedule = {};
+  SG_DAYS.forEach(d => { if (!p.schedule[d]) p.schedule[d] = '1'.repeat(48); });
+  return p.schedule;
+}
+
+function renderScheduleGrid() {
+  const tabs = document.getElementById('sg-daytabs');
+  const grid = document.getElementById('sg-grid');
+  if (!tabs || !grid) return;
+
+  tabs.innerHTML = SG_DAYS.map(d =>
+    `<div class="sg-daytab ${d===sgDay?'active':''}" onclick="setSgDay('${d}')">${SG_DAY_LABELS[d]}</div>`
+  ).join('');
+
+  if (!paths.length) {
+    grid.innerHTML = '';
+    grid.style.display = 'block';
+    grid.innerHTML = '<div class="empty-state" style="padding:16px"><div class="big">⏱</div>Add a path first — grids appear here per path</div>';
+    return;
+  }
+  grid.style.display = 'grid';
+
+  let html = '<div class="sg-corner"></div>';
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="sg-hourlabel">${h}</div>`;
+  }
+
+  paths.forEach((p, i) => {
+    const mask = ensurePathSchedule(p)[sgDay];
+    html += `
+      <div class="sg-rowlabel">
+        <span class="sg-rowlabel-text" title="${escHtml(p.label||p.id||'Path '+(i+1))}">${escHtml(p.label||p.id||'Path '+(i+1))}</span>
+        <button type="button" class="sg-rowbtn" title="Enable all slots this day" onclick="sgSetRow(${i},'1')">All</button>
+        <button type="button" class="sg-rowbtn" title="Disable all slots this day" onclick="sgSetRow(${i},'0')">None</button>
+        <button type="button" class="sg-rowbtn" title="Copy this day's pattern to every day of the week" onclick="sgCopyToWeek(${i})">Wk</button>
+      </div>`;
+    for (let s = 0; s < 48; s++) {
+      const on = mask[s] === '1';
+      const hourEnd = s % 2 === 0 && s > 0;
+      html += `<div class="sg-cell ${on?'on':''} ${hourEnd?'hour-end':''}"
+                    id="sg-cell-${i}-${s}"
+                    title="${SG_DAY_LABELS[sgDay]} ${String(Math.floor(s/2)).padStart(2,'0')}:${s%2?'30':'00'}"
+                    onmousedown="sgStartPaint(event,${i},${s})"
+                    onmouseenter="sgPaintOver(event,${i},${s})"></div>`;
+    }
+  });
+
+  grid.innerHTML = html;
+}
+
+function setSgDay(d) {
+  sgDay = d;
+  renderScheduleGrid();
+}
+
+function sgApplyCell(pathIdx, slot, val) {
+  const p = paths[pathIdx];
+  const mask = ensurePathSchedule(p)[sgDay];
+  if (mask[slot] === val) return;
+  p.schedule[sgDay] = mask.substring(0, slot) + val + mask.substring(slot + 1);
+  const cell = document.getElementById(`sg-cell-${pathIdx}-${slot}`);
+  if (cell) cell.classList.toggle('on', val === '1');
+  markDirty();
+}
+
+function sgStartPaint(e, pathIdx, slot) {
+  e.preventDefault();
+  const mask = ensurePathSchedule(paths[pathIdx])[sgDay];
+  sgPaint = mask[slot] === '1' ? '0' : '1';
+  sgApplyCell(pathIdx, slot, sgPaint);
+}
+
+function sgPaintOver(e, pathIdx, slot) {
+  if (sgPaint === null || e.buttons !== 1) return;
+  sgApplyCell(pathIdx, slot, sgPaint);
+}
+
+document.addEventListener('mouseup', () => { sgPaint = null; });
+
+function sgSetRow(pathIdx, val) {
+  ensurePathSchedule(paths[pathIdx])[sgDay] = val.repeat(48);
+  renderScheduleGrid();
+  markDirty();
+}
+
+function sgCopyToWeek(pathIdx) {
+  const p = paths[pathIdx];
+  const mask = ensurePathSchedule(p)[sgDay];
+  SG_DAYS.forEach(d => { p.schedule[d] = mask; });
+  toast(`Copied ${SG_DAY_LABELS[sgDay]}'s pattern to all days for "${p.label||p.id}"`, 'ok');
+  markDirty();
 }
 
 // ── SSH ────────────────────────────────────────────────────
@@ -1309,8 +1668,6 @@ function renderTests() {
 
   setVal('tp-tput-dur',     th.duration_sec     ?? 30);
   setVal('tp-tput-streams', th.parallel_streams ?? 8);
-  const bidirCb = document.getElementById('tp-tput-bidir');
-  if (bidirCb) bidirCb.checked = th.bidirectional !== false;
 
   setVal('tp-lul-count',    lu.ping_count       ?? 50);
   setVal('tp-lul-interval', lu.ping_interval_ms ?? 200);
@@ -1318,6 +1675,7 @@ function renderTests() {
 
   setVal('tp-mtu-min', mt.min_size ?? 576);
   setVal('tp-mtu-max', mt.max_size ?? 9000);
+  setVal('tp-busy-retry', tp.iperf3_busy_retry_seconds ?? 10);
 
   document.querySelectorAll('[id^="tp-"]').forEach(el => {
     el.addEventListener('change', () => { collectTests(); markDirty(); });
@@ -1349,7 +1707,6 @@ function collectTests() {
     throughput: {
       duration_sec:     parseInt(getVal('tp-tput-dur'))     || 30,
       parallel_streams: parseInt(getVal('tp-tput-streams')) || 8,
-      bidirectional:    document.getElementById('tp-tput-bidir').checked,
       iperf3_port:      testParams.throughput?.iperf3_port  || 5201,
       protocol:         testParams.throughput?.protocol     || 'tcp',
     },
@@ -1363,6 +1720,7 @@ function collectTests() {
       max_size: parseInt(getVal('tp-mtu-max')) || 9000,
       step:     testParams.mtu?.step           || 10,
     },
+    iperf3_busy_retry_seconds: parseInt(getVal('tp-busy-retry')) || 10,
   };
 }
 
@@ -1404,7 +1762,7 @@ async function loadPackages() {
 
     // Load agent push buttons
     const ags = await apiFetch('/api/agents');
-    const endpoints = ags.filter(a => a.type !== 'svi_adjacent');
+    const endpoints = ags.filter(a => a.type !== 'switch_router' && a.type !== 'agent_not_installed');
     if (!endpoints.length) {
       agentsList.innerHTML = '<div style="color:var(--mt);font-size:11px">No endpoint agents configured.</div>';
     } else {
@@ -1545,7 +1903,7 @@ function loadPushKeyAgents() {
   const sel = document.getElementById('pk-agent');
   if (!sel) return;
   // Rebuild agent options
-  const endpointAgents = agents.filter(a => a.type !== 'svi_adjacent');
+  const endpointAgents = agents.filter(a => a.type !== 'switch_router');
   const opts = ['<option value="__all__">— All endpoint agents —</option>'];
   endpointAgents.forEach(a => {
     opts.push(`<option value="${escHtml(a.id)}">${escHtml(a.label||a.id)} (${escHtml(a.host_mgmt_ip||a.host||'')})</option>`);
@@ -2003,6 +2361,190 @@ async function confirmImport() {
   }
 }
 
+// Toggle iPerf3 port field visibility based on agent type
+function toggleIperf3Port(i) {
+  const type = agents[i]?.type;
+  const row  = document.getElementById('ag-iperf3-port-row');
+  if (row) row.style.display = (type === 'agent_not_installed') ? '' : 'none';
+}
+
+// ── Updates ────────────────────────────────────────────────
+let _updateId = null;
+
+async function loadUpdateStatus() {
+  try {
+    const d = await apiFetch('/api/version');
+    document.getElementById('upd-current-ver').textContent = 'v' + d.version;
+    document.getElementById('upd-changelog').textContent =
+      d.changelog || 'No changelog available.';
+
+    // Render snapshots
+    const snapDiv = document.getElementById('upd-snapshots');
+    if (!d.snapshots || !d.snapshots.length) {
+      snapDiv.innerHTML = '<div style="color:var(--mt);font-size:11px">' +
+        'No snapshots available yet. Snapshots are created automatically when you apply an update.</div>';
+    } else {
+      snapDiv.innerHTML = d.snapshots.map(s => `
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:8px 0;border-bottom:1px solid var(--bdr)">
+          <div>
+            <span style="font-size:12px;font-family:monospace">v${escHtml(s.version)}</span>
+            <span style="font-size:10px;color:var(--mt);margin-left:8px">${escHtml(s.name)}</span>
+          </div>
+          <button class="btn" style="font-size:11px;color:var(--ye);border-color:var(--ye)"
+                  onclick="doRollback('${escHtml(s.name)}', this)">
+            ↩ Rollback
+          </button>
+        </div>`).join('');
+    }
+  } catch(e) {
+    document.getElementById('upd-current-ver').textContent = 'Unknown';
+  }
+}
+
+async function previewUpdate(input) {
+  const file   = input.files[0];
+  const status = document.getElementById('upd-parse-status');
+  const panel  = document.getElementById('upd-preview-panel');
+  if (!file) return;
+
+  status.style.color = 'var(--cy)';
+  status.textContent = 'Validating bundle...';
+  panel.style.display = 'none';
+  _updateId = null;
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const res  = await fetch('/api/update/preview', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) {
+      status.style.color = 'var(--rd)';
+      status.textContent = '✗ ' + (data.error || 'Validation failed');
+      return;
+    }
+
+    _updateId = data.update_id;
+    status.style.color = 'var(--gn)';
+    status.textContent = '✓ Bundle valid';
+
+    document.getElementById('upd-from-ver').textContent = 'v' + data.current_version;
+    document.getElementById('upd-to-ver').textContent   = 'v' + data.incoming_version;
+    document.getElementById('upd-incoming-changelog').textContent =
+      data.changelog_entry || 'No changelog entry for this version.';
+
+    panel.style.display = '';
+  } catch(e) {
+    status.style.color = 'var(--rd)';
+    status.textContent = '✗ ' + e.message;
+  }
+}
+
+async function applyUpdate() {
+  if (!_updateId) { alert('Upload and validate a bundle first.'); return; }
+
+  if (!confirm('Apply this update? The current version will be snapshotted first. ' +
+               'The web service will restart briefly when complete.')) return;
+
+  const applyStatus = document.getElementById('upd-apply-status');
+  const outputPanel = document.getElementById('upd-output-panel');
+  const output      = document.getElementById('upd-output');
+  const jobStatus   = document.getElementById('upd-job-status');
+
+  applyStatus.style.color = 'var(--cy)';
+  applyStatus.textContent = 'Starting update...';
+  outputPanel.style.display = '';
+  output.innerHTML = '';
+  jobStatus.textContent = 'running...';
+  jobStatus.style.color = 'var(--cy)';
+
+  try {
+    const res  = await apiFetch('/api/update/apply', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ update_id: _updateId }),
+    });
+
+    if (!res.job_id) {
+      applyStatus.style.color = 'var(--rd)';
+      applyStatus.textContent = '✗ ' + (res.error || 'Failed to start');
+      return;
+    }
+
+    applyStatus.textContent = '';
+    const es = new EventSource('/api/jobs/' + res.job_id + '/stream');
+    es.onmessage = (e) => {
+      const text = e.data;
+      if (text === '[STREAM END]' || text === '[STREAM TIMEOUT]') {
+        es.close();
+        jobStatus.textContent = '✓ done — reconnecting...';
+        jobStatus.style.color = 'var(--gn)';
+        // Reload after service restarts
+        setTimeout(() => { location.reload(); }, 5000);
+        return;
+      }
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:1px 0;white-space:pre-wrap';
+      div.style.color = text.includes('✗') || text.includes('ERROR') ? 'var(--rd)'
+                      : text.includes('✓') ? 'var(--gn)' : 'var(--mt)';
+      div.textContent = text;
+      output.appendChild(div);
+      output.scrollTop = output.scrollHeight;
+    };
+    es.onerror = () => { es.close(); };
+  } catch(e) {
+    applyStatus.style.color = 'var(--rd)';
+    applyStatus.textContent = '✗ ' + e.message;
+  }
+}
+
+async function doRollback(snapshot, btn) {
+  if (!confirm(`Rollback to snapshot: ${snapshot}?\nThe web service will restart.`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Working...'; }
+
+  const outputPanel = document.getElementById('upd-output-panel');
+  const output      = document.getElementById('upd-output');
+  const jobStatus   = document.getElementById('upd-job-status');
+
+  outputPanel.style.display = '';
+  output.innerHTML = '';
+  jobStatus.textContent = 'running...';
+  jobStatus.style.color = 'var(--cy)';
+
+  try {
+    const res = await apiFetch('/api/update/rollback', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ snapshot }),
+    });
+    if (!res.job_id) { alert(res.error || 'Failed'); return; }
+
+    const es = new EventSource('/api/jobs/' + res.job_id + '/stream');
+    es.onmessage = (e) => {
+      const text = e.data;
+      if (text === '[STREAM END]' || text === '[STREAM TIMEOUT]') {
+        es.close();
+        jobStatus.textContent = '✓ done — reconnecting...';
+        jobStatus.style.color = 'var(--gn)';
+        setTimeout(() => { location.reload(); }, 5000);
+        return;
+      }
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:1px 0;white-space:pre-wrap';
+      div.style.color = text.includes('✗') ? 'var(--rd)'
+                      : text.includes('✓') ? 'var(--gn)' : 'var(--mt)';
+      div.textContent = text;
+      output.appendChild(div);
+      output.scrollTop = output.scrollHeight;
+    };
+    es.onerror = () => { es.close(); };
+  } catch(e) {
+    alert('Rollback failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↩ Rollback'; }
+  }
+}
+
 // ── Save ───────────────────────────────────────────────────
 function markDirty() {
   setStatus('Unsaved changes', 'pending');
@@ -2023,6 +2565,8 @@ async function saveConfig() {
     if (!p.source)      errs.push(`Path ${i+1} (${p.id||'?'}): Source agent is required`);
     if (!p.destination) errs.push(`Path ${i+1} (${p.id||'?'}): Destination agent is required`);
     if (!p.tests || !p.tests.length) errs.push(`Path ${i+1} (${p.id||'?'}): At least one test required`);
+    if ((p.tests||[]).includes('throughput') && (!p.directions || !p.directions.length))
+      errs.push(`Path ${i+1} (${p.id||'?'}): At least one throughput direction required`);
   });
 
   if (errs.length) {
@@ -2116,8 +2660,8 @@ function updateAgentHeader(i) {
   titleEl.innerHTML = `
     <span class="card-chevron open" id="agent-chev-${i}">▶</span>
     <span>${escHtml(a.label || a.id || 'Agent ' + (i+1))}</span>
-    <span class="badge ${a.type === 'svi_adjacent' ? 'badge-svi' : 'badge-endpoint'}">
-      ${a.type === 'svi_adjacent' ? 'SVI' : 'endpoint'}
+    <span class="badge ${a.type === 'switch_router' ? 'badge-svi' : a.type === 'agent_not_installed' ? 'badge-noagent' : 'badge-endpoint'}">
+      ${a.type === 'switch_router' ? 'SVI' : a.type === 'agent_not_installed' ? 'NO AGENT' : 'AGENT'}
     </span>
     <span style="color:var(--mt);font-size:11px">${escHtml(a.host || '')}</span>
   `;
@@ -2150,9 +2694,9 @@ function updatePathFlow(i) {
     flowDiv.innerHTML = allIds.map((id, idx) => {
       const a = allAgents[idx];
       const label = a ? (a.label || a.id) : (id || '?');
-      const isSvi = a && a.type === 'svi_adjacent';
+      const noSsh = a && (a.type === 'switch_router' || a.type === 'agent_not_installed');
       return (idx > 0 ? '<span class="path-arrow">→</span>' : '') +
-        `<span class="path-node${isSvi?' path-node-svi':''}">${escHtml(label)}</span>`;
+        `<span class="path-node${noSsh?' path-node-svi':''}">${escHtml(label)}</span>`;
     }).join('');
   }
   updatePathHeader(i);
@@ -2175,7 +2719,7 @@ boot();
 <div class="wizard-overlay" id="wizard-overlay">
   <div class="wizard">
     <div class="wizard-header">
-      <span class="wizard-title">⬡ Onboard New Agent</span>
+      <span class="wizard-title">⬡ Onboard New Endpoint</span>
       <button class="wizard-close" onclick="closeWizard()">✕</button>
     </div>
 
@@ -2202,7 +2746,8 @@ boot();
           <label>Type</label>
           <select id="ob-type">
             <option value="endpoint">endpoint</option>
-            <option value="svi_adjacent">svi_adjacent</option>
+            <option value="switch_router">Switch/Router</option>
+            <option value="agent_not_installed">Agent Not Installed</option>
           </select>
         </div>
         <div class="form-row">

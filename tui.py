@@ -76,6 +76,27 @@ def fmt_val(value, unit: str = "", precision: int = 1) -> str:
     return f"{value:.{precision}f}{unit}"
 
 
+def throughput_summary(record: dict) -> Optional[dict]:
+    """A record's throughput field can hold multiple entries (one per
+    direction run: upload/download/bidir) or, for older records, a single
+    dict. Collapse to one {tx_mbps, rx_mbps, retransmits} — a side no entry
+    actually tested is None (not 0), so max() picks whichever entry measured it.
+    """
+    raw = record.get("throughput")
+    if not raw:
+        return None
+    entries = raw if isinstance(raw, list) else [raw]
+    if not entries:
+        return None
+    tx_vals = [v for e in entries if (v := e.get("tx_mbps")) is not None]
+    rx_vals = [v for e in entries if (v := e.get("rx_mbps")) is not None]
+    return {
+        "tx_mbps":     max(tx_vals) if tx_vals else None,
+        "rx_mbps":     max(rx_vals) if rx_vals else None,
+        "retransmits": max(e.get("retransmits", 0) for e in entries),
+    }
+
+
 # ── Summary cards (top row) ────────────────────────────────
 
 def make_summary_cards(records: List[dict]) -> Columns:
@@ -91,8 +112,8 @@ def make_summary_cards(records: List[dict]) -> Columns:
     avg_tput    = None
     lat_vals    = [r["latency"]["rtt_avg_ms"]
                    for r in records if r.get("latency")]
-    tput_vals   = [r["throughput"]["tx_mbps"]
-                   for r in records if r.get("throughput")]
+    tput_vals   = [ts["tx_mbps"] for r in records
+                   if (ts := throughput_summary(r)) and ts["tx_mbps"]]
     if lat_vals:
         avg_latency = sum(lat_vals) / len(lat_vals)
     if tput_vals:
@@ -165,14 +186,14 @@ def make_results_table(records: List[dict], path_filter: Optional[str] = None) -
         status_icon = "[green]✓[/green]" if r.get("success") else "[red]✗[/red]"
         ts          = r["timestamp_utc"][11:19]    # HH:MM:SS only
 
-        t  = r.get("throughput")
+        t  = throughput_summary(r)
         l  = r.get("latency")
         lu = r.get("latency_under_load")
         j  = r.get("jitter")
         m  = r.get("mtu")
 
-        tx_mbps  = f"[{health_colour(t['tx_mbps'], THRESHOLDS['throughput_warn_mbps'], THRESHOLDS['throughput_crit_mbps'], invert=False)}]{t['tx_mbps']:.1f}[/]"  if t else "[dim]—[/dim]"
-        rx_mbps  = f"{t['rx_mbps']:.1f}"  if t else "[dim]—[/dim]"
+        tx_mbps  = f"[{health_colour(t['tx_mbps'], THRESHOLDS['throughput_warn_mbps'], THRESHOLDS['throughput_crit_mbps'], invert=False)}]{t['tx_mbps']:.1f}[/]"  if t and t['tx_mbps'] is not None else "[dim]—[/dim]"
+        rx_mbps  = f"{t['rx_mbps']:.1f}"  if t and t['rx_mbps'] is not None else "[dim]—[/dim]"
         retr     = f"[{'red' if t and t['retransmits'] > 10 else 'default'}]{t['retransmits']}[/]" if t else "[dim]—[/dim]"
 
         rtt_avg  = f"[{health_colour(l['rtt_avg_ms'], THRESHOLDS['latency_warn_ms'], THRESHOLDS['latency_crit_ms'], invert=True)}]{l['rtt_avg_ms']:.1f}ms[/]" if l else "[dim]—[/dim]"

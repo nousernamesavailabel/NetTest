@@ -145,6 +145,9 @@ paths:
     label: "Branch A → Hub"
     source: branch_a
     destination: hub
+    # Throughput direction for this path: upload | download | bidir
+    # (duration/streams/protocol below stay global across all paths)
+    direction: bidir
     tests:
       - latency
       - jitter
@@ -176,10 +179,6 @@ test_params:
     # More streams = more realistic multi-user traffic simulation
     # Recommended: 8 for most networks, reduce for very slow links
     parallel_streams: 8
-
-    # Test upload and download simultaneously
-    # Exposes ACK contention on asymmetric links
-    bidirectional: true
 
     # tcp or udp (TCP recommended for throughput measurement)
     protocol: tcp

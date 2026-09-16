@@ -6,8 +6,9 @@ Orchestrates all test runners for a single path (source → destination).
 import logging
 import time
 from datetime import datetime, timezone
+from typing import List
 
-from core.config_loader import ControllerConfig, TestPath
+from core.config_loader import ControllerConfig, TestPath, SWITCH_ROUTER_TESTS, AGENT_NOT_INSTALLED_TESTS
 from core.results import PathTestResult, SegmentResult, make_result_id, utc_now_iso
 from runners.runner_traceroute import TracerouteRunner
 from core.ssh_manager import ssh_connection, SSHConnectionError
@@ -18,8 +19,8 @@ from runners.runner_latency import (
 
 logger = logging.getLogger(__name__)
 
-# Tests supported by svi_adjacent agents (passive ping targets only)
-SVI_SUPPORTED_TESTS = {"latency", "mtu", "traceroute"}
+# Tests supported by each agent type as destination
+# (imported from config_loader for single source of truth)
 
 TEST_LABELS = {
     "throughput":         "Throughput",
@@ -35,7 +36,7 @@ class PathTester:
     def __init__(self, config: ControllerConfig):
         self.config = config
 
-    def run_path(self, path: TestPath) -> PathTestResult:
+    def run_path(self, path: TestPath, abort_event=None) -> PathTestResult:
         src_agent = self.config.get_agent(path.source)
         dst_agent = self.config.get_agent(path.destination)
         hop_agents = [self.config.get_agent(h) for h in path.hops]
@@ -50,27 +51,34 @@ class PathTester:
             logger.error(f"Cannot run '{path.label}' — unknown hop agent ID(s): {missing_hops}")
             return self._error_result(path, f"Unknown hop agent ID(s): {missing_hops}")
 
-        # Filter unsupported tests if destination is svi_adjacent
-        if dst_agent.type == "svi_adjacent":
-            filtered_tests = []
+        # Validate source — agent_not_installed cannot be a source
+        if src_agent.type == "agent_not_installed":
+            logger.error(f"Cannot run '{path.label}' — source agent "
+                         f"'{src_agent.label}' is agent_not_installed (no SSH access).")
+            return self._error_result(
+                path, f"agent_not_installed '{src_agent.label}' cannot be a path source"
+            )
+
+        # Filter unsupported tests based on destination type
+        from dataclasses import replace as dc_replace
+        if dst_agent.type == "switch_router":
+            filtered_tests = [t for t in path.tests if t in SWITCH_ROUTER_TESTS]
             for t in path.tests:
-                if t in SVI_SUPPORTED_TESTS:
-                    filtered_tests.append(t)
-                else:
+                if t not in SWITCH_ROUTER_TESTS:
                     logger.warning(
                         f"  Skipping '{TEST_LABELS.get(t, t)}' — destination "
-                        f"'{dst_agent.label}' is svi_adjacent (passive ping target only). "
-                        f"Supported tests: latency, mtu"
+                        f"'{dst_agent.label}' is Switch/Router (latency/MTU/traceroute only)."
                     )
-            from dataclasses import replace as dc_replace
             path = dc_replace(path, tests=filtered_tests)
             if not path.tests:
-                logger.error(f"  No supported tests remain for svi_adjacent destination "
-                             f"'{dst_agent.label}'")
+                logger.error(f"  No supported tests for Switch/Router destination '{dst_agent.label}'")
                 return self._error_result(
-                    path, f"No supported tests for svi_adjacent agent '{dst_agent.label}'"
+                    path, f"No supported tests for Switch/Router agent '{dst_agent.label}'"
                 )
-
+        elif dst_agent.type == "agent_not_installed":
+            filtered_tests = [t for t in path.tests if t in AGENT_NOT_INSTALLED_TESTS]
+            path = dc_replace(path, tests=filtered_tests)
+        # agent_installed: all tests supported
         src_ssh_params = self.config.get_ssh_params(src_agent)
         dst_ssh_params = self.config.get_ssh_params(dst_agent)
 
@@ -118,12 +126,7 @@ class PathTester:
                     logger.info(f"── Segment {seg_idx+1}/{len(hop_agents)+1}: "
                                 f"{src_agent.label} → {hop_agent.label} ──")
 
-                    # Determine which tests to run on this segment
                     # Intermediate hops only support latency + mtu
-                    seg_tests = [t for t in path.tests
-                                 if t in SVI_SUPPORTED_TESTS or
-                                 hop_agent.type not in ("svi_adjacent",)]
-                    # Always restrict to latency+mtu for intermediate hops
                     seg_tests = [t for t in ("latency", "mtu") if t in path.tests]
 
                     seg_result = SegmentResult(
@@ -143,22 +146,40 @@ class PathTester:
                             src_ssh=src_ssh,
                             dst_ssh=None,
                             dst_host=hop_agent.test_host,
+                            server_managed=False,
+                            port_override=None,
                         )
 
                     result.segments.append(seg_result)
 
                 # ── Final segment: source → destination ────────────
-                is_svi_dst = dst_agent.type == "svi_adjacent"
+                no_ssh_dst = dst_agent.type in ("switch_router", "agent_not_installed")
+                server_managed = dst_agent.type == "agent_installed"
+                # Per-agent iPerf3 port for agent_not_installed, else use test_params default
+                dst_iperf3_port = (
+                    dst_agent.iperf3_port
+                    if dst_agent.iperf3_port
+                    else self.config.test_params.throughput.iperf3_port
+                )
+
                 total_segs = len(hop_agents) + 1
                 if hop_agents:
                     logger.info(f"")
                     logger.info(f"── Segment {total_segs}/{total_segs}: "
                                 f"{src_agent.label} → {dst_agent.label} ──")
 
-                if is_svi_dst:
-                    logger.info(f"Destination {dst_agent.label} is svi_adjacent — "
-                                f"no SSH needed (ping target only)")
+                if no_ssh_dst:
+                    if dst_agent.type == "switch_router":
+                        logger.info(f"Destination {dst_agent.label} is Switch/Router — "
+                                    f"no SSH (ping target only)")
+                    else:
+                        logger.info(f"Destination {dst_agent.label} is Agent Not Installed — "
+                                    f"no SSH, iPerf3 assumed running on port {dst_iperf3_port}")
                     for i, test_type in enumerate(path.tests, 1):
+                        if abort_event and abort_event.is_set():
+                            logger.warning("⚠ Abort signal received — stopping test run")
+                            result.error = (result.error or "") + " | aborted"
+                            break
                         label = TEST_LABELS.get(test_type, test_type)
                         logger.info(f"")
                         logger.info(f"-- Test {i}/{len(path.tests)}: {label} --")
@@ -168,7 +189,42 @@ class PathTester:
                             src_ssh=src_ssh,
                             dst_ssh=None,
                             dst_host=dst_agent.test_host,
+                            server_managed=server_managed,
+                            port_override=dst_iperf3_port,
+                            directions=path.directions,
                         )
+                    # Retry busy iPerf3 tests
+                    retries = getattr(result, "_iperf_retry", [])
+                    if retries and not (abort_event and abort_event.is_set()):
+                        import time as _t
+                        logger.info("")
+                        logger.info(f"── Retrying {len(retries)} iPerf3 test(s) "
+                                    f"that failed due to busy server ──")
+                        _t.sleep(3)
+                        for test_type in retries:
+                            label = TEST_LABELS.get(test_type, test_type)
+                            logger.info(f"")
+                            logger.info(f"-- Retry: {label} --")
+                            setattr(result, test_type, None)
+                            self._run_test(
+                                test_type=test_type,
+                                result=result,
+                                src_ssh=src_ssh,
+                                dst_ssh=None,
+                                dst_host=dst_agent.test_host,
+                                server_managed=server_managed,
+                                port_override=dst_iperf3_port,
+                                directions=path.directions,
+                            )
+                        result._iperf_retry = []
+                        # Remove "busy" errors from result.error for any tests that succeeded
+                        if result.error:
+                            parts = [p for p in result.error.split(" | ")
+                                     if not any(
+                                         rt in p and "busy" in p
+                                         for rt in ("throughput","jitter","latency_under_load")
+                                     )]
+                            result.error = " | ".join(parts) or None
                 else:
                     dst_ssh_params = self.config.get_ssh_params(dst_agent)
                     logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host_mgmt_ip})...")
@@ -176,6 +232,10 @@ class PathTester:
                         logger.info(f"Both endpoints connected — beginning "
                                     f"{len(path.tests)} test(s)")
                         for i, test_type in enumerate(path.tests, 1):
+                            if abort_event and abort_event.is_set():
+                                logger.warning("⚠ Abort signal received — stopping test run")
+                                result.error = (result.error or "") + " | aborted"
+                                break
                             label = TEST_LABELS.get(test_type, test_type)
                             logger.info(f"")
                             logger.info(f"-- Test {i}/{len(path.tests)}: {label} --")
@@ -185,7 +245,35 @@ class PathTester:
                                 src_ssh=src_ssh,
                                 dst_ssh=dst_ssh,
                                 dst_host=dst_agent.test_host,
+                                server_managed=True,
+                                port_override=None,
+                                directions=path.directions,
                             )
+                        # Retry any iPerf3 tests that failed due to busy server
+                        retries = getattr(result, "_iperf_retry", [])
+                        if retries and not (abort_event and abort_event.is_set()):
+                            import time as _t
+                            logger.info("")
+                            logger.info(f"── Retrying {len(retries)} iPerf3 test(s) "
+                                        f"that failed due to busy server ──")
+                            _t.sleep(3)
+                            for test_type in retries:
+                                label = TEST_LABELS.get(test_type, test_type)
+                                logger.info(f"")
+                                logger.info(f"-- Retry: {label} --")
+                                # Clear previous error for this test
+                                setattr(result, test_type, None)
+                                self._run_test(
+                                    test_type=test_type,
+                                    result=result,
+                                    src_ssh=src_ssh,
+                                    dst_ssh=dst_ssh,
+                                    dst_host=dst_agent.test_host,
+                                    server_managed=True,
+                                    port_override=None,
+                                    directions=path.directions,
+                                )
+                            result._iperf_retry = []
 
             result.success = True
 
@@ -233,18 +321,45 @@ class PathTester:
         return result
 
     def _run_test(self, test_type: str, result,
-                  src_ssh, dst_ssh, dst_host: str):
-        """Run a single test type. result can be PathTestResult or SegmentResult."""
+                  src_ssh, dst_ssh, dst_host: str,
+                  server_managed: bool = True,
+                  port_override: int = None,
+                  directions: List[str] = None):
+        """Run a single test type. result can be PathTestResult or SegmentResult.
+        server_managed=False skips iPerf3 server start (agent_not_installed destinations).
+        port_override sets the iPerf3 port when not using test_params default.
+        directions (throughput only) is per-path: any combination of
+        upload | download | bidir, run as separate iPerf3 invocations.
+        """
         p = self.config.test_params
+        directions = directions or ["upload"]
+        DIR_LABELS = {"upload": "upload", "download": "download", "bidir": "bidirectional"}
 
         try:
             if test_type == "throughput":
-                logger.info(f"  Starting iPerf3 server on destination ({dst_host})...")
+                if server_managed:
+                    logger.info(f"  Starting iPerf3 server on destination ({dst_host})...")
+                else:
+                    port = port_override or p.throughput.iperf3_port
+                    logger.info(f"  Connecting to assumed-running iPerf3 server "
+                                f"on {dst_host}:{port}...")
                 logger.info(f"  Running {p.throughput.parallel_streams}-stream TCP throughput "
-                            f"for {p.throughput.duration_sec}s "
-                            f"({'bidirectional' if p.throughput.bidirectional else 'unidirectional'})")
+                            f"for {p.throughput.duration_sec}s each "
+                            f"({', '.join(DIR_LABELS.get(d, d) for d in directions)})")
                 runner = ThroughputRunner(p.throughput)
-                result.throughput = runner.run(src_ssh, dst_ssh, dst_host)
+                throughput_results = []
+                for i, direction in enumerate(directions):
+                    if len(directions) > 1:
+                        logger.info(f"  [{i+1}/{len(directions)}] "
+                                    f"Direction: {DIR_LABELS.get(direction, direction)}")
+                    throughput_results.append(runner.run(
+                        src_ssh, dst_ssh, dst_host,
+                        server_managed=server_managed,
+                        port_override=port_override,
+                        busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
+                        direction=direction,
+                    ))
+                result.throughput = throughput_results
 
             elif test_type == "latency":
                 logger.info(f"  Pinging {dst_host} — "
@@ -260,14 +375,30 @@ class PathTester:
                     iperf3_port=p.throughput.iperf3_port,
                     iperf3_streams=p.throughput.parallel_streams,
                 )
-                result.latency_under_load = runner.run(src_ssh, dst_ssh, dst_host)
+                result.latency_under_load = runner.run(
+                    src_ssh, dst_ssh, dst_host,
+                    server_managed=server_managed,
+                    port_override=port_override,
+                    busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
+                )
 
             elif test_type == "jitter":
+                if server_managed:
+                    logger.info(f"  Starting iPerf3 UDP server on destination ({dst_host})...")
+                else:
+                    port = port_override or p.jitter.iperf3_port
+                    logger.info(f"  Connecting to assumed-running iPerf3 server "
+                                f"on {dst_host}:{port} for UDP jitter...")
                 logger.info(f"  Sending {p.jitter.packet_count} UDP packets "
                             f"at {p.jitter.bandwidth_kbps} Kbps "
                             f"({p.jitter.packet_size_bytes}B each) to {dst_host}...")
                 runner = JitterRunner(p.jitter)
-                result.jitter = runner.run(src_ssh, dst_ssh, dst_host)
+                result.jitter = runner.run(
+                    src_ssh, dst_ssh, dst_host,
+                    server_managed=server_managed,
+                    port_override=port_override,
+                    busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
+                )
 
             elif test_type == "mtu":
                 logger.info(f"  Probing path MTU to {dst_host} "
@@ -297,19 +428,33 @@ class PathTester:
 
         except Exception as e:
             label = TEST_LABELS.get(test_type, test_type)
-            logger.error(f"  {label} test failed: {e}")
+            err_str = str(e)
+            logger.error(f"  {label} test failed: {err_str}")
             logger.debug(f"  [{test_type}] traceback", exc_info=True)
-            setattr(result, test_type, None)
+            # throughput is a list (List[ThroughputResult]), not an
+            # Optional[X] like the other test types — reset it to match
+            # its actual type instead of None.
+            setattr(result, test_type, [] if test_type == "throughput" else None)
             existing = result.error or ""
-            result.error = f"{existing} | {test_type} failed: {e}".strip(" |")
+            result.error = f"{existing} | {test_type} failed: {err_str}".strip(" |")
+            # Track busy iPerf3 for retry after other tests
+            if test_type in ("throughput", "jitter", "latency_under_load") and                "busy" in err_str.lower():
+                if not hasattr(result, "_iperf_retry"):
+                    result._iperf_retry = []
+                result._iperf_retry.append(test_type)
+                logger.warning(f"  iPerf3 was busy — will retry {test_type} "
+                               f"after remaining tests complete")
 
     def _log_summary(self, result: PathTestResult):
         """Log a clean results summary after a successful path run."""
         logger.info(f"  Results:")
-        if result.throughput:
-            t = result.throughput
+        DIR_LABELS = {"upload": "upload", "download": "download", "bidir": "bidirectional"}
+        for t in (result.throughput or []):
             retr = f"  ({t.retransmits} retransmits)" if t.retransmits else ""
-            logger.info(f"    Throughput        : TX {t.tx_mbps} Mbps  /  RX {t.rx_mbps} Mbps{retr}")
+            dir_label = DIR_LABELS.get(t.direction, t.direction)
+            tx_str = f"{t.tx_mbps} Mbps" if t.tx_mbps is not None else "—"
+            rx_str = f"{t.rx_mbps} Mbps" if t.rx_mbps is not None else "—"
+            logger.info(f"    Throughput ({dir_label:<11}): TX {tx_str}  /  RX {rx_str}{retr}")
 
         if result.latency:
             l = result.latency

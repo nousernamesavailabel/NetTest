@@ -11,10 +11,10 @@ Usage:
 """
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
-import queue
 import subprocess
 import sys
 import collections
@@ -26,12 +26,13 @@ from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from flask import Flask, jsonify, send_from_directory, request, Response, session, redirect, url_for
+from flask import Flask, jsonify, send_from_directory, request, Response, session, redirect, url_for, stream_with_context
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.config_loader import load_config
 from core.results import ResultStore
 from core.path_tester import PathTester
+from core.annotations import AnnotationStore
 
 app = Flask(__name__, static_folder="web/static")
 
@@ -42,18 +43,47 @@ os.makedirs(_packages_dir, exist_ok=True)
 
 # ── Module-level init (required for gunicorn) ──────────────
 try:
-    _config = load_config(_config_path)
-    _store  = ResultStore(_config.results_dir)
-    _tester = PathTester(_config)
+    _config      = load_config(_config_path)
+    _store       = ResultStore(_config.results_dir)
+    _tester      = PathTester(_config)
+    _annotations = AnnotationStore(os.path.join(_config.results_dir, "annotations.json"))
     app.secret_key = _config.auth.session_secret or secrets.token_hex(32)
 except Exception as _init_err:
     import traceback
     print(f"FATAL: Failed to initialize — {_init_err}")
     traceback.print_exc()
-    _config = None
-    _store  = None
-    _tester = None
+    _config      = None
+    _store       = None
+    _tester      = None
+    _annotations = None
     app.secret_key = secrets.token_hex(32)
+
+# ── Debounced scheduler restart ────────────────────────────
+# Config saves/imports can happen in quick succession (e.g. editing
+# several paths one at a time) — each restart kills whatever the
+# scheduler is mid-test on. Collapsing rapid calls into a single
+# restart, issued once things settle, avoids repeatedly aborting
+# in-flight scheduled runs.
+RESTART_DEBOUNCE_SECONDS = 15
+_restart_lock  = threading.Lock()
+_restart_timer = None
+
+
+def _restart_nettest_scheduler():
+    subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+                   capture_output=True, timeout=15)
+
+
+def schedule_nettest_restart():
+    """Debounced restart of the nettest scheduler service."""
+    global _restart_timer
+    with _restart_lock:
+        if _restart_timer is not None:
+            _restart_timer.cancel()
+        _restart_timer = threading.Timer(RESTART_DEBOUNCE_SECONDS, _restart_nettest_scheduler)
+        _restart_timer.daemon = True
+        _restart_timer.start()
+
 
 # ── Login rate limiting ───────────────────────────────────
 _login_attempts: dict = collections.defaultdict(collections.deque)
@@ -98,17 +128,20 @@ def login_required(f):
 # ── Job tracking ───────────────────────────────────────────
 _jobs: dict      = {}
 _jobs_lock           = threading.Lock()
-_job_logs: dict      = {}
-_job_logs_lock       = threading.Lock()
-_job_log_history: dict = {}   # job_id -> list of log line strings (last 500)
+_job_logs_lock       = threading.Lock()   # guards _job_log_history
+_job_log_history: dict = {}   # job_id -> list of log line strings (last 2000) — the
+                               # single source of truth for both history and live tail
+_abort_events: dict  = {}     # job_id -> threading.Event
+_abort_lock          = threading.Lock()
 _MAX_HISTORY_JOBS    = 20     # evict oldest jobs when over this limit
+_MAX_HISTORY_LINES   = 2000   # cap per-job log lines kept in memory
 _import_cache: dict  = {}     # stores parsed import data server-side (avoids session size limit)
 _import_cache_lock   = threading.Lock()
 
 
-# ── Log handler that feeds the SSE queue ──────────────────
+# ── Log handler that feeds job history (read by the SSE tail poller) ──
 class JobLogHandler(logging.Handler):
-    """Attaches to the root logger and copies records into a job queue."""
+    """Attaches to the root logger and appends records to the job's history."""
     def __init__(self, job_id: str):
         super().__init__()
         self.job_id = job_id
@@ -120,26 +153,16 @@ class JobLogHandler(logging.Handler):
     def emit(self, record):
         line = self.format(record)
         with _job_logs_lock:
-            q = _job_logs.get(self.job_id)
             hist = _job_log_history.setdefault(self.job_id, [])
-            if len(hist) < 500:
+            if len(hist) < _MAX_HISTORY_LINES:
                 hist.append(line)
-        if q:
-            try:
-                q.put_nowait(line)
-            except Exception:
-                pass
 
 
-def _run_job(job_id: str, path_id: str, test_filter: List[str] = None):
+def _run_job(job_id: str, path_id: str, test_filter: List[str] = None,
+             direction_filter: List[str] = None):
     """Execute a test path in a background thread and stream logs via SSE."""
-    # Set up log queue and attach handler to root logger
-    log_q   = queue.Queue(maxsize=2000)
     handler = JobLogHandler(job_id)
     handler.setLevel(logging.INFO)
-
-    with _job_logs_lock:
-        _job_logs[job_id] = log_q
 
     # Silence noisy third-party loggers
     logging.getLogger("netmiko").setLevel(logging.WARNING)
@@ -153,6 +176,11 @@ def _run_job(job_id: str, path_id: str, test_filter: List[str] = None):
     with _jobs_lock:
         _jobs[job_id]["status"] = "running"
 
+    # Create abort event for this job
+    abort_event = threading.Event()
+    with _abort_lock:
+        _abort_events[job_id] = abort_event
+
     try:
         path = next((p for p in _config.paths if p.id == path_id), None)
         if not path:
@@ -162,7 +190,11 @@ def _run_job(job_id: str, path_id: str, test_filter: List[str] = None):
             filtered = [t for t in path.tests if t in test_filter]
             path = replace(path, tests=filtered if filtered else path.tests)
 
-        result = _tester.run_path(path)
+        if direction_filter:
+            filtered_dirs = [d for d in path.directions if d in direction_filter]
+            path = replace(path, directions=filtered_dirs if filtered_dirs else path.directions)
+
+        result = _tester.run_path(path, abort_event=abort_event)
         _store.save(result)
 
         with _jobs_lock:
@@ -179,20 +211,56 @@ def _run_job(job_id: str, path_id: str, test_filter: List[str] = None):
 
     finally:
         root_logger.removeHandler(handler)
-        log_q.put(None)   # sentinel — tells SSE generator to close
+        with _abort_lock:
+            _abort_events.pop(job_id, None)
 
 
 # ── Helpers ────────────────────────────────────────────────
 
-def _load_records(days: int = 1, path_id: Optional[str] = None) -> List[dict]:
+def _load_records(minutes: int = 1440, path_id: Optional[str] = None) -> List[dict]:
+    """Load records from a rolling window ending now (not a calendar-day
+    snap) — e.g. minutes=1440 means "the last 24 hours", however that spans
+    across today's and yesterday's result files, rather than "today" (which
+    could be nearly empty right after midnight even with a full day's worth
+    of recent data sitting in yesterday's file)."""
+    now    = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=minutes)
+    cutoff_iso = cutoff.isoformat()
+
     records = []
-    for i in range(days):
-        date = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
-        day_records = _store.load_file(date)
-        records.extend(day_records)
+    d = cutoff.date()
+    while d <= now.date():
+        records.extend(_store.load_file(d.strftime("%Y-%m-%d")))
+        d += timedelta(days=1)
+
+    records = [r for r in records if r.get("timestamp_utc", "") >= cutoff_iso]
+
     if path_id:
         records = [r for r in records if r.get("path_id") == path_id]
+
+    # load_file() re-parses from disk on every call (no caching), so these
+    # are fresh dicts each time — safe to attach notes/tags in place.
+    if _annotations:
+        ann = _annotations.get_all()
+        for r in records:
+            entry = ann.get(r.get("result_id"), {})
+            r["notes"] = entry.get("notes", "")
+            r["tags"]  = entry.get("tags", [])
+
     return sorted(records, key=lambda r: r.get("timestamp_utc", ""))
+
+
+def _throughput_entries(record: dict) -> List[dict]:
+    """Normalize a record's throughput field to a list of entry dicts.
+
+    Newer records store a list (one entry per direction run: upload/download/
+    bidir). Records saved before that store a single dict. Missing/empty
+    either way returns [].
+    """
+    t = record.get("throughput")
+    if not t:
+        return []
+    return t if isinstance(t, list) else [t]
 
 
 def _summarise(records: List[dict]) -> dict:
@@ -205,8 +273,17 @@ def _summarise(records: List[dict]) -> dict:
 
     successful  = [r for r in records if r.get("success")]
     lat_vals    = [r["latency"]["rtt_avg_ms"]     for r in records if r.get("latency")]
-    tput_vals   = [r["throughput"]["tx_mbps"]      for r in records if r.get("throughput")]
-    rx_vals     = [r["throughput"]["rx_mbps"]      for r in records if r.get("throughput") and r["throughput"].get("rx_mbps")]
+    # A record can hold multiple throughput entries (one per direction run:
+    # upload/download/bidir). tx_mbps/rx_mbps are None on whichever entry
+    # didn't test that side — excluded here rather than averaged in, so
+    # "Avg TX"/"Avg RX" reads as "no data" instead of a misleading zero.
+    # Bidir entries have both tx_mbps and rx_mbps set too, but a bidir run's
+    # numbers aren't comparable to a dedicated upload/download run (both
+    # directions are contending for bandwidth at once) — excluded here so
+    # they only ever show up against other bidir data.
+    throughput_entries = [t for r in records for t in _throughput_entries(r)]
+    tput_vals   = [t["tx_mbps"] for t in throughput_entries if t.get("direction") == "upload"   and t.get("tx_mbps") is not None]
+    rx_vals     = [t["rx_mbps"] for t in throughput_entries if t.get("direction") == "download" and t.get("rx_mbps") is not None]
     jitter_vals = [r["jitter"]["jitter_ms"]        for r in records if r.get("jitter")]
     loss_vals   = [r["latency"]["packet_loss_pct"] for r in records if r.get("latency")]
 
@@ -229,9 +306,9 @@ def _summarise(records: List[dict]) -> dict:
 
 @app.route("/api/summary")
 def api_summary():
-    days    = int(request.args.get("days", 1))
+    minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
-    records = _load_records(days, path_id)
+    records = _load_records(minutes, path_id)
     return jsonify(_summarise(records))
 
 
@@ -245,6 +322,7 @@ def api_paths():
             "hops":        p.hops,
             "destination": p.destination,
             "tests":       p.tests,
+            "directions":  p.directions,
         }
         for p in _config.paths
     ]
@@ -253,16 +331,16 @@ def api_paths():
 
 @app.route("/api/results")
 def api_results():
-    days    = int(request.args.get("days", 1))
+    minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
     limit   = int(request.args.get("limit", 200))
-    records = _load_records(days, path_id)
+    records = _load_records(minutes, path_id)
     return jsonify(list(reversed(records[-limit:])))
 
 
 @app.route("/api/results/latest")
 def api_results_latest():
-    records = _load_records(days=1)
+    records = _load_records(minutes=1440)
     latest  = {}
     for r in records:
         latest[r["path_id"]] = r
@@ -271,9 +349,9 @@ def api_results_latest():
 
 @app.route("/api/timeseries/<metric>")
 def api_timeseries(metric: str):
-    days    = int(request.args.get("days", 1))
+    minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
-    records = _load_records(days, path_id)
+    records = _load_records(minutes, path_id)
 
     series_by_path = {}
     for r in records:
@@ -283,8 +361,35 @@ def api_timeseries(metric: str):
 
         if metric == "latency"      and r.get("latency"):
             val = r["latency"]["rtt_avg_ms"]
-        elif metric == "throughput"  and r.get("throughput"):
-            val = r["throughput"]["tx_mbps"]
+        elif metric == "throughput":
+            # A record may hold multiple direction entries (upload/download/
+            # bidir) — this chart is upload-only, so bidir entries (which
+            # also carry a tx_mbps, measured while contending with a
+            # simultaneous download) are excluded; they belong on the
+            # dedicated bidir chart instead, not mixed in here.
+            tx_vals = [t["tx_mbps"] for t in _throughput_entries(r) if t.get("direction") == "upload" and t.get("tx_mbps") is not None]
+            if tx_vals:
+                val = max(tx_vals)
+        elif metric == "throughput_rx":
+            rx_vals = [t["rx_mbps"] for t in _throughput_entries(r) if t.get("direction") == "download" and t.get("rx_mbps") is not None]
+            if rx_vals:
+                val = max(rx_vals)
+        elif metric == "throughput_bidir":
+            # Only bidir runs genuinely measure both directions at once —
+            # plotting tx/rx from separate upload/download runs on one axis
+            # would pair values that were never actually concurrent.
+            bidir_entries = [t for t in _throughput_entries(r) if t.get("direction") == "bidir"]
+            tx_vals = [t["tx_mbps"] for t in bidir_entries if t.get("tx_mbps") is not None]
+            rx_vals = [t["rx_mbps"] for t in bidir_entries if t.get("rx_mbps") is not None]
+            if tx_vals:
+                tx_pid = f"{pid}_tx"
+                series_by_path.setdefault(tx_pid, {"path_id": tx_pid, "label": f"{r['path_label']} TX", "points": []})
+                series_by_path[tx_pid]["points"].append({"ts": ts, "value": max(tx_vals)})
+            if rx_vals:
+                rx_pid = f"{pid}_rx"
+                series_by_path.setdefault(rx_pid, {"path_id": rx_pid, "label": f"{r['path_label']} RX", "points": []})
+                series_by_path[rx_pid]["points"].append({"ts": ts, "value": max(rx_vals)})
+            continue
         elif metric == "jitter"      and r.get("jitter"):
             val = r["jitter"]["jitter_ms"]
         elif metric == "loss"        and r.get("latency"):
@@ -303,7 +408,7 @@ def api_timeseries(metric: str):
 @login_required
 def api_traceroute(path_id: str):
     """Return most recent traceroute result for a path."""
-    records = _load_records(days=7, path_id=path_id)
+    records = _load_records(minutes=7 * 1440, path_id=path_id)
     for r in reversed(records):
         if r.get("traceroute_forward"):
             return jsonify({
@@ -320,7 +425,7 @@ def api_traceroute(path_id: str):
 @login_required
 def api_traceroute_by_result(result_id: str):
     """Return traceroute for a specific result ID."""
-    records = _load_records(days=7)
+    records = _load_records(minutes=7 * 1440)
     for r in records:
         if r.get("result_id") == result_id:
             if r.get("traceroute_forward"):
@@ -333,6 +438,371 @@ def api_traceroute_by_result(result_id: str):
                 })
             return jsonify({"path_id": r.get("path_id",""), "forward": None, "reverse": None})
     return jsonify({"error": "Result not found"}), 404
+
+
+# ── Lightweight per-file run index (cached) ────────────────
+# Result files can grow to tens of MB — each line carries the full raw
+# iPerf3 JSON blob. Re-parsing every file on every /api/runs or
+# /api/result call (as the naive version did) got slower as results/
+# grew. Cache the small picker-relevant fields per file, keyed by the
+# file's mtime, so only files that changed since the last request (in
+# practice just today's, still-growing file) get re-parsed.
+_light_cache_lock = threading.Lock()
+_light_cache: dict = {}   # filename -> {"mtime": float, "records": [light dict, ...]}
+
+
+def _lightweight_record(r: dict) -> dict:
+    return {
+        "result_id":              r.get("result_id"),
+        "path_id":                r.get("path_id"),
+        "path_label":             r.get("path_label"),
+        "timestamp_utc":          r.get("timestamp_utc"),
+        "success":                r.get("success"),
+        "source_host":            r.get("source_host"),
+        "destination_host":       r.get("destination_host"),
+        # Per-test presence flags — let the compare picker filter to only
+        # runs that actually exercised a given test (a path's config can
+        # change over time, or an individual test can be run on demand).
+        "has_latency":            bool(r.get("latency")),
+        "has_throughput":         bool(r.get("throughput")),
+        "has_jitter":             bool(r.get("jitter")),
+        "has_latency_under_load": bool(r.get("latency_under_load")),
+        "has_mtu":                bool(r.get("mtu")),
+        "has_traceroute":         bool((r.get("traceroute_forward") or {}).get("hops")),
+        "has_traceroute_reverse": bool((r.get("traceroute_reverse") or {}).get("hops")),
+    }
+
+
+def _get_light_records(fname: str) -> List[dict]:
+    fpath = os.path.join(_config.results_dir, fname)
+    try:
+        mtime = os.path.getmtime(fpath)
+    except OSError:
+        return []
+
+    with _light_cache_lock:
+        cached = _light_cache.get(fname)
+        if cached and cached["mtime"] == mtime:
+            return cached["records"]
+
+    date_str = fname[len("results_"):-len(".jsonl")]
+    light = [_lightweight_record(r) for r in _store.load_file(date_str)]
+
+    with _light_cache_lock:
+        _light_cache[fname] = {"mtime": mtime, "records": light}
+    return light
+
+
+def _find_record(result_id: str) -> Optional[dict]:
+    """Locate a single result record by ID.
+
+    First does a cheap pass over the cached lightweight index (newest
+    file first) to find which single file contains this result_id, then
+    parses only that one file — instead of fully parsing every file
+    (raw iPerf3 blobs included) until a match turns up.
+    """
+    for fname in reversed(_store.list_result_files()):
+        if any(rec["result_id"] == result_id for rec in _get_light_records(fname)):
+            date_str = fname[len("results_"):-len(".jsonl")]
+            for r in _store.load_file(date_str):
+                if r.get("result_id") == result_id:
+                    return r
+            break  # file's light index said it was here but it's gone — don't keep scanning
+    return None
+
+
+# ── Compare API ────────────────────────────────────────────
+
+_RUN_TEST_FLAGS = {
+    "latency":             "has_latency",
+    "throughput":          "has_throughput",
+    "jitter":              "has_jitter",
+    "latency_under_load":  "has_latency_under_load",
+    "mtu":                 "has_mtu",
+    "traceroute":          "has_traceroute",
+    "traceroute_reverse":  "has_traceroute_reverse",
+}
+
+
+def _file_date_str(fname: str) -> str:
+    return fname[len("results_"):-len(".jsonl")]
+
+
+def _time_of_day_in_range(ts: str, time_from: str, time_to: str) -> bool:
+    """ts is an ISO timestamp (UTC); time_from/time_to are 'HH:MM' (UTC).
+    Wraps past midnight if time_from > time_to (e.g. 22:00–06:00)."""
+    if len(ts) < 16:
+        return False
+    hm = ts[11:16]
+    if time_from and time_to:
+        if time_from <= time_to:
+            return time_from <= hm <= time_to
+        return hm >= time_from or hm <= time_to
+    if time_from:
+        return hm >= time_from
+    if time_to:
+        return hm <= time_to
+    return True
+
+
+@app.route("/api/runs")
+@login_required
+def api_runs():
+    """Lightweight listing of runs for the compare picker — spans all
+    available result files (not just the last N days) so older runs
+    stay pickable, but only returns the fields the picker needs.
+
+    Supports narrowing by path, calendar date range, time-of-day range
+    (UTC), and which tests must be present on the run (AND semantics
+    across multiple `tests` values)."""
+    path_id    = request.args.get("path_id")
+    limit      = int(request.args.get("limit", 500))
+    days_param = request.args.get("days")
+    date_from  = request.args.get("date_from")   # YYYY-MM-DD
+    date_to    = request.args.get("date_to")     # YYYY-MM-DD
+    time_from  = request.args.get("time_from")   # HH:MM (UTC)
+    time_to    = request.args.get("time_to")     # HH:MM (UTC)
+    tests_arg  = request.args.get("tests", "")
+    required_tests = [t for t in tests_arg.split(",") if t]
+    tag_arg    = request.args.get("tag", "")
+    tag_filters = [t for t in tag_arg.split(",") if t]
+    q          = request.args.get("q", "").strip().lower()
+
+    if days_param:
+        fnames = [
+            f"results_{(datetime.now(timezone.utc) - timedelta(days=i)).strftime('%Y-%m-%d')}.jsonl"
+            for i in range(int(days_param))
+        ]
+    else:
+        fnames = _store.list_result_files()
+        if date_from or date_to:
+            # Result files are named results_YYYY-MM-DD.jsonl, so the date
+            # range can prune which files even get read/parsed at all.
+            fnames = [
+                f for f in fnames
+                if (not date_from or _file_date_str(f) >= date_from)
+                and (not date_to or _file_date_str(f) <= date_to)
+            ]
+
+    runs = []
+    for fname in fnames:
+        runs.extend(_get_light_records(fname))
+
+    if path_id:
+        runs = [r for r in runs if r.get("path_id") == path_id]
+
+    if time_from or time_to:
+        runs = [r for r in runs if _time_of_day_in_range(r.get("timestamp_utc", ""), time_from, time_to)]
+
+    for t in required_tests:
+        flag = _RUN_TEST_FLAGS.get(t)
+        if flag:
+            runs = [r for r in runs if r.get(flag)]
+
+    # Annotations (notes/tags) live in a separate store, keyed by result_id,
+    # and can change independently of the underlying result file — so they're
+    # merged in per-request rather than baked into the cached light records.
+    annotations = _annotations.get_all() if _annotations else {}
+    runs = [
+        dict(r, notes=annotations.get(r["result_id"], {}).get("notes", ""),
+                tags=annotations.get(r["result_id"], {}).get("tags", []))
+        for r in runs
+    ]
+
+    if tag_filters:
+        runs = [r for r in runs if set(r["tags"]) & set(tag_filters)]
+
+    if q:
+        runs = [
+            r for r in runs
+            if q in r["notes"].lower() or any(q in t.lower() for t in r["tags"])
+        ]
+
+    runs.sort(key=lambda r: r.get("timestamp_utc", ""))
+    runs.reverse()  # newest first
+    return jsonify(runs[:limit])
+
+
+@app.route("/api/result/<result_id>")
+@login_required
+def api_result(result_id: str):
+    """Return the full result record for a single run — used by the
+    compare page to load the two runs being placed side by side."""
+    r = _find_record(result_id)
+    if not r:
+        return jsonify({"error": "Result not found"}), 404
+    annotation = _annotations.get(result_id) if _annotations else {"notes": "", "tags": []}
+    r = dict(r, notes=annotation.get("notes", ""), tags=annotation.get("tags", []))
+    return jsonify(r)
+
+
+# ── Annotations API (notes/tags on individual runs) ────────
+
+@app.route("/api/annotations/<result_id>")
+@login_required
+def api_annotation_get(result_id: str):
+    return jsonify(_annotations.get(result_id))
+
+
+@app.route("/api/annotations/<result_id>", methods=["PUT"])
+@login_required
+def api_annotation_set(result_id: str):
+    if not _find_record(result_id):
+        return jsonify({"error": "Result not found"}), 404
+    body = request.get_json(silent=True) or {}
+    entry = _annotations.set(
+        result_id,
+        notes=body.get("notes", ""),
+        tags=body.get("tags", []),
+    )
+    return jsonify(entry)
+
+
+@app.route("/api/tags")
+@login_required
+def api_tags():
+    return jsonify(_annotations.all_tags() if _annotations else [])
+
+
+# ── Speed Test API ──────────────────────────────────────────
+# On-demand browser <-> server speed test (like speedtest.net), run
+# entirely against this dashboard — it measures the client's link to
+# this box, not general internet speed.
+
+_SPEEDTEST_DOWNLOAD_CHUNK = 262144       # bytes yielded per stream write
+_SPEEDTEST_MAX_DOWNLOAD   = 200_000_000  # cap per request, regardless of ?size=
+_SPEEDTEST_MAX_UPLOAD     = 2_000_000    # cap per request body (nginx's default
+                                          # client_max_body_size is 1MB, so the
+                                          # client uploads in small chunks anyway)
+
+
+@app.route("/api/speedtest/ping")
+@login_required
+def api_speedtest_ping():
+    """Minimal round-trip endpoint for client-side latency/jitter sampling.
+
+    Also echoes back the caller's address (as seen through nginx's
+    X-Real-IP) so the page can show what it's actually testing against.
+    """
+    resp = jsonify({
+        "t":         time.time(),
+        "client_ip": request.headers.get("X-Real-IP", request.remote_addr),
+    })
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/speedtest/download")
+@login_required
+def api_speedtest_download():
+    """Stream random bytes for a browser download speed test.
+
+    Random rather than repeated/zeroed content so it can't be shrunk by
+    gzip somewhere in front of this process — the client's measured byte
+    count needs to match actual wire bytes.
+    """
+    try:
+        size = int(request.args.get("size", 25_000_000))
+    except ValueError:
+        size = 25_000_000
+    size = max(0, min(size, _SPEEDTEST_MAX_DOWNLOAD))
+
+    def generate():
+        remaining = size
+        while remaining > 0:
+            n = min(_SPEEDTEST_DOWNLOAD_CHUNK, remaining)
+            yield os.urandom(n)
+            remaining -= n
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/octet-stream",
+        headers={"Content-Length": str(size), "Cache-Control": "no-store"},
+    )
+
+
+@app.route("/api/speedtest/upload", methods=["POST"])
+@login_required
+def api_speedtest_upload():
+    """Discard an uploaded chunk for a browser upload speed test.
+
+    The client posts many small chunks rather than one large body —
+    nginx's default 1MB client_max_body_size would otherwise reject a
+    bigger upload before it ever reached this route.
+    """
+    content_length = request.content_length or 0
+    if content_length > _SPEEDTEST_MAX_UPLOAD:
+        return jsonify({"error": "Chunk too large"}), 413
+
+    total = 0
+    while True:
+        chunk = request.stream.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _SPEEDTEST_MAX_UPLOAD:
+            return jsonify({"error": "Chunk too large"}), 413
+
+    return jsonify({"received": total})
+
+
+_SPEEDTEST_MTU_MIN = 1000
+_SPEEDTEST_MTU_MAX = 1500
+
+
+@app.route("/api/speedtest/mtu/probe")
+@login_required
+def api_speedtest_mtu_probe():
+    """Single DF-flagged ping probe, used by the browser to binary-search
+    path MTU toward itself — the same technique MTURunner (runners/
+    runner_latency.py) uses over SSH toward a configured agent, just run
+    locally against the requesting browser's own address instead. A
+    packet larger than the path MTU gets dropped/rejected rather than
+    silently fragmented, which is what "-M do" (Don't Fragment) forces.
+
+    `ping` carries cap_net_raw on this host, so no sudo/root is needed
+    to open the raw socket it requires.
+    """
+    client_ip = request.headers.get("X-Real-IP", request.remote_addr)
+    try:
+        ipaddress.ip_address(client_ip)
+    except ValueError:
+        return jsonify({"error": "Could not determine a valid client IP"}), 400
+
+    try:
+        size = int(request.args.get("size", _SPEEDTEST_MTU_MAX))
+    except ValueError:
+        return jsonify({"error": "Invalid size"}), 400
+    size = max(28, min(size, 9000))
+    payload = size - 28
+
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "2", "-M", "do", "-s", str(payload), "-W", "1", client_ip],
+            capture_output=True, text=True, timeout=6,
+        )
+        success = result.returncode == 0 and "0% packet loss" in result.stdout
+    except Exception:
+        success = False
+
+    return jsonify({"size": size, "success": success})
+
+
+def _warm_light_cache():
+    """Pre-build the lightweight run index at startup so the first
+    /api/runs or /api/result call of a process doesn't have to eat the
+    cost of parsing every historical result file (which can be large —
+    each line carries the full raw iPerf3 JSON blob)."""
+    if not _config or not _store:
+        return
+    try:
+        for fname in _store.list_result_files():
+            _get_light_records(fname)
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to warm run index cache", exc_info=True)
+
+
+threading.Thread(target=_warm_light_cache, daemon=True, name="warm-run-index").start()
 
 
 # ── Onboarding API ─────────────────────────────────────────
@@ -357,12 +827,10 @@ def api_onboard():
     if not admin_pass: return jsonify({"error": "admin_pass is required"}), 400
 
     job_id  = "onboard-" + str(uuid.uuid4())[:8]
-    log_q   = queue.Queue(maxsize=500)
     handler = JobLogHandler(job_id)
     handler.setLevel(logging.INFO)
 
     with _job_logs_lock:
-        _job_logs[job_id] = log_q
         if len(_job_log_history) >= _MAX_HISTORY_JOBS:
             oldest = sorted(_job_log_history.keys())[0]
             del _job_log_history[oldest]
@@ -417,7 +885,6 @@ def api_onboard():
                 _jobs[job_id]["error"]    = str(e)
         finally:
             root.removeHandler(handler)
-            log_q.put(None)
 
     threading.Thread(target=run_onboard, daemon=True,
                      name=f"onboard-{agent_ip}").start()
@@ -568,12 +1035,10 @@ def api_ssh_push_key():
     nettest_user = _config.ssh_defaults.username
 
     job_id  = "push-key-" + str(uuid.uuid4())[:8]
-    log_q   = queue.Queue(maxsize=500)
     handler = JobLogHandler(job_id)
     handler.setLevel(logging.INFO)
 
     with _job_logs_lock:
-        _job_logs[job_id] = log_q
         if len(_job_log_history) >= _MAX_HISTORY_JOBS:
             oldest = sorted(_job_log_history.keys())[0]
             del _job_log_history[oldest]
@@ -692,7 +1157,6 @@ def api_ssh_push_key():
             _jobs[job_id]["success"]  = all_ok
             _jobs[job_id]["error"]    = None if all_ok else "Key push failed on one or more agents"
         _log.removeHandler(handler)
-        log_q.put(None)
 
     threading.Thread(target=run_push, daemon=True, name="push-key").start()
     return jsonify({"job_id": job_id, "status": "queued"})
@@ -737,6 +1201,7 @@ def api_export():
             "destination": p.destination,
             "hops":        p.hops,
             "tests":       p.tests,
+            **({"schedule": p.schedule} if p.schedule else {}),
         }
         for p in _config.paths
     ]
@@ -1015,13 +1480,8 @@ def api_import_confirm():
     except Exception as e:
         return jsonify({"error": f"Config saved but failed to reload: {e}"}), 500
 
-    # Restart scheduler (best-effort — don't fail import if this fails)
-    try:
-        import subprocess
-        subprocess.run(["sudo", "systemctl", "restart", "nettest"],
-                       capture_output=True, timeout=10)
-    except Exception:
-        pass
+    # Restart scheduler (debounced — collapses rapid repeated saves into one restart)
+    schedule_nettest_restart()
 
     # Also signal web process to reload by touching a reload sentinel
     # (ensures dashboard reflects new config even if scheduler restart fails)
@@ -1061,6 +1521,583 @@ def api_import_keys():
                     os.chmod(key_file, 0o600)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
+# ── Update Management API ─────────────────────────────────
+
+_update_cache: dict = {}   # stores validated update bundle info
+_update_cache_lock = threading.Lock()
+_SNAPSHOTS_DIR = "/opt/nettest/snapshots"
+_APP_DIR       = "/opt/nettest"
+
+
+def _read_version(path: str = None) -> str:
+    """Read version from version.txt."""
+    vpath = path or os.path.join(_APP_DIR, "version.txt")
+    try:
+        return open(vpath).read().strip()
+    except Exception:
+        return "unknown"
+
+
+def _parse_changelog(content: str, version: str = None) -> str:
+    """Extract changelog entry for a specific version, or return full changelog."""
+    if not version:
+        return content
+    lines = content.splitlines()
+    in_section = False
+    section = []
+    for line in lines:
+        if line.startswith(f"## [{version}]"):
+            in_section = True
+        elif in_section and line.startswith("## ["):
+            break
+        if in_section:
+            section.append(line)
+    return "\n".join(section) if section else f"No changelog entry for v{version}"
+
+
+@app.route("/api/version")
+@login_required
+def api_version():
+    """Return current version and changelog."""
+    version = _read_version()
+    changelog = ""
+    cl_path = os.path.join(_APP_DIR, "CHANGELOG.md")
+    if os.path.exists(cl_path):
+        changelog = open(cl_path).read()
+    snapshots = []
+    if os.path.isdir(_SNAPSHOTS_DIR):
+        for snap in sorted(os.listdir(_SNAPSHOTS_DIR), reverse=True)[:5]:
+            snap_ver = _read_version(os.path.join(_SNAPSHOTS_DIR, snap, "version.txt"))
+            snapshots.append({"name": snap, "version": snap_ver})
+    return jsonify({
+        "version":   version,
+        "changelog": _parse_changelog(changelog, version),
+        "snapshots": snapshots,
+    })
+
+
+@app.route("/api/update/preview", methods=["POST"])
+@login_required
+def api_update_preview():
+    """Validate and preview an update bundle."""
+    import tarfile, io, uuid as _uuid
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    f = request.files["file"]
+    try:
+        buf = io.BytesIO(f.read())
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            members = tar.getmembers()
+            names   = [m.name for m in members]
+
+            # Find version.txt inside the bundle
+            ver_member = next((m for m in members
+                               if m.name.endswith("version.txt") and ".ssh" not in m.name), None)
+            if not ver_member:
+                return jsonify({"error": "Invalid bundle — version.txt not found"}), 400
+
+            incoming_version = tar.extractfile(ver_member).read().decode().strip()
+
+            # Find changelog
+            cl_member = next((m for m in members
+                              if m.name.endswith("CHANGELOG.md")), None)
+            changelog_entry = ""
+            if cl_member:
+                cl_content = tar.extractfile(cl_member).read().decode()
+                changelog_entry = _parse_changelog(cl_content, incoming_version)
+
+            # List changed Python/key files
+            py_files = [m.name for m in members
+                        if m.name.endswith(".py") or m.name.endswith(".html")
+                        or m.name.endswith(".sh")]
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse bundle: {e}"}), 400
+
+    current_version = _read_version()
+
+    # Cache bundle for apply step
+    import uuid as _uuid2
+    update_id = str(_uuid2.uuid4())
+    # Save bundle to temp file
+    buf.seek(0)
+    tmp_path = f"/tmp/nettest-update-{update_id}.tar.gz"
+    with open(tmp_path, "wb") as tf:
+        tf.write(buf.read())
+
+    with _update_cache_lock:
+        _update_cache[update_id] = {
+            "tmp_path":        tmp_path,
+            "version":         incoming_version,
+            "changelog_entry": changelog_entry,
+        }
+
+    return jsonify({
+        "update_id":       update_id,
+        "current_version": current_version,
+        "incoming_version": incoming_version,
+        "changelog_entry": changelog_entry,
+        "file_count":      len(py_files),
+    })
+
+
+@app.route("/api/update/apply", methods=["POST"])
+@login_required
+def api_update_apply():
+    """Apply a validated update bundle with live SSE output."""
+    import tarfile
+    body      = request.get_json(silent=True) or {}
+    update_id = body.get("update_id", "")
+
+    with _update_cache_lock:
+        cache = _update_cache.get(update_id)
+    if not cache:
+        return jsonify({"error": "Update session expired — upload bundle again"}), 400
+
+    job_id  = "update-" + str(uuid.uuid4())[:8]
+    handler = JobLogHandler(job_id)
+    handler.setLevel(logging.INFO)
+
+    with _job_logs_lock:
+        if len(_job_log_history) >= _MAX_HISTORY_JOBS:
+            oldest = sorted(_job_log_history.keys())[0]
+            del _job_log_history[oldest]
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id":   job_id,
+            "path_id":  "update",
+            "label":    f"Update to v{cache['version']}",
+            "status":   "queued",
+            "started":  datetime.now(timezone.utc).isoformat(),
+            "finished": None, "success": None, "error": None,
+        }
+
+    def run_update():
+        import subprocess, tarfile
+        _log = logging.getLogger("update")
+        _log.setLevel(logging.DEBUG)
+        _log.addHandler(handler)
+
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+
+        try:
+            tmp_path = cache["tmp_path"]
+            version  = cache["version"]
+            extract_dir = f"/tmp/nettest-update-apply-{update_id}"
+
+            _log.info(f"── NetTest Update ──")
+            _log.info(f"  Installing v{version}...")
+
+            # Step 1: Extract bundle
+            _log.info("  Extracting bundle...")
+            os.makedirs(extract_dir, exist_ok=True)
+            with tarfile.open(tmp_path, "r:gz") as tar:
+                tar.extractall(extract_dir)
+
+            # Find the root dir inside the tarball
+            contents = os.listdir(extract_dir)
+            src_dir  = os.path.join(extract_dir, contents[0]) if len(contents) == 1 else extract_dir
+            _log.info(f"  ✓ Extracted to {src_dir}")
+
+            # Step 2: Snapshot current version
+            current_ver = _read_version()
+            snap_ts  = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            snap_dir = os.path.join(_SNAPSHOTS_DIR, f"{current_ver}-{snap_ts}")
+            _log.info(f"  Snapshotting current v{current_ver}...")
+            os.makedirs(snap_dir, exist_ok=True)
+            result = subprocess.run([
+                "rsync", "-a",
+                "--exclude=config/",
+                "--exclude=logs/",
+                "--exclude=results/",
+                "--exclude=packages/",
+                "--exclude=snapshots/",
+                "--exclude=.ssh/",
+                "--exclude=ssl/",
+                "--exclude=venv/",
+                f"{_APP_DIR}/", f"{snap_dir}/"
+            ], capture_output=True, text=True)
+            if result.returncode == 0:
+                _log.info(f"  ✓ Snapshot saved: snapshots/{current_ver}-{snap_ts}")
+            else:
+                _log.warning(f"  ⚠ Snapshot warning: {result.stderr[:100]}")
+
+            # Evict old snapshots (keep 3)
+            if os.path.isdir(_SNAPSHOTS_DIR):
+                snaps = sorted(os.listdir(_SNAPSHOTS_DIR), reverse=True)
+                for old in snaps[3:]:
+                    import shutil
+                    shutil.rmtree(os.path.join(_SNAPSHOTS_DIR, old), ignore_errors=True)
+                    _log.info(f"  Removed old snapshot: {old}")
+
+            # Step 3: Backup SSH keys and SSL certs before sync
+            import shutil as _shutil
+            key_file = os.path.expanduser(_config.ssh_defaults.key_file)
+            key_backup = {}
+            for kpath in [key_file, key_file + ".pub"]:
+                if os.path.exists(kpath):
+                    key_backup[kpath] = open(kpath, "rb").read()
+            _log.info(f"  Backed up {len(key_backup)} key file(s)")
+
+            # Step 4: Sync new code
+            _log.info("  Syncing new code files...")
+            result = subprocess.run([
+                "rsync", "-a",
+                "--exclude=config/",
+                "--exclude=logs/",
+                "--exclude=results/",
+                "--exclude=packages/",
+                "--exclude=snapshots/",
+                "--exclude=.ssh/",
+                "--exclude=ssl/",
+                "--exclude=venv/",
+                "--exclude=.release_info",
+                f"{src_dir}/", f"{_APP_DIR}/"
+            ], capture_output=True, text=True)
+            if result.returncode == 0:
+                _log.info("  ✓ Code files updated")
+            else:
+                raise RuntimeError(f"rsync failed: {result.stderr}")
+
+            # Restore SSH keys if they were wiped (e.g. key outside .ssh/ dir)
+            restored = 0
+            for kpath, kdata in key_backup.items():
+                if not os.path.exists(kpath):
+                    os.makedirs(os.path.dirname(kpath), exist_ok=True)
+                    with open(kpath, "wb") as fh:
+                        fh.write(kdata)
+                    os.chmod(kpath, 0o600 if not kpath.endswith(".pub") else 0o644)
+                    restored += 1
+            if restored:
+                _log.info(f"  ✓ Restored {restored} SSH key file(s) after sync")
+
+            # Step 4: Update pip dependencies
+            _log.info("  Updating Python dependencies...")  # Step 5
+            pip = os.path.join(_APP_DIR, "venv/bin/pip")
+            req = os.path.join(_APP_DIR, "requirements.txt")
+            result = subprocess.run(
+                [pip, "install", "-r", req, "-q"],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                _log.info("  ✓ Dependencies up to date")
+            else:
+                _log.warning(f"  ⚠ pip warning: {result.stderr[:200]}")
+
+            # Step 5: Restart services
+            _log.info("  Restarting services...")
+            subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+                           capture_output=True, timeout=15)
+            _log.info("  ✓ Scheduler restarted")
+            # Web service restart — do last since it kills this process
+            _log.info(f"  ✓ Update to v{version} complete!")
+            _log.info("")
+            _log.info("  Restarting web service — reconnect in a few seconds...")
+
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "done"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["success"]  = True
+
+            # Clean up
+            import shutil
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            os.unlink(tmp_path)
+            with _update_cache_lock:
+                _update_cache.pop(update_id, None)
+
+            # Delay web restart so SSE can finish
+            import time as _time
+            _time.sleep(2)
+            subprocess.run(["sudo", "systemctl", "restart", "nettest-web"],
+                           capture_output=True, timeout=15)
+
+        except Exception as e:
+            _log.error(f"  ✗ Update failed: {e}")
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "error"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["error"]    = str(e)
+
+    threading.Thread(target=run_update, daemon=True, name="update").start()
+    return jsonify({"job_id": job_id, "status": "queued"})
+
+
+@app.route("/api/update/rollback", methods=["POST"])
+@login_required
+def api_update_rollback():
+    """Rollback to a named snapshot."""
+    import subprocess
+    body     = request.get_json(silent=True) or {}
+    snapshot = body.get("snapshot", "").strip()
+
+    if not snapshot or "/" in snapshot or ".." in snapshot:
+        return jsonify({"error": "Invalid snapshot name"}), 400
+
+    snap_path = os.path.join(_SNAPSHOTS_DIR, snapshot)
+    if not os.path.isdir(snap_path):
+        return jsonify({"error": f"Snapshot not found: {snapshot}"}), 404
+
+    job_id  = "rollback-" + str(uuid.uuid4())[:8]
+    handler = JobLogHandler(job_id)
+    handler.setLevel(logging.INFO)
+
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id":   job_id,
+            "path_id":  "rollback",
+            "label":    f"Rollback to {snapshot}",
+            "status":   "queued",
+            "started":  datetime.now(timezone.utc).isoformat(),
+            "finished": None, "success": None, "error": None,
+        }
+
+    def run_rollback():
+        _log = logging.getLogger("rollback")
+        _log.setLevel(logging.DEBUG)
+        _log.addHandler(handler)
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+
+        try:
+            snap_ver = _read_version(os.path.join(snap_path, "version.txt"))
+            _log.info(f"── NetTest Rollback ──")
+            _log.info(f"  Restoring v{snap_ver} from {snapshot}...")
+
+            result = subprocess.run([
+                "rsync", "-a",
+                "--exclude=config/",
+                "--exclude=logs/",
+                "--exclude=results/",
+                "--exclude=packages/",
+                "--exclude=snapshots/",
+                "--exclude=.ssh/",
+                "--exclude=ssl/",
+                "--exclude=venv/",
+                f"{snap_path}/", f"{_APP_DIR}/"
+            ], capture_output=True, text=True)
+
+            if result.returncode != 0:
+                raise RuntimeError(f"rsync failed: {result.stderr}")
+            _log.info("  ✓ Code files restored")
+
+            pip = os.path.join(_APP_DIR, "venv/bin/pip")
+            req = os.path.join(_APP_DIR, "requirements.txt")
+            subprocess.run([pip, "install", "-r", req, "-q"],
+                           capture_output=True, timeout=120)
+            _log.info("  ✓ Dependencies synced")
+
+            subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+                           capture_output=True, timeout=15)
+            _log.info(f"  ✓ Rollback to v{snap_ver} complete!")
+            _log.info("  Restarting web service...")
+
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "done"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["success"]  = True
+
+            import time as _time
+            _time.sleep(2)
+            subprocess.run(["sudo", "systemctl", "restart", "nettest-web"],
+                           capture_output=True, timeout=15)
+
+        except Exception as e:
+            _log.error(f"  ✗ Rollback failed: {e}")
+            with _jobs_lock:
+                _jobs[job_id]["status"]   = "error"
+                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+                _jobs[job_id]["error"]    = str(e)
+
+    threading.Thread(target=run_rollback, daemon=True, name="rollback").start()
+    return jsonify({"job_id": job_id, "status": "queued"})
+
+
+
+# ── Live Output & Abort ───────────────────────────────────
+
+@app.route("/live")
+def live_output_page():
+    """Standalone live output page — opened as a popout window."""
+    if _config and _config.auth.radius_server and not session.get("authenticated"):
+        return ("<html><body style='background:#0a0c10;color:#f44336;"
+                "font-family:monospace;padding:40px;font-size:14px'>"
+                "Not authenticated. Log in to the dashboard first.</body></html>"), 401
+    job_id = request.args.get("job_id", "")
+    return _render_live_page(job_id)
+
+
+def _render_live_page(job_id: str) -> str:
+    """Return the live output page HTML (kept out of f-string to allow JS braces)."""
+    return """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NetTest — Live Output</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0a0c10;color:#c8cdd6;font-family:'Menlo','Consolas',monospace;
+         font-size:12px;display:flex;flex-direction:column;height:100vh}
+    #header{padding:10px 16px;background:#12151c;border-bottom:1px solid #1e2330;
+            display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+    #job-label{font-size:13px;font-weight:600;color:#5bc4f5}
+    #job-meta{font-size:11px;color:#5a6070;margin-top:2px}
+    #status-badge{font-size:11px;padding:3px 10px;border-radius:12px;
+                  background:#1a2a1a;color:#4caf50;border:1px solid #2a4a2a}
+    #toolbar{padding:6px 16px;background:#0e1118;border-bottom:1px solid #1e2330;
+             display:flex;gap:8px;align-items:center;flex-shrink:0}
+    .btn{font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;
+         border:1px solid #2a3040;background:#1a2030;color:#c8cdd6}
+    .btn:hover{background:#243040}
+    .btn-abort{border-color:#8b2020;background:#1a0808;color:#ff6060}
+    .btn-abort:hover{background:#2a0808}
+    .btn-abort:disabled{opacity:0.4;cursor:default}
+    #elapsed{font-size:11px;color:#5a6070;margin-left:auto}
+    #output{flex:1;overflow-y:auto;padding:12px 16px;scroll-behavior:smooth}
+    .line{padding:1px 0;white-space:pre-wrap;line-height:1.5}
+    .ok{color:#4caf50}.err{color:#f44336}.warn{color:#ff9800}
+    .info{color:#c8cdd6}.dim{color:#5a6070}.iperf{color:#5bc4f5}
+    #footer{padding:6px 16px;background:#0e1118;border-top:1px solid #1e2330;
+            font-size:11px;color:#5a6070;flex-shrink:0}
+  </style>
+</head>
+<body>
+<div id="header">
+  <div>
+    <div id="job-label">Connecting...</div>
+    <div id="job-meta">Job: """ + job_id + """</div>
+  </div>
+  <div id="status-badge">● connecting</div>
+</div>
+<div id="toolbar">
+  <button class="btn" onclick="copyAll()">&#10088; Copy</button>
+  <button class="btn" onclick="clearOut()">&times; Clear</button>
+  <button class="btn btn-abort" id="abort-btn" onclick="doAbort()">&#9209; Abort</button>
+  <span id="elapsed">0s</span>
+  <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;margin-left:auto">
+    <input type="checkbox" id="asc" checked> Auto-scroll
+  </label>
+</div>
+<div id="output"></div>
+<div id="footer"><span id="lc">0 lines</span></div>
+<script>
+const JOB  = '""" + job_id + """';
+const out  = document.getElementById('output');
+const badge= document.getElementById('status-badge');
+const lbl  = document.getElementById('job-label');
+const abrt = document.getElementById('abort-btn');
+const elps = document.getElementById('elapsed');
+const lc   = document.getElementById('lc');
+let lines=0, start=Date.now(), done=false, es=null;
+
+setInterval(()=>{
+  const s=Math.floor((Date.now()-start)/1000);
+  elps.textContent=s<60?s+'s':Math.floor(s/60)+'m '+(s%60)+'s';
+},1000);
+
+function cls(t){
+  if(/PASS|completed successfully/.test(t))return 'ok';
+  if(/ERROR|FAIL|failed/.test(t))return 'err';
+  if(/WARNING/.test(t))return 'warn';
+  if(/\[\s*\d+\].*Mbits\/sec/.test(t))return 'iperf';
+  if(/\[INFO\]/.test(t))return 'dim';
+  return 'info';
+}
+
+function addLine(t){
+  const d=document.createElement('div');
+  d.className='line '+cls(t);
+  d.textContent=t;
+  out.appendChild(d);
+  lines++;lc.textContent=lines+' lines';
+  if(document.getElementById('asc').checked)out.scrollTop=out.scrollHeight;
+}
+
+async function loadHistory(){
+  try{
+    const r=await fetch('/api/jobs/'+JOB+'/log');
+    const d=await r.json();
+    if(d.job){
+      lbl.textContent=d.job.label||JOB;
+      document.title='NetTest - '+(d.job.label||JOB);
+      if(d.job.started)start=new Date(d.job.started).getTime()||Date.now();
+    }
+    (d.lines||[]).forEach(addLine);
+  }catch(e){addLine('(history load failed: '+e.message+')');}
+}
+
+function connect(){
+  es=new EventSource('/api/jobs/'+JOB+'/stream?since='+lines);
+  badge.textContent='running';
+  badge.style.color='#4caf50';
+  es.onmessage=e=>{
+    const t=e.data;
+    if(t==='[STREAM END]'||t==='[STREAM TIMEOUT]'){
+      es.close();done=true;
+      badge.textContent=t==='[STREAM END]'?'done':'timed out';
+      badge.style.color='#5a6070';
+      abrt.disabled=true;
+      return;
+    }
+    if(t)addLine(t);
+  };
+  es.onerror=()=>{
+    if(!done){badge.textContent='disconnected';badge.style.color='#ff9800';}
+    es.close();
+  };
+}
+
+async function doAbort(){
+  if(!confirm('Abort? Current test finishes, then job stops.'))return;
+  abrt.disabled=true;abrt.textContent='Aborting...';
+  await fetch('/api/jobs/'+JOB+'/abort',{method:'POST'}).catch(()=>{});
+}
+
+function copyAll(){
+  const t=Array.from(out.children).map(d=>d.textContent).join('\n');
+  navigator.clipboard.writeText(t).then(()=>{
+    const b=event.target;b.textContent='Copied';
+    setTimeout(()=>{b.textContent='Copy';},1500);
+  });
+}
+function clearOut(){out.innerHTML='';lines=0;lc.textContent='0 lines';}
+
+loadHistory().then(()=>{if(!done)connect();});
+</script>
+</body>
+</html>"""
+
+
+
+@app.route("/api/jobs/<job_id>/abort", methods=["POST"])
+@login_required
+def api_job_abort(job_id: str):
+    """Signal a running job to abort after its current test completes."""
+    with _abort_lock:
+        event = _abort_events.get(job_id)
+    if not event:
+        # Job may already be done
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+        if job and job.get("status") in ("done", "error"):
+            return jsonify({"ok": True, "note": "Job already finished"})
+        return jsonify({"error": "Job not found or not abortable"}), 404
+
+    event.set()
+    logging.getLogger(__name__).info(
+        f"Abort requested for job {job_id}"
+    )
+
+    # Also log it into the job's history (picked up by the live tail poller)
+    msg = "⚠ Abort requested — stopping after current test completes..."
+    with _job_logs_lock:
+        _job_log_history.setdefault(job_id, []).append(msg)
+
     return jsonify({"ok": True})
 
 
@@ -1350,12 +2387,10 @@ def api_packages_push(agent_id: str):
         return jsonify({"error": "No .deb files staged — upload packages first"}), 400
 
     job_id  = "pkg-push-" + str(uuid.uuid4())[:8]
-    log_q   = queue.Queue(maxsize=500)
     handler = JobLogHandler(job_id)
     handler.setLevel(logging.INFO)
 
     with _job_logs_lock:
-        _job_logs[job_id] = log_q
         if len(_job_log_history) >= _MAX_HISTORY_JOBS:
             oldest = sorted(_job_log_history.keys())[0]
             del _job_log_history[oldest]
@@ -1433,7 +2468,6 @@ def api_packages_push(agent_id: str):
                 _jobs[job_id]["error"]   = str(e)
         finally:
             root.removeHandler(handler)
-            log_q.put(None)
 
     threading.Thread(target=run_push, daemon=True,
                      name=f"pkg-push-{agent_id}").start()
@@ -1474,7 +2508,7 @@ def api_agents():
 
 @app.route("/api/hops/<path_id>")
 def api_hops(path_id: str):
-    records = _load_records(days=1, path_id=path_id)
+    records = _load_records(minutes=1440, path_id=path_id)
     for r in reversed(records):
         if r.get("latency_under_load") and r["latency_under_load"].get("mtr_hops"):
             return jsonify({
@@ -1493,8 +2527,9 @@ def api_hops(path_id: str):
 
 @app.route("/api/run/<path_id>", methods=["POST"])
 def api_run_path(path_id: str):
-    body        = request.get_json(silent=True) or {}
-    test_filter = body.get("tests")
+    body             = request.get_json(silent=True) or {}
+    test_filter      = body.get("tests")
+    direction_filter = body.get("directions")
 
     path = next((p for p in _config.paths if p.id == path_id), None)
     if not path:
@@ -1514,7 +2549,7 @@ def api_run_path(path_id: str):
         }
 
     threading.Thread(
-        target=_run_job, args=(job_id, path_id, test_filter),
+        target=_run_job, args=(job_id, path_id, test_filter, direction_filter),
         daemon=True, name=f"job-{job_id}"
     ).start()
 
@@ -1566,7 +2601,6 @@ def api_job_status(job_id: str):
 
 
 @app.route("/api/jobs/<job_id>/log")
-@login_required
 def api_job_log(job_id: str):
     """Return accumulated log lines for a completed or running job."""
     with _job_logs_lock:
@@ -1585,38 +2619,49 @@ def api_job_log(job_id: str):
 
 @app.route("/api/jobs/<job_id>/stream")
 def api_job_stream(job_id: str):
-    """SSE stream — delivers live log lines to the browser."""
+    """SSE stream — tails the job's log history.
+
+    Reads _job_log_history by index rather than draining a per-job queue, so
+    any number of viewers (including a reloaded /live tab racing a
+    not-yet-closed old connection) can tail the same job independently with
+    no lines stolen out from under each other. ``since`` lets a caller that
+    already has the first N lines (e.g. from /log) resume without
+    re-sending them.
+    """
     NL = "\n"
+    try:
+        start_idx = max(0, int(request.args.get("since", 0)))
+    except (TypeError, ValueError):
+        start_idx = 0
 
     def generate():
-        # Wait up to 3s for the job thread to register its log queue
-        q = None
-        for _ in range(30):
-            with _job_logs_lock:
-                q = _job_logs.get(job_id)
-            if q:
-                break
-            time.sleep(0.1)
-
-        if not q:
-            with _jobs_lock:
-                job = _jobs.get(job_id, {})
-            yield "data: [Job " + job_id + "] Status: " + job.get("status", "unknown") + NL + NL
+        with _jobs_lock:
+            exists = job_id in _jobs
+        if not exists:
+            yield "data: [Job " + job_id + "] Status: unknown" + NL + NL
             yield "data: [STREAM END]" + NL + NL
             return
 
+        pos  = start_idx
+        idle = 0.0
         while True:
-            try:
-                line = q.get(timeout=120)   # 120s covers throughput + latency-under-load
-            except Exception:
-                yield "data: [STREAM TIMEOUT]" + NL + NL
-                break
+            with _job_logs_lock:
+                hist      = _job_log_history.get(job_id, [])
+                new_lines = hist[pos:]
+                pos       = len(hist)
 
-            if line is None:   # sentinel — job finished
-                with _jobs_lock:
-                    job = _jobs.get(job_id, {})
-                status = job.get("status", "done")
-                err    = job.get("error") or ""
+            if new_lines:
+                idle = 0.0
+                for line in new_lines:
+                    safe = line.replace(NL, " | ")
+                    yield "data: " + safe + NL + NL
+
+            with _jobs_lock:
+                job = dict(_jobs.get(job_id, {}))
+
+            status = job.get("status", "")
+            if status in ("done", "error"):
+                err = job.get("error") or ""
                 yield "data: " + NL + NL
                 if status == "done" and not err:
                     yield "data: \u2713 Test completed successfully" + NL + NL
@@ -1625,8 +2670,16 @@ def api_job_stream(job_id: str):
                 yield "data: [STREAM END]" + NL + NL
                 break
 
-            safe = line.replace(NL, " | ")
-            yield "data: " + safe + NL + NL
+            if not job:   # evicted from memory — nothing more will ever arrive
+                yield "data: [STREAM END]" + NL + NL
+                break
+
+            if idle >= 120:   # covers throughput + latency-under-load stalls
+                yield "data: [STREAM TIMEOUT]" + NL + NL
+                break
+
+            time.sleep(0.3)
+            idle += 0.3
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -1666,8 +2719,10 @@ def api_config_save():
     try:
         _config = load_config(_config_path)
         _tester = PathTester(_config)
-        # Restart scheduler so it picks up path/agent changes immediately
-        subprocess.run(["sudo", "systemctl", "restart", "nettest"], check=False)
+        # Restart scheduler so it picks up path/agent changes — debounced so
+        # saving several times in a row doesn't restart it (and abort
+        # whatever it's mid-test on) once per save.
+        schedule_nettest_restart()
         return jsonify({'ok': True, 'agents': len(_config.agents), 'paths': len(_config.paths)})
     except Exception as e:
         return jsonify({'error': f'Config saved but reload failed: {e}'}), 500
@@ -1707,22 +2762,36 @@ def api_test_agent():
 def api_export_csv():
     """Export results as a CSV file download."""
     import csv, io
-    days    = int(request.args.get("days", 1))
+    minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
-    records = _load_records(days, path_id)
+    records = _load_records(minutes, path_id)
 
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
         "timestamp", "path", "status",
         "tx_mbps", "rx_mbps", "retransmits",
+        "bidir_tx_mbps", "bidir_rx_mbps", "bidir_retransmits",
         "rtt_avg_ms", "rtt_max_ms", "loss_pct",
         "jitter_ms", "jitter_loss_pct",
         "idle_rtt_ms", "loaded_rtt_ms", "bufferbloat_delta_ms",
         "mtu_bytes", "fragmentation", "duration_sec", "error",
     ])
     for r in records:
-        t  = r.get("throughput")         or {}
+        # A record may hold multiple throughput entries (one per direction
+        # run: upload/download/bidir) — collapse upload/download to one
+        # tx/rx/retransmits triple per row (untested = blank, not 0). Bidir
+        # is kept in its own columns rather than folded in — both directions
+        # were measured while contending with each other, so its numbers
+        # aren't comparable to a dedicated upload/download run.
+        t_entries    = [t for t in _throughput_entries(r) if t.get("direction") != "bidir"]
+        bidir_entries = [t for t in _throughput_entries(r) if t.get("direction") == "bidir"]
+        tx   = max((t["tx_mbps"] for t in t_entries if t.get("tx_mbps") is not None), default="")
+        rx   = max((t["rx_mbps"] for t in t_entries if t.get("rx_mbps") is not None), default="")
+        retr = max((t["retransmits"] for t in t_entries), default="")
+        bidir_tx   = max((t["tx_mbps"] for t in bidir_entries if t.get("tx_mbps") is not None), default="")
+        bidir_rx   = max((t["rx_mbps"] for t in bidir_entries if t.get("rx_mbps") is not None), default="")
+        bidir_retr = max((t["retransmits"] for t in bidir_entries), default="")
         l  = r.get("latency")            or {}
         j  = r.get("jitter")             or {}
         lu = r.get("latency_under_load") or {}
@@ -1731,8 +2800,8 @@ def api_export_csv():
             r.get("timestamp_utc", "")[:19],
             r.get("path_label", ""),
             "OK" if r.get("success") else "FAIL",
-            t.get("tx_mbps", ""),       t.get("rx_mbps", ""),
-            t.get("retransmits", ""),
+            tx, rx, retr,
+            bidir_tx, bidir_rx, bidir_retr,
             l.get("rtt_avg_ms", ""),    l.get("rtt_max_ms", ""),
             l.get("packet_loss_pct", ""),
             j.get("jitter_ms", ""),     j.get("packet_loss_pct", ""),
@@ -1825,6 +2894,18 @@ def serve_dashboard():
 @login_required
 def serve_config_page():
     return send_from_directory(STATIC_DIR, "config.html")
+
+
+@app.route("/compare")
+@login_required
+def serve_compare_page():
+    return send_from_directory(STATIC_DIR, "compare.html")
+
+
+@app.route("/speedtest")
+@login_required
+def serve_speedtest_page():
+    return send_from_directory(STATIC_DIR, "speedtest.html")
 
 
 # ── Entry point (flask dev server only — use gunicorn in prod) ─

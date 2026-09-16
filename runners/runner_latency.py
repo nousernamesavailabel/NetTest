@@ -15,6 +15,22 @@ from core.config_loader import LatencyParams, JitterParams, LatencyUnderLoadPara
 logger = logging.getLogger(__name__)
 
 
+def _strip_escapes(text: str) -> str:
+    """Strip terminal escape sequences from SSH command output.
+    Handles shell integration markers (OSC 3008 etc), CSI, and OSC sequences.
+    """
+    # Shell integration sequences like ]3008;... or \]3008;...
+    text = re.sub(r'[\\]?]\d+;[^\n]*', '', text)
+    # OSC sequences: ESC ] ... BEL
+    text = re.sub('\x1b][^\x07\x1b]*\x07', '', text)
+    # CSI sequences: ESC [ ... letter
+    text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+    # Remaining ESC
+    text = re.sub(r'\x1b.', '', text)
+    return text.replace('\r', '')
+
+
+
 
 # ── iPerf3 server management ───────────────────────────────
 
@@ -75,9 +91,15 @@ class LatencyRunner:
         )
         timeout_sec = int(p.packet_count * interval_sec) + 30
         output = src_ssh.run(cmd, timeout=timeout_sec)
+        # Log summary lines only (skip per-packet ICMP replies)
+        for line in _strip_escapes(output).splitlines():
+            line = line.strip()
+            if line and ('packet' in line or 'rtt' in line or '---' in line):
+                logger.info(f"    {line}")
         return self._parse_ping(output, p.packet_count)
 
     def _parse_ping(self, output: str, expected_count: int) -> LatencyResult:
+        output = _strip_escapes(output)
         stats_match = re.search(
             r"(\d+) packets transmitted, (\d+) received,.*?([\d.]+)% packet loss",
             output
@@ -130,25 +152,47 @@ class JitterRunner:
     def __init__(self, params: JitterParams):
         self.params = params
 
-    def run(self, src_ssh: SSHManager, dst_ssh: SSHManager, dst_host: str) -> JitterResult:
-        p = self.params
+    def run(self, src_ssh: SSHManager, dst_ssh,
+            dst_host: str,
+            server_managed: bool = True,
+            port_override: int = None,
+            busy_retry_seconds: int = 0) -> JitterResult:
+        p    = self.params
+        port = port_override if port_override else p.iperf3_port
 
-        logger.info(f"  Starting iPerf3 UDP server on {dst_host}:{p.iperf3_port}...")
-        _start_iperf3_server(dst_ssh, p.iperf3_port, label=dst_host, udp=True)
+        if server_managed:
+            logger.info(f"  Starting iPerf3 UDP server on {dst_host}:{port}...")
+            _start_iperf3_server(dst_ssh, port, label=dst_host, udp=True)
+        else:
+            logger.info(f"  Using assumed-running iPerf3 server on {dst_host}:{port}...")
 
         duration_sec = max(10, int(p.packet_count * p.interval_ms / 1000))
         logger.info(f"  Sending UDP stream for {duration_sec}s "
                     f"at {p.bandwidth_kbps} Kbps...")
 
         cmd = (
-            f"iperf3 -c {dst_host} -p {p.iperf3_port} "
+            f"iperf3 -c {dst_host} -p {port} "
             f"-u "
             f"-b {p.bandwidth_kbps}K "
             f"-l {p.packet_size_bytes} "
             f"-t {duration_sec} "
             f"-J"
         )
-        output = src_ssh.run(cmd, timeout=duration_sec + 30)
+        # Retry loop for agent_not_installed
+        deadline = time.time() + (busy_retry_seconds if not server_managed else 0)
+        attempt  = 0
+        while True:
+            attempt += 1
+            output = src_ssh.run(cmd, timeout=duration_sec + 30)
+            if "server is busy" in output.lower() and time.time() < deadline:
+                logger.info(f"  iPerf3 server busy — retrying in 1s "
+                            f"(attempt {attempt}, {int(deadline - time.time())}s remaining)...")
+                time.sleep(1)
+                continue
+            break
+        # Log jitter summary from JSON result only
+        # (raw output is too noisy with OSC sequences and JSON fragments)
+        # Will log after parse below
         return self._parse_output(output)
 
     def _parse_output(self, raw_output: str) -> JitterResult:
@@ -179,8 +223,8 @@ class JitterRunner:
         ) if data.get("intervals") else 0
 
         loss_note = f"  ⚠ {loss_pct}% packet loss" if loss_pct > 1 else ""
-        logger.info(f"  Jitter result: {jitter_ms}ms  "
-                    f"sent={sent}  received={received}  loss={loss_pct}%{loss_note}")
+        logger.info(f"  Jitter: {jitter_ms}ms  sent={sent}  received={received}  "
+                    f"loss={loss_pct}%{loss_note}")
 
         return JitterResult(
             jitter_ms=jitter_ms,
@@ -202,8 +246,11 @@ class LatencyUnderLoadRunner:
         self.iperf3_streams = iperf3_streams
         self.iperf3_duration = iperf3_duration
 
-    def run(self, src_ssh: SSHManager, dst_ssh: SSHManager,
-            dst_host: str) -> LatencyUnderLoadResult:
+    def run(self, src_ssh: SSHManager, dst_ssh,
+            dst_host: str,
+            server_managed: bool = True,
+            port_override: int = None,
+            busy_retry_seconds: int = 0) -> LatencyUnderLoadResult:
         p = self.params
 
         # Phase 1: idle baseline
@@ -214,15 +261,49 @@ class LatencyUnderLoadRunner:
             f"{dst_host}"
         )
         idle_output = src_ssh.run(idle_ping_cmd, timeout=p.ping_count * 2 + 15)
+        for line in _strip_escapes(idle_output).splitlines():
+            line = line.strip()
+            if line and ('packet' in line or 'rtt' in line or '---' in line):
+                logger.info(f"    {line}")
         idle_result = _parse_ping_avg(idle_output)
         logger.info(f"  Baseline latency: {idle_result}ms")
 
         # Phase 2: saturate link
+        port = port_override if port_override else self.iperf3_port
         logger.info(f"  Phase 2/4: Saturating link with {self.iperf3_streams}-stream "
                     f"iPerf3 for {self.iperf3_duration}s...")
-        _start_iperf3_server(dst_ssh, self.iperf3_port, label=dst_host)
+        if server_managed:
+            logger.info(f"  Starting iPerf3 server on {dst_host}:{port}...")
+            dst_ssh.run("pkill -9 -f iperf3 2>/dev/null || true", timeout=10)
+            time.sleep(0.5)
+            dst_ssh.run(
+                f"fuser -k {port}/tcp 2>/dev/null || true; "
+                f"fuser -k {port}/udp 2>/dev/null || true",
+                timeout=10
+            )
+            time.sleep(0.5)
+            _start_iperf3_server(dst_ssh, port, label=dst_host)
+        else:
+            logger.info(f"  Using assumed-running iPerf3 server on {dst_host}:{port}...")
+        # For agent_not_installed, retry background iperf3 start if server busy
+        # (run a quick probe first to check availability)
+        if not server_managed and busy_retry_seconds > 0:
+            probe_deadline = time.time() + busy_retry_seconds
+            probe_attempt  = 0
+            while time.time() < probe_deadline:
+                probe_attempt += 1
+                probe = src_ssh.run(
+                    f"iperf3 -c {dst_host} -p {port} -t 1 -J 2>&1 | head -5",
+                    timeout=10
+                )
+                if "server is busy" not in probe.lower():
+                    break
+                logger.info(f"  iPerf3 server busy — retrying in 1s "
+                            f"(attempt {probe_attempt}, "
+                            f"{int(probe_deadline - time.time())}s remaining)...")
+                time.sleep(1)
         src_ssh.run_background(
-            f"iperf3 -c {dst_host} -p {self.iperf3_port} "
+            f"iperf3 -c {dst_host} -p {port} "
             f"-P {self.iperf3_streams} -t {self.iperf3_duration}"
         )
         time.sleep(3)
@@ -235,6 +316,10 @@ class LatencyUnderLoadRunner:
             f"{dst_host}"
         )
         loaded_output = src_ssh.run(loaded_ping_cmd, timeout=p.ping_count * 2 + 15)
+        for line in _strip_escapes(loaded_output).splitlines():
+            line = line.strip()
+            if line and ('packet' in line or 'rtt' in line or '---' in line):
+                logger.info(f"    {line}")
         loaded_result = _parse_ping_avg(loaded_output)
         loaded_loss   = _parse_ping_loss(loaded_output)
         logger.info(f"  Loaded latency: {loaded_result}ms")
@@ -249,10 +334,22 @@ class LatencyUnderLoadRunner:
         if mtr_hops:
             logger.info(f"  MTR traced {len(mtr_hops)} hop(s)")
 
-        # Cleanup
+        # Cleanup — dst_ssh may be None for agent_not_installed destinations
         src_ssh.kill_background("iperf3")
-        dst_ssh.kill_background("iperf3")
+        if dst_ssh is not None:
+            dst_ssh.kill_background("iperf3")
+            # Also kill by port to handle any lingering UDP sockets
+            try:
+                dst_ssh.run(
+                    f"fuser -k {port}/tcp 2>/dev/null || true; "
+                    f"fuser -k {port}/udp 2>/dev/null || true",
+                    timeout=10
+                )
+            except Exception:
+                pass
         logger.info(f"  Saturation load stopped")
+        # Brief cooldown to let iPerf3 fully release the port before next test
+        time.sleep(3)
 
         delta = round(loaded_result - idle_result, 3)
         sign  = "+" if delta >= 0 else ""
@@ -316,6 +413,12 @@ class MTURunner:
         )
         try:
             output = src_ssh.run(cmd, timeout=15)
+            clean = _strip_escapes(output)
+            # Log the RTT line if present
+            for line in clean.splitlines():
+                line = line.strip()
+                if line and ('rtt' in line or 'packet loss' in line):
+                    logger.info(f"      {line}")
             return "__NETTEST_PING_OK__" in output and "0% packet loss" in output
         except Exception:
             return False
@@ -344,6 +447,7 @@ class MTURunner:
 # ── Parse helpers ──────────────────────────────────────────
 
 def _parse_ping_avg(output: str) -> float:
+    output = _strip_escapes(output)
     match = re.search(
         r"rtt min/avg/max/mdev = [\d.]+/([\d.]+)/[\d.]+/[\d.]+ ms", output
     )
@@ -351,6 +455,7 @@ def _parse_ping_avg(output: str) -> float:
 
 
 def _parse_ping_loss(output: str) -> float:
+    output = _strip_escapes(output)
     match = re.search(r"([\d.]+)% packet loss", output)
     return float(match.group(1)) if match else 0.0
 

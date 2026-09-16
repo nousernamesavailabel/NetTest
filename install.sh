@@ -8,8 +8,14 @@
 #   sudo ./install.sh --show-key   # Print the controller public key
 #
 # Environment overrides:
-#   NETTEST_APP_DIR   Install path      (default: /opt/nettest)
-#   NETTEST_USER      Service user      (default: nettest)
+#   NETTEST_APP_DIR       Install path  (default: /opt/nettest)
+#   NETTEST_USER          Service user  (default: nettest)
+#   NETTEST_ONLINE        "false" for an offline / air-gapped install
+#                         (skips the interactive prompt)
+#   NETTEST_PACKAGES_DIR  Directory of .deb files for an offline install
+#                         (skips the interactive prompt)
+#   NETTEST_WHEELS_DIR    Directory of .whl files for an offline install
+#                         (skips the interactive prompt)
 # =============================================================
 
 set -euo pipefail
@@ -64,32 +70,155 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 sep
+CURRENT_VERSION="unknown"
+if [[ -f "${APP_DIR}/version.txt" ]]; then
+  CURRENT_VERSION=$(cat "${APP_DIR}/version.txt" | tr -d "[:space:]")
+fi
+INCOMING_VERSION="unknown"
+if [[ -f "${SRC_DIR}/version.txt" ]]; then
+  INCOMING_VERSION=$(cat "${SRC_DIR}/version.txt" | tr -d "[:space:]")
+fi
+
 if [[ "$UPGRADE" == "true" ]]; then
   echo -e "  ${CYAN}NetTest Controller — Upgrade${NC}"
+  echo "  ${CURRENT_VERSION} → ${INCOMING_VERSION}"
 else
   echo -e "  ${CYAN}NetTest Controller — Fresh Install${NC}"
+  echo "  Version : ${INCOMING_VERSION}"
 fi
 echo "  Target: ${APP_DIR}  |  User: ${APP_USER}"
 sep
 echo ""
 
+# ── Connectivity: online or offline (air-gapped)? ─────────
+# Governs how both system packages and Python wheels are obtained.
+ONLINE="${NETTEST_ONLINE:-}"
+if [[ -z "$ONLINE" && ( -n "${NETTEST_PACKAGES_DIR:-}" || -n "${NETTEST_WHEELS_DIR:-}" ) ]]; then
+  ONLINE=false
+fi
+if [[ -z "$ONLINE" && "$UPGRADE" != "true" ]]; then
+  echo ""
+  _ans=""
+  read -r -p "  Will this server have an internet connection? [Y/n] " _ans || true
+  case "${_ans,,}" in
+    n|no) ONLINE=false ;;
+    *)    ONLINE=true  ;;
+  esac
+fi
+ONLINE="${ONLINE:-true}"
+[[ "$ONLINE" == "false" ]] && warn "Offline / air-gapped install — apt and PyPI will not be used"
+
 # ── System packages ────────────────────────────────────────
-info "Installing system packages..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -q \
-  python3 \
-  python3-venv \
-  python3-pip \
-  rsync \
-  iperf3 \
-  mtr-tiny \
-  iputils-ping \
-  traceroute \
-  psmisc \
-  nginx \
+# Top-level packages the controller needs. For an offline install the
+# packages directory must also hold any of their dependencies that are
+# not already present on the target system.
+REQUIRED_PACKAGES=(
+  python3
+  python3-venv
+  python3-pip
+  rsync
+  iperf3
+  mtr-tiny
+  iputils-ping
+  traceroute
+  psmisc
+  nginx
   openssl
-ok "System packages ready"
+)
+
+if [[ "$UPGRADE" == "true" ]]; then
+  info "Upgrade mode — skipping system package install"
+elif [[ "$ONLINE" != "false" ]]; then
+  # ── Online: install from apt (unchanged behaviour) ──
+  info "Installing system packages..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -q "${REQUIRED_PACKAGES[@]}"
+  ok "System packages ready"
+else
+  # ── Offline: install from a local directory of .deb files ──
+  OS_ID="ubuntu"; OS_VER="24.04"
+  [[ -r /etc/os-release ]] && OS_VER="$(. /etc/os-release; echo "${VERSION_ID:-$OS_VER}")"
+
+  warn "Offline install — system packages will come from a local directory"
+  echo ""
+  echo "  Needed: ${REQUIRED_PACKAGES[*]}"
+  echo ""
+  echo "  Collect these plus every dependency on an online machine of the SAME"
+  echo "  OS release. Two ways — either produces a bundle this installer then"
+  echo "  filters down to what the target is actually missing:"
+  echo ""
+  echo "  a) Any online box (apt-get download ignores what that box already"
+  echo "     has installed, so it works even on a fully-provisioned machine):"
+  echo ""
+  echo "        mkdir pkgs && cd pkgs"
+  echo "        apt-get download \$(apt-cache depends --recurse --no-recommends \\"
+  echo "          --no-suggests --no-conflicts --no-breaks --no-replaces \\"
+  echo "          --no-enhances ${REQUIRED_PACKAGES[*]} | grep '^[a-z0-9]' | sort -u)"
+  echo ""
+  echo "  b) Fresh container (smaller bundle — base already matches):"
+  echo ""
+  echo "        docker run --rm -v \"\$PWD/pkgs:/pkgs\" ${OS_ID}:${OS_VER} sh -c '\\"
+  echo "          apt-get update && apt-get install -y --no-install-recommends \\"
+  echo "            --download-only ${REQUIRED_PACKAGES[*]} && \\"
+  echo "          cp /var/cache/apt/archives/*.deb /pkgs/'"
+  echo ""
+  echo "  Then point this installer at that 'pkgs' directory."
+  echo ""
+
+  PKG_DIR="${NETTEST_PACKAGES_DIR:-}"
+  while true; do
+    if [[ -z "$PKG_DIR" ]]; then
+      read -r -p "  Path to directory containing the .deb packages: " PKG_DIR || true
+    fi
+    PKG_DIR="${PKG_DIR/#\~/$HOME}"
+    if [[ -n "$PKG_DIR" ]] && [[ -d "$PKG_DIR" ]] && compgen -G "${PKG_DIR}/*.deb" > /dev/null; then
+      break
+    fi
+    warn "No .deb files found in: ${PKG_DIR:-<none entered>}"
+    [[ -n "${NETTEST_PACKAGES_DIR:-}" ]] && exit 1
+    PKG_DIR=""
+  done
+  PKG_DIR="$(cd "$PKG_DIR" && pwd)"   # absolute — so apt treats entries as files, not names
+
+  info "Scanning ${PKG_DIR} ..."
+  export DEBIAN_FRONTEND=noninteractive
+
+  # Skip any .deb whose exact version is already installed, so a broad
+  # "everything + dependencies" bundle can't try to reinstall base-system
+  # packages (libc6, libpam-modules, ...) offline.
+  TO_INSTALL=()
+  SKIPPED=0
+  for _deb in "${PKG_DIR}"/*.deb; do
+    _pkg=$(dpkg-deb -f "$_deb" Package 2>/dev/null) || continue
+    _ver=$(dpkg-deb -f "$_deb" Version 2>/dev/null)
+    if [[ "$(dpkg-query -W -f='${Version}' "$_pkg" 2>/dev/null)" == "$_ver" ]]; then
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+    TO_INSTALL+=("$_deb")
+  done
+  [[ $SKIPPED -gt 0 ]] && info "${SKIPPED} package(s) already at the bundled version — skipped"
+
+  if [[ ${#TO_INSTALL[@]} -eq 0 ]]; then
+    ok "System packages already satisfied"
+  else
+    info "Installing ${#TO_INSTALL[@]} package(s) from ${PKG_DIR}..."
+    # apt-get (not raw dpkg) resolves install order among the local .debs and
+    # names any dependency still missing from the directory. --no-download
+    # keeps it from reaching for the network.
+    if ! apt-get install -y --no-download --no-install-recommends \
+         -o Dpkg::Options::="--force-confold" \
+         "${TO_INSTALL[@]}"; then
+      echo ""
+      warn "A required dependency .deb is missing from ${PKG_DIR}"
+      warn "(apt listed the unmet package(s) above)."
+      warn "Add those .deb files and run this installer again."
+      exit 1
+    fi
+    ok "System packages installed from ${PKG_DIR}"
+  fi
+fi
 
 # ── Create user and group ──────────────────────────────────
 if ! getent group "${APP_GROUP}" >/dev/null; then
@@ -111,7 +240,37 @@ fi
 install -d -o "${APP_USER}" -g "${APP_GROUP}" "${APP_DIR}"
 ok "App directory: ${APP_DIR}"
 
+# ── Snapshot current version before upgrade ───────────────
+if [[ "$UPGRADE" == "true" ]] && [[ -f "${APP_DIR}/version.txt" ]]; then
+  SNAP_VER=$(cat "${APP_DIR}/version.txt" | tr -d "[:space:]")
+  SNAP_TS=$(date -u +"%Y%m%d-%H%M%S")
+  SNAP_DIR="${APP_DIR}/snapshots/${SNAP_VER}-${SNAP_TS}"
+  info "Snapshotting current version v${SNAP_VER}..."
+  mkdir -p "${SNAP_DIR}"
+  rsync -a     --exclude "config/"     --exclude "logs/"     --exclude "results/"     --exclude "packages/"     --exclude "snapshots/"     --exclude ".ssh/"     --exclude "ssl/"     --exclude "venv/"     "${APP_DIR}/" "${SNAP_DIR}/"
+  ok "Snapshot saved: snapshots/${SNAP_VER}-${SNAP_TS}"
+  # Keep only the 3 most recent snapshots
+  SNAP_COUNT=$(ls -1 "${APP_DIR}/snapshots/" 2>/dev/null | wc -l)
+  if [[ $SNAP_COUNT -gt 3 ]]; then
+    ls -1t "${APP_DIR}/snapshots/" | tail -n +4 | while read old_snap; do
+      rm -rf "${APP_DIR}/snapshots/${old_snap}"
+      info "Removed old snapshot: ${old_snap}"
+    done
+  fi
+fi
+
 # ── Sync code files ────────────────────────────────────────
+# Back up SSH key before sync in case it lives outside .ssh/
+if [[ "$UPGRADE" == "true" ]]; then
+  KEY_FILE_CONF=$(grep "key_file:" "${APP_DIR}/config/config.yaml" 2>/dev/null |                   awk '{print $2}' | tr -d '"' | sed "s|~|$HOME|g" | head -1)
+  KEY_FILE_CONF="${KEY_FILE_CONF:-${APP_DIR}/.ssh/nettest_key}"
+  KEY_BACKUP_DIR="/tmp/nettest-key-backup-$$"
+  mkdir -p "${KEY_BACKUP_DIR}"
+  for kf in "${KEY_FILE_CONF}" "${KEY_FILE_CONF}.pub"; do
+    [[ -f "$kf" ]] && cp "$kf" "${KEY_BACKUP_DIR}/" && info "Backed up: $kf"
+  done
+fi
+
 info "Syncing application files..."
 rsync -a \
   --exclude ".git/" \
@@ -128,11 +287,27 @@ rsync -a \
   "${SRC_DIR}/" "${APP_DIR}/"
 ok "Code files synced"
 
+# Restore SSH keys if they were wiped by rsync
+if [[ "$UPGRADE" == "true" ]] && [[ -d "${KEY_BACKUP_DIR:-}" ]]; then
+  for kf in "${KEY_BACKUP_DIR}"/*; do
+    [[ -f "$kf" ]] || continue
+    DEST="${KEY_FILE_CONF%/*}/$(basename "$kf")"
+    if [[ ! -f "$DEST" ]]; then
+      mkdir -p "$(dirname "$DEST")"
+      cp "$kf" "$DEST"
+      [[ "$DEST" == *.pub ]] && chmod 644 "$DEST" || chmod 600 "$DEST"
+      ok "Restored SSH key: $DEST"
+    fi
+  done
+  rm -rf "${KEY_BACKUP_DIR}"
+fi
+
 # ── Create runtime directories ─────────────────────────────
 install -d -o "${APP_USER}" -g "${APP_GROUP}" \
   "${APP_DIR}/logs" \
   "${APP_DIR}/results" \
-  "${APP_DIR}/packages"
+  "${APP_DIR}/packages" \
+  "${APP_DIR}/snapshots"
 install -d -m 755 /opt/nettest/ssl
 ok "Runtime directories ready"
 
@@ -149,16 +324,68 @@ else
 fi
 
 # ── Python virtual environment ─────────────────────────────
+# Installs requirements.txt from PyPI (online) or from a local wheelhouse
+# (offline). Offline wheels must match this server's OS and Python version.
+install_python_deps() {
+  if [[ "$ONLINE" != "false" ]]; then
+    "${APP_DIR}/venv/bin/pip" install --upgrade pip -q
+    "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/requirements.txt" -q
+    return
+  fi
+
+  echo ""
+  echo "  Offline install — Python packages will come from a local directory."
+  echo "  It must contain wheels (.whl) for every entry in requirements.txt"
+  echo "  AND all their transitive dependencies. Generate the full set on an"
+  echo "  online machine with the same OS and Python $(python3 -V 2>&1 | awk '{print $2}'):"
+  echo ""
+  echo "      pip download -r requirements.txt -d <wheels-dir>"
+  echo ""
+  echo "  Direct requirements: netmiko, PyYAML, pytz, rich, flask, gunicorn,"
+  echo "  gevent, pyrad  (these pull in paramiko, cryptography, greenlet and"
+  echo "  ~20 more — 'pip download' resolves them all)."
+  echo ""
+
+  WHEELS_DIR="${NETTEST_WHEELS_DIR:-}"
+  while true; do
+    if [[ -z "$WHEELS_DIR" ]]; then
+      read -r -p "  Path to directory containing the Python wheels: " WHEELS_DIR || true
+    fi
+    WHEELS_DIR="${WHEELS_DIR/#\~/$HOME}"
+    if [[ -n "$WHEELS_DIR" ]] && [[ -d "$WHEELS_DIR" ]] && compgen -G "${WHEELS_DIR}/*.whl" > /dev/null; then
+      break
+    fi
+    warn "No .whl files found in: ${WHEELS_DIR:-<none entered>}"
+    [[ -n "${NETTEST_WHEELS_DIR:-}" ]] && exit 1
+    WHEELS_DIR=""
+  done
+
+  info "Installing Python packages from ${WHEELS_DIR}..."
+  if ! "${APP_DIR}/venv/bin/pip" install --no-index --find-links "${WHEELS_DIR}" \
+       -r "${APP_DIR}/requirements.txt" -q; then
+    warn "pip could not resolve every package from ${WHEELS_DIR}."
+    warn "Add the missing .whl files and run this installer again."
+    exit 1
+  fi
+}
+
 info "Setting up Python virtual environment..."
-if [[ ! -d "${APP_DIR}/venv" ]] || [[ "$UPGRADE" == "true" ]]; then
-  python3 -m venv "${APP_DIR}/venv"
-  "${APP_DIR}/venv/bin/pip" install --upgrade pip -q
-  "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/requirements.txt" -q
-  ok "Python environment ready"
+if [[ "$UPGRADE" == "true" ]]; then
+  # Upgrade: venv already exists — skip pip entirely.
+  # Dependencies only change on major releases; run manually if needed:
+  #   sudo /opt/nettest/venv/bin/pip install -r /opt/nettest/requirements.txt
+  if [[ ! -d "${APP_DIR}/venv" ]]; then
+    python3 -m venv "${APP_DIR}/venv"
+    install_python_deps
+    ok "Python environment created"
+  else
+    ok "Python environment unchanged (upgrade mode — skipping pip)"
+  fi
 else
-  info "venv exists — running pip install to sync deps..."
-  "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/requirements.txt" -q
-  ok "Dependencies up to date"
+  # Fresh install: create venv and install deps
+  python3 -m venv "${APP_DIR}/venv"
+  install_python_deps
+  ok "Python environment ready"
 fi
 
 # ── Fix ownership ──────────────────────────────────────────
@@ -197,7 +424,7 @@ cat > "${SUDOERS_FILE}" << SUDOERS
 # Allow nettest service user to restart the scheduler
 # (triggered automatically when config is saved from the web UI)
 # dpkg is needed for air-gapped agent package installation
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm
+${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/systemctl restart nettest-web, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm
 SUDOERS
 chmod 440 "${SUDOERS_FILE}"
 visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \
@@ -318,7 +545,11 @@ if [[ "$UPGRADE" == "false" ]]; then
   echo "     Your browser will show a security warning — this is expected."
   echo "     Add an exception or configure a real cert via Config → HTTPS."
   echo ""
-  echo "  5. Air-gapped agents only:"
+  echo "  5. To rollback to a previous version:"
+  echo "     sudo ./rollback.sh --list"
+  echo "     sudo ./rollback.sh <snapshot-name>"
+  echo ""
+  echo "  6. Air-gapped agents only:"
   echo "     Upload .deb packages via Config → Packages in the web UI"
   echo "     before onboarding any air-gapped agents."
   echo "     Required packages: iperf3, libiperf0, libsctp1, mtr-tiny,"

@@ -20,17 +20,26 @@ __pycache__/
 logs/
 results/
 *.log
+/snapshots/
+/packages/
+
+# Vendored offline-install packages and built release bundles
+/install-packages/
+/linkstate-pkgs/
+/requirements/
+*.tar.gz
 
 # Local/private configuration
 config/config.yaml
 config/*.local.yaml
 
-# Secrets and machine-specific SSH material
+# Secrets and machine-specific SSH/TLS material
 .ssh/
 *.pem
 *.key
 id_rsa*
 id_ed25519*
+/ssl/
 
 # Editor and OS noise
 *.swp

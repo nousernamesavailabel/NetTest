@@ -159,6 +159,33 @@
                 user-select:none; display:inline-block; vertical-align:middle; }
   .tr-row-btn:hover { background:var(--surface2); color:var(--cyan); }
   .tr-row-btn.active { background:#0f1f30; border-color:var(--cyan); color:var(--cyan); }
+
+  /* ── Run tags/notes ── */
+  .run-tag-chip { font-size:9px; padding:1px 6px; border-radius:8px; background:var(--surface2);
+                  border:1px solid var(--border2); color:var(--cyan); margin-left:4px;
+                  display:inline-block; vertical-align:middle; }
+  .run-note-dot { color:var(--yellow); margin-left:4px; cursor:default; vertical-align:middle; }
+  .annotate-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.75);
+                      z-index:2500; align-items:center; justify-content:center; }
+  .annotate-overlay.open { display:flex; }
+  .annotate-modal { background:var(--surface); border:1px solid var(--border2); border-radius:8px;
+                    width:420px; max-width:95vw; overflow:hidden; }
+  .annotate-header { display:flex; align-items:center; justify-content:space-between;
+                     padding:12px 16px; border-bottom:1px solid var(--border); }
+  .annotate-title { font-size:12px; font-weight:700; }
+  .annotate-close { background:none; border:none; color:var(--muted); cursor:pointer;
+                    font-size:18px; padding:0; font-family:var(--font); }
+  .annotate-body { padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .annotate-body label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .annotate-body textarea, .annotate-body input[type=text] {
+    background:var(--bg); border:1px solid var(--border2); border-radius:4px; color:var(--text);
+    font-family:var(--font); font-size:12px; padding:8px 10px; width:100%; outline:none;
+    transition:border-color .15s;
+  }
+  .annotate-body textarea:focus, .annotate-body input[type=text]:focus { border-color:var(--cyan); }
+  .annotate-body textarea { resize:vertical; min-height:64px; }
+  .annotate-footer { padding:10px 16px; border-top:1px solid var(--border);
+                     display:flex; justify-content:flex-end; gap:8px; }
   /* ── MTR detail section ── */
   .hop-grid { display: grid; grid-template-columns: 40px 1fr 80px 80px 80px 80px 80px;
               gap: 0; }
@@ -216,6 +243,14 @@
   .log-body   { background: #080a0d; padding: 12px 16px; flex: 1;
                 overflow-y: auto; font-size: 11px; line-height: 1.6;
                 font-family: var(--font); }
+  .log-panel.expanded {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    left: 220px; z-index: 1000;
+    width: auto; min-width: unset;
+    box-shadow: -6px 0 32px rgba(0,0,0,0.6);
+    border-left: 1px solid var(--border);
+  }
+  .log-panel.expanded .log-body { font-size: 12px; line-height: 1.7; }
   .log-line   { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
   .log-info   { color: #94a3b8; }
   .log-warn   { color: var(--yellow); }
@@ -270,6 +305,65 @@
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+  /* ── Mobile nav / drawer (hidden on desktop) ── */
+  .nav-toggle-btn { display: none; align-items: center; justify-content: center;
+    width: 30px; height: 30px; background: var(--surface2); border: 1px solid var(--border2);
+    border-radius: 4px; color: var(--text); font-size: 16px; cursor: pointer; flex-shrink: 0; }
+  .sidebar-backdrop { display: none; }
+  .sidebar-mobile-header { display: none; }
+  .mobile-log-toggle { display: none; }
+
+  /* ── Mobile layout ── */
+  @media (max-width: 900px) {
+    .nav-toggle-btn { display: inline-flex; }
+
+    .shell { grid-template-rows: auto 1fr; height: auto; min-height: 100vh; }
+    .topbar { flex-wrap: wrap; height: auto; min-height: 48px; padding: 8px 12px; row-gap: 6px; }
+    .topbar-left { gap: 10px; }
+    .topbar-right { flex-wrap: wrap; gap: 6px; font-size: 10px; }
+    #clock-local, #last-update { display: none; }
+
+    .main { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow: visible; height: auto; }
+
+    /* Sidebar becomes a slide-in drawer */
+    .sidebar { position: fixed; top: 0; left: -270px; bottom: 0; width: 260px;
+               z-index: 2001; transition: left .2s ease; box-shadow: 4px 0 24px rgba(0,0,0,.5); }
+    .sidebar.open { left: 0; }
+    .sidebar-mobile-header { display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .sidebar-mobile-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--muted); }
+    .sidebar-close-btn { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+    .sidebar-backdrop.open { display: block; position: fixed; inset: 0;
+      background: rgba(0,0,0,.5); z-index: 2000; }
+
+    .content { padding: 12px; gap: 14px; }
+    .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .stat-value { font-size: 18px; }
+    .chart-grid { grid-template-columns: 1fr; }
+
+    #results-scroll { overflow-x: auto; }
+    #results-scroll table { min-width: 900px; }
+
+    /* Wide data grids scroll horizontally instead of squeezing */
+    .panel-body { overflow-x: auto; }
+    .hop-grid { min-width: 560px; }
+    .spark-cols { min-width: 650px; }
+
+    .job-row { grid-template-columns: 55px 1fr 60px 60px; font-size: 10px; }
+
+    /* Live log panel stacks below content and starts collapsed */
+    .log-panel { border-left: none; border-top: 1px solid var(--border); max-height: none; }
+    .log-panel .log-body { display: none; max-height: 260px; }
+    .log-panel.mobile-open .log-body { display: block; }
+    .mobile-log-toggle { display: inline-block; }
+    .log-panel.expanded { left: 0; }
+  }
+
+  @media (max-width: 420px) {
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    .topbar-right .btn, .topbar-right button { font-size: 9px; padding: 3px 6px; }
+  }
 </style>
 </head>
 <body>
@@ -278,6 +372,7 @@
   <!-- Topbar -->
   <div class="topbar">
     <div class="topbar-left">
+      <button class="nav-toggle-btn" id="nav-toggle-btn" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
       <span class="logo">NET<span>TEST</span></span>
       <div class="status-dot" id="status-dot"></div>
       <span style="color:var(--muted);font-size:11px;" id="status-text">connecting...</span>
@@ -287,7 +382,15 @@
       <button class="btn btn-run-all" id="btn-run-latency" onclick="runAll(['latency','jitter'])" style="margin-left:4px">▶ Latency Only</button>
       <span style="margin:0 4px;color:var(--border2)">|</span>
       <button onclick="exportResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#0d1f3c;color:var(--cyan);border:1px solid #1a3a5c;transition:all .15s;" onmouseover="this.style.background='#1a3a5c'" onmouseout="this.style.background='#0d1f3c'">Export CSV</button>
+      <button onclick="exportPathSummary()" id="btn-export-summary" disabled
+        style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#0d1f3c;color:var(--cyan);border:1px solid #1a3a5c;transition:all .15s;opacity:0.4;cursor:not-allowed;"
+        onmouseover="if(!this.disabled)this.style.background='#1a3a5c'" onmouseout="this.style.background='#0d1f3c'"
+        title="Select a path to export its executive summary">📄 Export Summary</button>
       <button onclick="clearResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#2a0a0a;color:var(--red);border:1px solid #4d1a1a;transition:all .15s;" onmouseover="this.style.background='#3a1010'" onmouseout="this.style.background='#2a0a0a'">Clear Results</button>
+      <span style="margin:0 4px;color:var(--border2)">|</span>
+      <a href="/speedtest" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Browser speed test">⚡ Speed Test</a>
+      <span style="margin:0 4px;color:var(--border2)">|</span>
+      <a href="/compare" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Compare two runs">⇄ Compare</a>
       <span style="margin:0 4px;color:var(--border2)">|</span>
       <a href="/config" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Config Editor">⚙ Config</a>
       <span style="margin:0 4px;color:var(--border2)">|</span>
@@ -302,8 +405,14 @@
   <!-- Main grid -->
   <div class="main">
 
+    <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
+
     <!-- Sidebar: path list -->
-    <nav class="sidebar">
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-mobile-header">
+        <span class="sidebar-mobile-title">Menu</span>
+        <button class="sidebar-close-btn" onclick="closeSidebar()" aria-label="Close menu">✕</button>
+      </div>
       <div class="sidebar-section">
         <div class="sidebar-label">Overview</div>
         <div class="nav-item active" data-path="all" onclick="selectPath('all', this)">
@@ -352,9 +461,12 @@
         <div class="panel-header">
           <span class="panel-title">Recent results</span>
           <div class="day-tabs">
-            <div class="day-tab active" onclick="setDays(1,this)">Today</div>
-            <div class="day-tab" onclick="setDays(3,this)">3 days</div>
-            <div class="day-tab" onclick="setDays(7,this)">7 days</div>
+            <div class="day-tab" onclick="setWindow(15,this)">15m</div>
+            <div class="day-tab" onclick="setWindow(60,this)">1h</div>
+            <div class="day-tab" onclick="setWindow(360,this)">6h</div>
+            <div class="day-tab active" onclick="setWindow(1440,this)">24h</div>
+            <div class="day-tab" onclick="setWindow(4320,this)">3d</div>
+            <div class="day-tab" onclick="setWindow(10080,this)">7d</div>
           </div>
         </div>
         <div id="results-scroll" style="max-height:185px;overflow-y:auto">
@@ -366,6 +478,8 @@
               <th>Status</th>
               <th>TX Mbps</th>
               <th>RX Mbps</th>
+              <th title="Bidirectional test — both directions measured simultaneously, not comparable to upload/download-only figures">Bidir TX</th>
+              <th title="Bidirectional test — both directions measured simultaneously, not comparable to upload/download-only figures">Bidir RX</th>
               <th>RTT avg</th>
               <th>RTT max</th>
               <th>Loss %</th>
@@ -374,7 +488,7 @@
               <th>MTU</th>
               <th>Retr</th>
             </tr></thead>
-            <tbody id="results-body"><tr><td colspan="13" class="loading">Loading results...</td></tr></tbody>
+            <tbody id="results-body"><tr><td colspan="15" class="loading">Loading results...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -385,6 +499,14 @@
           <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
                       color:var(--muted);padding:0 4px 5px">Test Path Visualization</div>
           <div id="path-flow-banner" class="path-flow-banner" style="margin-bottom:0"></div>
+        </div>
+
+        <!-- Per-test run buttons — run just one test type for this path -->
+        <div id="path-test-actions" class="panel" style="display:none;margin-bottom:12px;padding:10px 16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Run individual test</span>
+            <div id="path-test-btns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
         </div>
 
         <!-- Traceroute panel -->
@@ -405,16 +527,24 @@
             <div class="chart-wrap"><canvas id="chart-latency" role="img" aria-label="Latency over time"></canvas></div>
           </div>
           <div class="chart-panel">
-            <div class="chart-title">Throughput TX (Mbps)</div>
-            <div class="chart-wrap"><canvas id="chart-tput" role="img" aria-label="Throughput over time"></canvas></div>
-          </div>
-          <div class="chart-panel">
             <div class="chart-title">Jitter (ms)</div>
             <div class="chart-wrap"><canvas id="chart-jitter" role="img" aria-label="Jitter over time"></canvas></div>
           </div>
           <div class="chart-panel">
+            <div class="chart-title">Throughput RX (Mbps)</div>
+            <div class="chart-wrap"><canvas id="chart-tput-rx" role="img" aria-label="Throughput RX over time"></canvas></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">Throughput TX (Mbps)</div>
+            <div class="chart-wrap"><canvas id="chart-tput" role="img" aria-label="Throughput TX over time"></canvas></div>
+          </div>
+          <div class="chart-panel">
             <div class="chart-title">Bufferbloat Δ — idle vs loaded (ms)</div>
             <div class="chart-wrap"><canvas id="chart-bb" role="img" aria-label="Bufferbloat delta over time"></canvas></div>
+          </div>
+          <div class="chart-panel" id="chart-panel-tput-bidir">
+            <div class="chart-title">Throughput Bidir — TX/RX (Mbps)</div>
+            <div class="chart-wrap"><canvas id="chart-tput-bidir" role="img" aria-label="Bidirectional throughput over time"></canvas></div>
           </div>
         </div>
 
@@ -448,9 +578,23 @@
     <div class="log-panel" id="log-panel">
       <div class="log-header" style="padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
         <span class="log-title">Live Output</span>
-        <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <button class="day-tab mobile-log-toggle" id="mobile-log-toggle-btn" onclick="toggleMobileLog()"
+            style="padding:2px 8px;font-size:10px" title="Show/hide output">▾</button>
           <span class="log-badge log-badge-idle" id="log-status">idle</span>
-          <button class="day-tab" onclick="clearLog()" style="padding:2px 8px;font-size:10px">Clear</button>
+          <button class="day-tab" id="abort-btn" onclick="abortCurrentJob()"
+            style="padding:2px 8px;font-size:10px;display:none;
+                   color:#ff6060;border-color:#8b2020;background:#1a0808">
+            ⏹ Abort
+          </button>
+          <button class="day-tab" onclick="copyLogOutput()"
+            style="padding:2px 8px;font-size:10px" title="Copy all output to clipboard"
+            id="copy-log-btn">⎘ Copy</button>
+          <button class="day-tab" onclick="saveLogOutput()"
+            style="padding:2px 8px;font-size:10px" title="Save output to .txt file">⬇ Save</button>
+          <button class="day-tab" onclick="clearLog()" style="padding:2px 8px;font-size:10px">✕ Clear</button>
+          <button class="day-tab" id="expand-btn" onclick="toggleExpandLog()"
+            style="padding:2px 8px;font-size:10px" title="Expand">⤢</button>
         </div>
       </div>
       <div class="log-body" id="log-body">
@@ -463,10 +607,109 @@
   </div><!-- /main -->
 </div><!-- /shell -->
 
+<!-- Notes/tags editor -->
+<div class="annotate-overlay" id="annotate-overlay">
+  <div class="annotate-modal">
+    <div class="annotate-header">
+      <span class="annotate-title">Notes &amp; tags for this run</span>
+      <button class="annotate-close" onclick="closeAnnotateModal()" aria-label="Close">✕</button>
+    </div>
+    <div class="annotate-body">
+      <div>
+        <label>Notes</label>
+        <textarea id="annotate-notes" placeholder="What's notable about this run?"></textarea>
+      </div>
+      <div>
+        <label>Tags (comma-separated)</label>
+        <input type="text" id="annotate-tags" list="annotate-tag-suggestions" placeholder="e.g. baseline, pre-upgrade, incident-2026-09-10">
+        <datalist id="annotate-tag-suggestions"></datalist>
+      </div>
+    </div>
+    <div class="annotate-footer">
+      <button class="btn" onclick="closeAnnotateModal()">Cancel</button>
+      <button class="btn btn-run-all" onclick="saveAnnotation()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
+// ── Log panel expand / abort ───────────────────────────────
+let logExpanded = false;
+let currentJobId = null;
+
+function toggleExpandLog() {
+  const panel = document.getElementById('log-panel');
+  const btn   = document.getElementById('expand-btn');
+  logExpanded = !logExpanded;
+  panel.classList.toggle('expanded', logExpanded);
+  btn.textContent = logExpanded ? '⤡' : '⤢';
+  btn.title = logExpanded ? 'Collapse' : 'Expand';
+  if (logExpanded) {
+    const body = document.getElementById('log-body');
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+function _getLogText() {
+  const body = document.getElementById('log-body');
+  return Array.from(body.children).map(d => d.textContent).join('\n');
+}
+
+function copyLogOutput() {
+  const text = _getLogText();
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copy-log-btn');
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard
+    const ta = document.createElement('textarea');
+    ta.value = _getLogText();
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+}
+
+function saveLogOutput() {
+  const text = _getLogText();
+  const ts   = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const job  = currentJobId || 'output';
+  const name = `nettest-${job}-${ts}.txt`;
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function abortCurrentJob() {
+  if (!currentJobId) return;
+  if (!confirm('Abort this test? The current individual test will finish, then the job stops.')) return;
+  const btn = document.getElementById('abort-btn');
+  btn.textContent = '⏹ Aborting...';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/jobs/' + currentJobId + '/abort', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) { btn.textContent = '⏹ Abort'; btn.disabled = false; }
+  } catch(e) { btn.textContent = '⏹ Abort'; btn.disabled = false; }
+}
+
+const TEST_LABELS = {
+  throughput:          'Throughput',
+  latency:             'Latency',
+  latency_under_load:  'Latency Under Load',
+  jitter:              'Jitter',
+  mtu:                 'MTU',
+  traceroute:          'Traceroute',
+};
+
 // ── State ──────────────────────────────────────────────────
 let currentPath = 'all';
-let currentDays = 1;
+let currentMinutes = 1440;   // rolling window ending now — default 24h
 let paths       = [];
 let latestMap   = {};
 let charts      = {};
@@ -484,6 +727,42 @@ const T = {
   tputWarn:10,tputCrit:2,
   bbWarn:30,  bbCrit:100,
 };
+
+// A record's throughput field can hold multiple entries (one per direction
+// run: upload/download/bidir) or, for older records, a single object.
+// Collapse to one {tx_mbps, rx_mbps, retransmits} for display — a side that
+// no entry actually tested is null (renders as "—" via fmt()), not 0.
+// Bidir entries carry both tx_mbps and rx_mbps too, but they're measured
+// while both directions contend for bandwidth at once — not comparable to
+// a dedicated upload/download run, so they're always kept separate from
+// the plain TX/RX figures (see throughputBidirSummary below).
+function throughputSummary(r) {
+  const raw = r && r.throughput;
+  if (!raw) return null;
+  const entries = (Array.isArray(raw) ? raw : [raw]).filter(e => e.direction !== 'bidir');
+  if (!entries.length) return null;
+  const txVals = entries.map(e => e.tx_mbps).filter(v => v != null);
+  const rxVals = entries.map(e => e.rx_mbps).filter(v => v != null);
+  return {
+    tx_mbps:     txVals.length ? Math.max(...txVals) : null,
+    rx_mbps:     rxVals.length ? Math.max(...rxVals) : null,
+    retransmits: entries.length ? Math.max(...entries.map(e => e.retransmits || 0)) : null,
+  };
+}
+
+function throughputBidirSummary(r) {
+  const raw = r && r.throughput;
+  if (!raw) return null;
+  const entries = (Array.isArray(raw) ? raw : [raw]).filter(e => e.direction === 'bidir');
+  if (!entries.length) return null;
+  const txVals = entries.map(e => e.tx_mbps).filter(v => v != null);
+  const rxVals = entries.map(e => e.rx_mbps).filter(v => v != null);
+  return {
+    tx_mbps:     txVals.length ? Math.max(...txVals) : null,
+    rx_mbps:     rxVals.length ? Math.max(...rxVals) : null,
+    retransmits: Math.max(...entries.map(e => e.retransmits || 0)),
+  };
+}
 
 function health(v, warn, crit, invert=true) {
   if (v == null) return 'c-muted';
@@ -509,6 +788,10 @@ function round2(v) { return Math.round(v * 100) / 100; }
 function fmt(v, unit='', dec=1) {
   if (v == null || v === undefined) return '—';
   return Number(v).toFixed(dec) + unit;
+}
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 // ── Clock ──────────────────────────────────────────────────
@@ -547,7 +830,7 @@ function updatePathFlowBanner(pathId) {
       const a = window._cachedAgents.find(a => a.id === agentId);
       if (a) {
         label = a.label || agentId;
-        isSvi = a.type === 'svi_adjacent';
+        isSvi = a.type === 'switch_router' || a.type === 'svi_adjacent';
         ip = a.host_test_ip || a.host_mgmt_ip || a.host || '';
       }
     }
@@ -580,6 +863,35 @@ function updatePathFlowBanner(pathId) {
   banner.innerHTML = parts.join('');
   banner.style.display = 'flex';
   document.getElementById('path-flow-banner-wrap').style.display = '';
+}
+
+const DIRECTION_LABELS = { upload: '↑ Upload', download: '↓ Download', bidir: '⇅ Bidir' };
+
+function renderPathTestActions(pathId) {
+  const wrap = document.getElementById('path-test-actions');
+  const container = document.getElementById('path-test-btns');
+  if (!wrap || !container) return;
+
+  const path = paths.find(p => p.id === pathId);
+  if (!path || !path.tests || !path.tests.length) { wrap.style.display = 'none'; return; }
+
+  container.innerHTML = path.tests.map(t => {
+    if (t === 'throughput' && path.directions && path.directions.length > 1) {
+      // One button per configured direction, so a single direction can be
+      // run on demand without waiting on the others.
+      return path.directions.map(d => `
+        <button class="btn nav-run-btn" id="test-run-btn-${pathId}-${t}-${d}"
+          onclick="runPath('${pathId}', ['${t}'], ['${d}'])"
+          title="Run only Throughput (${DIRECTION_LABELS[d] || d}) for this path"
+          >▶ Throughput ${DIRECTION_LABELS[d] || d}</button>
+      `).join('');
+    }
+    return `
+    <button class="btn nav-run-btn" id="test-run-btn-${pathId}-${t}"
+      onclick="runPath('${pathId}', ['${t}'])"
+      title="Run only ${TEST_LABELS[t] || t} for this path">▶ ${TEST_LABELS[t] || t}</button>`;
+  }).join('');
+  wrap.style.display = '';
 }
 
 function _renderTracerouteData(data) {
@@ -808,6 +1120,9 @@ function openLogStream(jobId, label) {
     const text = e.data;
 
     if (text === '[STREAM END]') {
+      currentJobId = null;
+      const _abx = document.getElementById('abort-btn');
+      if (_abx) _abx.style.display = 'none';
       with_job_status(jobId, (job) => {
         if (job && job.status === 'done') {
           status.textContent = '✓ done';
@@ -1043,21 +1358,46 @@ async function boot() {
 }
 
 // ── Run triggers ───────────────────────────────────────────
-async function runPath(pathId) {
-  const btn = document.getElementById('run-btn-' + pathId);
-  if (btn) { btn.textContent = '…'; btn.classList.add('running'); btn.disabled = true; }
+async function runPath(pathId, tests, directions) {
+  // Individual-test buttons get their own id (test-run-btn-<path>-<test>,
+  // or test-run-btn-<path>-<test>-<direction> for per-direction throughput
+  // buttons); the sidebar's "run all tests for this path" button is
+  // run-btn-<path>.
+  const btnId = tests && tests.length
+    ? `test-run-btn-${pathId}-${tests[0]}${directions && directions.length ? '-' + directions[0] : ''}`
+    : ('run-btn-' + pathId);
+  const btn = document.getElementById(btnId);
+  const btnOriginalHTML = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '…'; btn.classList.add('running'); btn.disabled = true; }
   try {
+    const body = {};
+    if (tests && tests.length) body.tests = tests;
+    if (directions && directions.length) body.directions = directions;
     const resp = await fetch('/api/run/' + pathId, { method: 'POST',
-      headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) });
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body) });
     const job = await resp.json();
     activeJobs[job.job_id] = job;
     updateJobsSidebar();
     // Open live log stream for this job
     const pathObj = paths.find(p => p.id === pathId);
-    openLogStream(job.job_id, pathObj ? pathObj.label : pathId);
+    const label   = pathObj ? pathObj.label : pathId;
+    const streamLabel = tests && tests.length
+      ? `${label} — ${tests.map(t => TEST_LABELS[t] || t).join(', ')}` +
+        (directions && directions.length ? ` (${directions.map(d => DIRECTION_LABELS[d] || d).join(', ')})` : '')
+      : label;
+    openLogStream(job.job_id, streamLabel);
+    // Individual-test buttons aren't tracked by updateNavRunBtns() (which only
+    // knows about run-btn-<path>), so reset them here after a short delay —
+    // same pattern as runAll()'s flat re-enable. The sidebar's run-btn-<path>
+    // is left in "running" state on success — updateNavRunBtns() (polling)
+    // flips it back once the job actually finishes.
+    if (btn && tests && tests.length) {
+      setTimeout(() => { btn.disabled = false; btn.classList.remove('running'); btn.innerHTML = btnOriginalHTML; }, 2000);
+    }
   } catch(e) {
     console.error('Run failed', e);
-    if (btn) { btn.textContent = '▶'; btn.classList.remove('running'); btn.disabled = false; }
+    if (btn) { btn.disabled = false; btn.classList.remove('running'); btn.innerHTML = btnOriginalHTML; }
   }
 }
 
@@ -1138,8 +1478,51 @@ function updateJobsSidebar() {
                : j.status === 'running' ? '<span style="color:var(--yellow)">⟳</span>'
                : '<span style="color:var(--muted)">·</span>';
     const label = j.label || j.path_id || j.job_id;
-    return `<div style="padding:3px 0;display:flex;gap:6px;align-items:center;cursor:pointer" onclick="openLogStream('${j.job_id}','${label}')">${icon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">${label}</span></div>`;
+    const isRunning = j.status === 'running';
+    const btns = `
+      <button title="Expand live output" onclick="event.stopPropagation();openLivePopout('${j.job_id}')"
+        style="font-size:9px;padding:1px 5px;background:#1a2030;border:1px solid #2a3040;
+               border-radius:3px;color:#5bc4f5;cursor:pointer;flex-shrink:0">⤢</button>
+      ${isRunning ? `<button title="Abort" onclick="event.stopPropagation();abortJob('${j.job_id}')"
+        style="font-size:9px;padding:1px 5px;background:#1a0808;border:1px solid #8b2020;
+               border-radius:3px;color:#ff6060;cursor:pointer;flex-shrink:0">⏹</button>` : ''}`;
+    return `<div style="padding:3px 0;display:flex;gap:4px;align-items:center" onclick="openLogStream('${j.job_id}','${label}')">
+      ${icon}
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;cursor:pointer;max-width:100px">${label}</span>
+      ${btns}
+    </div>`;
   }).join('');
+}
+
+function openLivePopout(jobId) {
+  // Expand the log panel and scroll to show output for this job
+  if (!logExpanded) toggleExpandLog();
+  const body = document.getElementById('log-body');
+  if (body) body.scrollTop = body.scrollHeight;
+}
+
+async function abortJob(jobId) {
+  if (!confirm('Abort this test? The current individual test will finish, then the job stops.')) return;
+  try {
+    const r = await fetch('/api/jobs/' + jobId + '/abort', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) showToast('Abort failed: ' + (d.error || 'unknown'), 'error');
+    else showToast('Abort signal sent', 'ok');
+  } catch(e) {
+    showToast('Abort failed: ' + e.message, 'error');
+  }
+}
+
+function showToast(msg, type) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = `position:fixed;bottom:24px;right:24px;padding:10px 18px;
+    border-radius:6px;font-size:12px;z-index:9999;
+    background:${type==='ok'?'#1a3a1a':'#3a1a1a'};
+    color:${type==='ok'?'#4caf50':'#f44336'};
+    border:1px solid ${type==='ok'?'#2a5a2a':'#5a2a2a'}`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
 }
 
 function updateNavRunBtns() {
@@ -1179,10 +1562,30 @@ function selectPath(pid, el) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   el.classList.add('active');
   refresh();
+  closeSidebar();
 }
 
-function setDays(d, el) {
-  currentDays = d;
+// ── Mobile sidebar drawer ──────────────────────────────────
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-backdrop').classList.toggle('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-backdrop').classList.remove('open');
+}
+
+// ── Mobile live-log collapse ────────────────────────────────
+function toggleMobileLog() {
+  const panel = document.getElementById('log-panel');
+  const btn = document.getElementById('mobile-log-toggle-btn');
+  const open = panel.classList.toggle('mobile-open');
+  if (btn) btn.textContent = open ? '▴' : '▾';
+}
+
+function setWindow(minutes, el) {
+  currentMinutes = minutes;
   document.querySelectorAll('.day-tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   refresh();
@@ -1190,7 +1593,102 @@ function setDays(d, el) {
 
 function exportResults() {
   const pathParam = currentPath !== 'all' ? `&path_id=${encodeURIComponent(currentPath)}` : '';
-  window.location.href = `/api/results/export.csv?days=${currentDays}${pathParam}`;
+  window.location.href = `/api/results/export.csv?minutes=${currentMinutes}${pathParam}`;
+}
+
+// ── Executive summary export (per-path) ─────────────────────
+async function exportPathSummary() {
+  if (currentPath === 'all') return;
+  const path = paths.find(p => p.id === currentPath);
+  if (!path) return;
+
+  const btn = document.getElementById('btn-export-summary');
+  const origLabel = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = 'Generating…'; btn.disabled = true; }
+
+  try {
+    const summary = await api(`/api/summary?minutes=${currentMinutes}&path_id=${encodeURIComponent(currentPath)}`);
+    const windowLabel = document.querySelector('.day-tab.active')?.textContent.trim() || `${currentMinutes}m`;
+
+    const chartIds = ['latency', 'jitter', 'tput-rx', 'tput', 'bb'];
+    if (path.directions && path.directions.includes('bidir')) chartIds.push('tput-bidir');
+
+    const chartSections = chartIds.map(id => {
+      const chart = charts[id];
+      if (!chart) return '';
+      const panel = chart.canvas.closest('.chart-panel');
+      if (panel && panel.style.display === 'none') return '';
+      const titleEl = panel ? panel.querySelector('.chart-title') : null;
+      const title = titleEl ? titleEl.textContent : id;
+      let img;
+      try { img = chart.toBase64Image(); } catch (e) { return ''; }
+      return `<div class="rpt-chart"><h3>${escapeHtml(title)}</h3><img src="${img}" alt="${escapeHtml(title)}"></div>`;
+    }).filter(Boolean).join('');
+
+    const stat = (label, value) => `<div class="rpt-stat"><div class="rpt-stat-label">${escapeHtml(label)}</div><div class="rpt-stat-value">${escapeHtml(value)}</div></div>`;
+
+    const html = `<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Executive Summary — ${escapeHtml(path.label)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #111; margin: 32px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: #444; margin: 28px 0 10px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  .rpt-meta { color: #555; font-size: 12px; margin-bottom: 4px; }
+  .rpt-meta span { margin-right: 18px; }
+  .rpt-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 8px; }
+  .rpt-stat { border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; }
+  .rpt-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .4px; color: #777; }
+  .rpt-stat-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+  .rpt-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .rpt-chart { border: 1px solid #ddd; border-radius: 6px; padding: 10px; break-inside: avoid; }
+  .rpt-chart h3 { font-size: 12px; margin: 0 0 8px; color: #333; }
+  .rpt-chart img { width: 100%; display: block; }
+  @media print {
+    .rpt-chart { break-inside: avoid; }
+    @page { margin: 16mm; }
+  }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(path.label)} — Executive Summary</h1>
+  <div class="rpt-meta">
+    <span><strong>Source:</strong> ${escapeHtml(path.source || '—')}</span>
+    <span><strong>Destination:</strong> ${escapeHtml(path.destination || '—')}</span>
+    <span><strong>Window:</strong> ${escapeHtml(windowLabel)}</span>
+    <span><strong>Generated:</strong> ${escapeHtml(new Date().toLocaleString())}</span>
+  </div>
+
+  <h2>Summary</h2>
+  <div class="rpt-stats">
+    ${stat('Total Runs', summary.total_runs ?? 0)}
+    ${stat('Successful', summary.successful ?? 0)}
+    ${stat('Failed', summary.failed ?? 0)}
+    ${stat('Avg Latency', fmt(summary.avg_latency_ms, ' ms'))}
+    ${stat('Avg TX', fmt(summary.avg_throughput_mbps, ' Mbps'))}
+    ${stat('Avg RX', fmt(summary.avg_throughput_rx_mbps, ' Mbps'))}
+    ${stat('Avg Jitter', fmt(summary.avg_jitter_ms, ' ms', 2))}
+    ${stat('Avg Loss', fmt(summary.avg_loss_pct, '%'))}
+  </div>
+
+  <h2>Trends</h2>
+  <div class="rpt-charts">${chartSections || '<p style="color:#777">No chart data available for this window.</p>'}</div>
+</body></html>`;
+
+    const win = window.open('', '_blank');
+    if (!win) { alert('Please allow popups for this site to export the summary.'); return; }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.onload = () => win.print();
+  } catch (e) {
+    console.error(e);
+    alert('Failed to generate executive summary: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = origLabel; btn.disabled = false; }
+  }
 }
 
 async function clearResults() {
@@ -1213,8 +1711,8 @@ async function refresh() {
   try {
     const pathParam = currentPath !== 'all' ? `&path_id=${currentPath}` : '';
     const [summary, results, latest] = await Promise.all([
-      api(`/api/summary?days=${currentDays}${pathParam}`),
-      api(`/api/results?days=${currentDays}&limit=100${pathParam}`),
+      api(`/api/summary?minutes=${currentMinutes}${pathParam}`),
+      api(`/api/results?minutes=${currentMinutes}&limit=100${pathParam}`),
       api('/api/results/latest'),
     ]);
 
@@ -1311,13 +1809,14 @@ function updateBadges() {
 function renderTable(records) {
   const tbody = document.getElementById('results-body');
   if (!records.length) {
-    tbody.innerHTML = '<tr><td colspan="13" class="empty">No results for this period.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15" class="empty">No results for this period.</td></tr>';
     return;
   }
 
   const rows = [];
   records.slice(0, 60).forEach((r, ri) => {
-    const t  = r.throughput;
+    const t  = throughputSummary(r);
+    const tb = throughputBidirSummary(r);
     const l  = r.latency;
     const lu = r.latency_under_load;
     const j  = r.jitter;
@@ -1345,16 +1844,29 @@ function renderTable(records) {
       ? `<span class="tr-row-btn" title="View traceroute for this run"
            onclick="loadTracerouteForResult('${r.result_id}','${ts}',this)">⤳ tr</span>`
       : '';
+    const cmpBtn = `<span class="tr-row-btn" title="Compare this run against another"
+           onclick="event.stopPropagation(); window.location.href='/compare?a=${r.result_id}'">⇄ cmp</span>`;
+    const tagBtn = `<span class="tr-row-btn" title="Add notes/tags for this run"
+           onclick="event.stopPropagation(); openAnnotateModal('${r.result_id}')">🏷</span>`;
+
+    const tags = r.tags || [];
+    const tagChips = tags.slice(0, 2).map(tg => `<span class="run-tag-chip">${escapeHtml(tg)}</span>`).join('');
+    const moreTagsChip = tags.length > 2
+      ? `<span class="run-tag-chip" title="${escapeHtml(tags.slice(2).join(', '))}">+${tags.length - 2}</span>`
+      : '';
+    const noteDot = r.notes ? `<span class="run-note-dot" title="${escapeHtml(r.notes)}">📝</span>` : '';
 
     rows.push(`<tr>
-      <td class="td-path" title="${r.path_label}" style="white-space:nowrap;overflow:hidden">
-        <span style="overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 70px);display:inline-block;vertical-align:middle">${r.path_label}</span>${hopBtn}${trBtn}
+      <td class="td-path" title="${escapeHtml(r.path_label)}" style="white-space:nowrap;overflow:hidden">
+        <span style="overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 70px);display:inline-block;vertical-align:middle">${r.path_label}</span>${hopBtn}${trBtn}${cmpBtn}${tagBtn}${tagChips}${moreTagsChip}${noteDot}
       </td>
       <td class="td-time" style="color:var(--muted);font-size:10px">${r.timestamp_utc.slice(0,10)}</td>
       <td class="td-time">${ts}</td>
       <td>${r.success ? '<span class="ok-dot">✓</span>' : '<span class="fail-dot">✗</span>'}</td>
       <td class="${txC}">${fmt(t?.tx_mbps)}</td>
       <td>${fmt(t?.rx_mbps)}</td>
+      <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.tx_mbps)}</td>
+      <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.rx_mbps)}</td>
       <td class="${latC}">${fmt(l?.rtt_avg_ms,'ms')}</td>
       <td>${fmt(l?.rtt_max_ms,'ms')}</td>
       <td class="${lssC}">${fmt(l?.packet_loss_pct,'%')}</td>
@@ -1366,7 +1878,7 @@ function renderTable(records) {
 
     if (hasSegs) {
       rows.push(`<tr id="${rowId}" style="display:none">
-        <td colspan="13" style="padding:0 0 0 24px;background:#080b10">
+        <td colspan="15" style="padding:0 0 0 24px;background:#080b10">
           <table style="width:100%;font-size:10px;border-collapse:collapse">
             <tr style="color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.5px">
               <td style="padding:4px 8px">Hop</td>
@@ -1396,6 +1908,58 @@ function renderTable(records) {
   tbody.innerHTML = rows.join('');
 }
 
+// ── Notes/tags editor ──────────────────────────────────────
+let currentAnnotateId = null;
+let _tagSuggestionsLoaded = false;
+
+async function loadTagSuggestions() {
+  if (_tagSuggestionsLoaded) return;
+  try {
+    const tags = await api('/api/tags');
+    document.getElementById('annotate-tag-suggestions').innerHTML =
+      tags.map(t => `<option value="${escapeHtml(t)}">`).join('');
+    _tagSuggestionsLoaded = true;
+  } catch(e) { /* suggestions are a nicety — ignore failures */ }
+}
+
+async function openAnnotateModal(resultId) {
+  currentAnnotateId = resultId;
+  document.getElementById('annotate-notes').value = '';
+  document.getElementById('annotate-tags').value = '';
+  loadTagSuggestions();
+  try {
+    const entry = await api(`/api/annotations/${encodeURIComponent(resultId)}`);
+    document.getElementById('annotate-notes').value = entry.notes || '';
+    document.getElementById('annotate-tags').value  = (entry.tags || []).join(', ');
+  } catch(e) { /* leave fields blank if this run has no annotation yet */ }
+  document.getElementById('annotate-overlay').classList.add('open');
+}
+
+function closeAnnotateModal() {
+  document.getElementById('annotate-overlay').classList.remove('open');
+  currentAnnotateId = null;
+}
+
+async function saveAnnotation() {
+  if (!currentAnnotateId) return;
+  const notes = document.getElementById('annotate-notes').value;
+  const tags  = document.getElementById('annotate-tags').value
+    .split(',').map(t => t.trim()).filter(Boolean);
+  try {
+    const r = await fetch(`/api/annotations/${encodeURIComponent(currentAnnotateId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes, tags }),
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    _tagSuggestionsLoaded = false;  // new tags may have been introduced
+    closeAnnotateModal();
+    refresh();
+  } catch(e) {
+    alert('Could not save notes/tags: ' + e.message);
+  }
+}
+
 function toggleTableHops(rowId, btn) {
   const row = document.getElementById(rowId);
   if (!row) return;
@@ -1422,7 +1986,7 @@ function initCharts() {
     },
   };
 
-  ['latency','tput','jitter','bb'].forEach(id => {
+  ['latency','tput','tput-rx','jitter','bb','tput-bidir'].forEach(id => {
     const ctx = document.getElementById(`chart-${id}`).getContext('2d');
     charts[id] = new Chart(ctx, {
       type: 'line',
@@ -1433,8 +1997,8 @@ function initCharts() {
 }
 
 async function updateCharts() {
-  const isAll  = currentPath === 'all';
-  const days   = currentDays;
+  const isAll   = currentPath === 'all';
+  const minutes = currentMinutes;
 
   // Ensure agents are cached before rendering banner
   if (!window._cachedAgents) {
@@ -1444,26 +2008,48 @@ async function updateCharts() {
   // Toggle which view is visible
   document.getElementById('overview-sparklines').style.display = isAll ? '' : 'none';
   document.getElementById('path-charts').style.display         = isAll ? 'none' : '';
+  const summaryBtn = document.getElementById('btn-export-summary');
+  if (summaryBtn) {
+    summaryBtn.disabled = isAll;
+    summaryBtn.style.opacity = isAll ? '0.4' : '1';
+    summaryBtn.style.cursor  = isAll ? 'not-allowed' : 'pointer';
+    summaryBtn.title = isAll ? 'Select a path to export its executive summary' : "Generate a printable executive summary of this path's stats and charts";
+  }
   // More rows visible on overview, fewer on single-path to save space
   const scrollEl = document.getElementById('results-scroll');
   if (scrollEl) scrollEl.style.maxHeight = isAll ? '370px' : '185px';
-  if (!isAll) updatePathFlowBanner(currentPath);
-  else document.getElementById('path-flow-banner-wrap').style.display = 'none';
+  if (!isAll) {
+    updatePathFlowBanner(currentPath);
+    renderPathTestActions(currentPath);
+  } else {
+    document.getElementById('path-flow-banner-wrap').style.display = 'none';
+    document.getElementById('path-test-actions').style.display = 'none';
+  }
 
   if (isAll) {
-    await renderSparklines(days);
+    await renderSparklines(minutes);
   } else {
+    const path = paths.find(p => p.id === currentPath);
+    const hasBidir = !!(path && path.directions && path.directions.includes('bidir'));
+    const bidirPanel = document.getElementById('chart-panel-tput-bidir');
+    if (bidirPanel) bidirPanel.style.display = hasBidir ? '' : 'none';
+
     const pathParam = `&path_id=${currentPath}`;
-    const [latData, tputData, jitterData, bbData] = await Promise.all([
-      api(`/api/timeseries/latency?days=${days}${pathParam}`),
-      api(`/api/timeseries/throughput?days=${days}${pathParam}`),
-      api(`/api/timeseries/jitter?days=${days}${pathParam}`),
-      api(`/api/timeseries/bufferbloat?days=${days}${pathParam}`),
-    ]);
-    setChartData('latency', latData,   '#06b6d4');
-    setChartData('tput',    tputData,  '#22c55e');
-    setChartData('jitter',  jitterData,'#eab308');
-    setChartData('bb',      bbData,    '#ef4444');
+    const fetches = [
+      api(`/api/timeseries/latency?minutes=${minutes}${pathParam}`),
+      api(`/api/timeseries/throughput?minutes=${minutes}${pathParam}`),
+      api(`/api/timeseries/throughput_rx?minutes=${minutes}${pathParam}`),
+      api(`/api/timeseries/jitter?minutes=${minutes}${pathParam}`),
+      api(`/api/timeseries/bufferbloat?minutes=${minutes}${pathParam}`),
+    ];
+    if (hasBidir) fetches.push(api(`/api/timeseries/throughput_bidir?minutes=${minutes}${pathParam}`));
+    const [latData, tputData, tputRxData, jitterData, bbData, bidirData] = await Promise.all(fetches);
+    setChartData('latency',      latData,    '#06b6d4');
+    setChartData('tput',         tputData,   '#22c55e');
+    setChartData('tput-rx',      tputRxData, '#3b82f6');
+    setChartData('jitter',       jitterData, '#eab308');
+    setChartData('bb',           bbData,     '#ef4444');
+    if (hasBidir) setChartData('tput-bidir', bidirData, '#a855f7');
   }
 }
 
@@ -1471,7 +2057,7 @@ async function updateCharts() {
 const _sparkCharts = {};   // path_id+metric -> Chart instance
 const _expandedHops = new Set();  // path IDs with hop rows currently expanded
 
-async function renderSparklines(days) {
+async function renderSparklines(minutes) {
   if (!paths.length) return;
 
   // Cache agents for banner use (await to ensure available before banner renders)
@@ -1479,7 +2065,7 @@ async function renderSparklines(days) {
 
   const [tsData, agentsList] = await Promise.all([
     Promise.all(
-      paths.map(p => api(`/api/timeseries/latency?days=${days}&path_id=${p.id}`)
+      paths.map(p => api(`/api/timeseries/latency?minutes=${minutes}&path_id=${p.id}`)
         .then(d => ({ pid: p.id, points: d[0]?.points || [] }))
         .catch(() => ({ pid: p.id, points: [] }))
       )
@@ -1512,7 +2098,7 @@ async function renderSparklines(days) {
     const r  = latestMap[p.id];
     const pts = tsMap[p.id] || [];
     const l  = r?.latency;
-    const t  = r?.throughput;
+    const t  = throughputSummary(r);
     const j  = r?.jitter;
     const lu = r?.latency_under_load;
     const m  = r?.mtu;

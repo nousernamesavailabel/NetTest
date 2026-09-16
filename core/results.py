@@ -17,12 +17,13 @@ from typing import Optional, List
 
 @dataclass
 class ThroughputResult:
-    tx_mbps: float                     # Transmit throughput
-    rx_mbps: float                     # Receive throughput (bidir)
+    tx_mbps: Optional[float]           # Transmit throughput — None if this direction didn't upload
+    rx_mbps: Optional[float]           # Receive throughput — None if this direction didn't download
     retransmits: int                   # TCP retransmits (congestion signal)
     parallel_streams: int
     duration_sec: int
     protocol: str
+    direction: str = "upload"          # upload | download | bidir
     raw: Optional[dict] = None         # Full iPerf3 JSON for debugging
 
 
@@ -129,8 +130,10 @@ class PathTestResult:
     success: bool
     error: Optional[str] = None        # Set if test failed
 
-    # Individual test results — None if that test wasn't run for this path
-    throughput: Optional[ThroughputResult] = None
+    # Individual test results — None/empty if that test wasn't run for this path.
+    # throughput is a list because a path can run multiple directions
+    # (upload/download/bidir) as separate iPerf3 invocations in one test cycle.
+    throughput: List[ThroughputResult] = field(default_factory=list)
     latency: Optional[LatencyResult] = None
     latency_under_load: Optional[LatencyUnderLoadResult] = None
     jitter: Optional[JitterResult] = None
