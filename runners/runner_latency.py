@@ -8,7 +8,7 @@ import json
 import logging
 import time
 
-from core.ssh_manager import SSHManager
+from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
 from core.results import LatencyResult, JitterResult, LatencyUnderLoadResult
 from core.config_loader import LatencyParams, JitterParams, LatencyUnderLoadParams
 
@@ -178,12 +178,14 @@ class JitterRunner:
             f"-t {duration_sec} "
             f"-J"
         )
+        # iperf3 -J is silent until it exits — see guard_iperf3_client().
+        cmd, timeout_sec, limit_sec = guard_iperf3_client(cmd, duration_sec)
         # Retry loop for agent_not_installed
         deadline = time.time() + (busy_retry_seconds if not server_managed else 0)
         attempt  = 0
         while True:
             attempt += 1
-            output = src_ssh.run(cmd, timeout=duration_sec + 30)
+            output = src_ssh.run(cmd, timeout=timeout_sec)
             if "server is busy" in output.lower() and time.time() < deadline:
                 logger.info(f"  iPerf3 server busy — retrying in 1s "
                             f"(attempt {attempt}, {int(deadline - time.time())}s remaining)...")
@@ -193,9 +195,9 @@ class JitterRunner:
         # Log jitter summary from JSON result only
         # (raw output is too noisy with OSC sequences and JSON fragments)
         # Will log after parse below
-        return self._parse_output(output)
+        return self._parse_output(output, limit_sec)
 
-    def _parse_output(self, raw_output: str) -> JitterResult:
+    def _parse_output(self, raw_output: str, limit_sec: int = None) -> JitterResult:
         json_start = raw_output.find("{")
         if json_start == -1:
             raise ValueError(
@@ -206,7 +208,7 @@ class JitterRunner:
         decoder = json.JSONDecoder()
         data, _ = decoder.raw_decode(raw_output[json_start:])
         if "error" in data:
-            raise RuntimeError(f"iPerf3 UDP error: {data['error']}")
+            raise RuntimeError(f"iPerf3 UDP error: {iperf3_error_text(data['error'], limit_sec)}")
 
         end     = data.get("end", {})
         udp_sum = end.get("sum", {})
@@ -306,7 +308,15 @@ class LatencyUnderLoadRunner:
             f"iperf3 -c {dst_host} -p {port} "
             f"-P {self.iperf3_streams} -t {self.iperf3_duration}"
         )
-        time.sleep(3)
+        time.sleep(2)
+        bg_log = _strip_escapes(src_ssh.read_background_log())
+        if re.search(r'error|unable to connect|no route to host|connection refused',
+                     bg_log, re.IGNORECASE):
+            raise RuntimeError(
+                f"iPerf3 saturation stream never connected — 'loaded' latency "
+                f"would be measuring an unloaded link: {bg_log.strip()}"
+            )
+        time.sleep(1)
 
         # Phase 3: latency under load
         logger.info(f"  Phase 3/4: Measuring latency while link is saturated...")

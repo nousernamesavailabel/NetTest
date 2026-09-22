@@ -56,6 +56,24 @@
                      border-left-color: var(--cyan); }
   .nav-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                     max-width: 160px; font-size: 12px; }
+  .nav-group { margin-bottom: 2px; }
+  .nav-group-label { display: flex; align-items: center; gap: 6px; font-size: 10px;
+                      font-weight: 700; letter-spacing: .5px; color: var(--muted);
+                      padding: 8px 16px 4px; text-transform: uppercase; cursor: pointer;
+                      user-select: none; }
+  .nav-group:first-child .nav-group-label { padding-top: 0; }
+  .nav-group-label:hover { color: var(--text); }
+  .nav-group-chevron { font-size: 8px; flex-shrink: 0; width: 8px; text-align: center;
+                        transition: transform .15s; }
+  .nav-group-chevron.collapsed { transform: rotate(-90deg); }
+  .nav-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-group-count { font-weight: 400; text-transform: none; letter-spacing: 0;
+                      opacity: .7; flex-shrink: 0; margin-left: auto; }
+  .nav-group-items { margin-left: 14px; border-left: 2px solid var(--border);
+                      display: flex; flex-direction: column; }
+  .nav-group-items.collapsed { display: none; }
+  .nav-group-items .nav-item { padding-left: 10px; }
+  .nav-group-items .nav-item-label { max-width: 138px; }
   .nav-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px;
                background: var(--surface); border: 1px solid var(--border); }
   .badge-ok   { border-color: var(--green); color: var(--green); }
@@ -1543,9 +1561,59 @@ function updateNavRunBtns() {
 }
 
 // ── Navigation ─────────────────────────────────────────────
+
+// Collapsed-group state is a per-viewer convenience (which groups they've
+// tucked away), not shared data — localStorage, not the API, is the right
+// place for it. Keyed by group name so it survives path reordering/edits.
+function loadCollapsedNavGroups() {
+  try { return new Set(JSON.parse(localStorage.getItem('nettest.collapsedNavGroups') || '[]')); }
+  catch(e) { return new Set(); }
+}
+function saveCollapsedNavGroups() {
+  try { localStorage.setItem('nettest.collapsedNavGroups', JSON.stringify([...collapsedNavGroups])); }
+  catch(e) {}
+}
+let collapsedNavGroups = loadCollapsedNavGroups();
+
+function navGroupId(key) {
+  return 'navgrp-' + Array.from(key).map(c => c.charCodeAt(0).toString(36)).join('');
+}
+
 function renderNav() {
   const nav = document.getElementById('path-nav');
-  nav.innerHTML = paths.map(p => `
+
+  // Cluster by group (order of first appearance), matching the config
+  // editor, so paths sharing a group render together even if the saved
+  // order interleaves them with other groups.
+  const groupOrder = [];
+  const groupMap = {};
+  paths.forEach(p => {
+    const key = p.group || '';
+    if (!(key in groupMap)) { groupMap[key] = []; groupOrder.push(key); }
+    groupMap[key].push(p);
+  });
+
+  nav.innerHTML = groupOrder.map(key => {
+    const itemsHtml = groupMap[key].map(renderNavItem).join('');
+    if (!key) return itemsHtml;
+    const gid = navGroupId(key);
+    const collapsed = collapsedNavGroups.has(key);
+    return `
+    <div class="nav-group">
+      <div class="nav-group-label" onclick="toggleNavGroup('${jsAttr(key)}')">
+        <span class="nav-group-chevron ${collapsed?'collapsed':''}" id="chev-${gid}">▾</span>
+        <span class="nav-group-name" title="${escHtmlNav(key)}">${escHtmlNav(key)}</span>
+        <span class="nav-group-count">${groupMap[key].length}</span>
+      </div>
+      <div class="nav-group-items ${collapsed?'collapsed':''}" id="items-${gid}">
+        ${itemsHtml}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderNavItem(p) {
+  return `
     <div class="nav-item" data-path="${p.id}" onclick="selectPath('${p.id}',this)">
       <span class="nav-item-label" title="${p.label}">${p.label}</span>
       <div style="display:flex;align-items:center;gap:5px">
@@ -1553,8 +1621,36 @@ function renderNav() {
         <button class="nav-run-btn" id="run-btn-${p.id}"
           onclick="event.stopPropagation();runPath('${p.id}')">▶</button>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+}
+
+function toggleNavGroup(key) {
+  if (collapsedNavGroups.has(key)) collapsedNavGroups.delete(key);
+  else collapsedNavGroups.add(key);
+  saveCollapsedNavGroups();
+  const gid = navGroupId(key);
+  const chev  = document.getElementById('chev-' + gid);
+  const items = document.getElementById('items-' + gid);
+  const collapsed = collapsedNavGroups.has(key);
+  if (chev)  chev.classList.toggle('collapsed', collapsed);
+  if (items) items.classList.toggle('collapsed', collapsed);
+}
+
+// Expands the group containing pid, if it's currently collapsed — used
+// whenever a path is selected from outside the sidebar (e.g. the overview
+// sparkline grid) so the nav can actually show it as active.
+function expandNavGroupFor(pid) {
+  const p = paths.find(x => x.id === pid);
+  if (!p || !p.group || !collapsedNavGroups.has(p.group)) return;
+  toggleNavGroup(p.group);
+}
+
+function escHtmlNav(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function jsAttr(s) {
+  return escHtmlNav(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 }
 
 function selectPath(pid, el) {
@@ -2262,6 +2358,7 @@ function toggleSparkHops(pid) {
 }
 
 function selectPathById(pid) {
+  expandNavGroupFor(pid);
   const navItem = document.querySelector(`.nav-item[data-path="${pid}"]`);
   if (navItem) selectPath(pid, navItem);
 }

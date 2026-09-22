@@ -3,19 +3,22 @@
 # NetTest Controller — Install / Upgrade Script
 #
 # Usage:
-#   sudo ./install.sh              # Fresh install
-#   sudo ./install.sh --upgrade    # Upgrade code, keep config and keys
-#   sudo ./install.sh --show-key   # Print the controller public key
+#   sudo ./install.sh                    # Fresh install
+#   sudo ./install.sh --upgrade          # Upgrade code, keep config and keys
+#   sudo ./install.sh --show-key         # Print the controller public key
+#   sudo ./install.sh --setup-local-user # Add/update a local dashboard login
 #
 # Environment overrides:
-#   NETTEST_APP_DIR       Install path  (default: /opt/nettest)
-#   NETTEST_USER          Service user  (default: nettest)
-#   NETTEST_ONLINE        "false" for an offline / air-gapped install
-#                         (skips the interactive prompt)
-#   NETTEST_PACKAGES_DIR  Directory of .deb files for an offline install
-#                         (skips the interactive prompt)
-#   NETTEST_WHEELS_DIR    Directory of .whl files for an offline install
-#                         (skips the interactive prompt)
+#   NETTEST_APP_DIR        Install path  (default: /opt/nettest)
+#   NETTEST_USER           Service user  (default: nettest)
+#   NETTEST_ONLINE         "false" for an offline / air-gapped install
+#                          (skips the interactive prompt)
+#   NETTEST_PACKAGES_DIR   Directory of .deb files for an offline install
+#                          (skips the interactive prompt)
+#   NETTEST_WHEELS_DIR     Directory of .whl files for an offline install
+#                          (skips the interactive prompt)
+#   NETTEST_LOCAL_USER     Username for --setup-local-user (skips the prompt)
+#   NETTEST_LOCAL_PASSWORD Password for --setup-local-user (skips the prompt)
 # =============================================================
 
 set -euo pipefail
@@ -37,11 +40,13 @@ sep()  { echo -e "${CYAN}━━━━━━━━━━━━━━━━━━�
 UPGRADE=false
 SHOW_KEY=false
 SETUP_HTTPS=false
+SETUP_LOCAL_USER=false
 for arg in "$@"; do
   case "$arg" in
-    --upgrade)     UPGRADE=true      ;;
-    --show-key)    SHOW_KEY=true     ;;
-    --setup-https) SETUP_HTTPS=true  ;;
+    --upgrade)          UPGRADE=true          ;;
+    --show-key)         SHOW_KEY=true         ;;
+    --setup-https)      SETUP_HTTPS=true      ;;
+    --setup-local-user) SETUP_LOCAL_USER=true ;;
   esac
 done
 
@@ -60,6 +65,115 @@ if [[ "$SHOW_KEY" == "true" ]]; then
     echo "No key found at ${KEY_FILE}.pub"
     echo "Run: sudo ./install.sh  to generate one"
   fi
+  exit 0
+fi
+
+# ── Setup local user mode ──────────────────────────────────
+# Adds (or resets the password of) a local dashboard login account, stored
+# as a salted hash in config/config.yaml — no external RADIUS server
+# needed. If RADIUS is already the active login method, this account also
+# serves as an automatic fallback login whenever the RADIUS server can't
+# be reached.
+if [[ "$SETUP_LOCAL_USER" == "true" ]]; then
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run as root: sudo ./install.sh --setup-local-user"
+    exit 1
+  fi
+
+  CONFIG_FILE="${APP_DIR}/config/config.yaml"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    echo "No config found at ${CONFIG_FILE} — run the installer first (sudo ./install.sh)."
+    exit 1
+  fi
+  if [[ ! -x "${APP_DIR}/venv/bin/python3" ]]; then
+    echo "No Python venv found at ${APP_DIR}/venv — run the installer first (sudo ./install.sh)."
+    exit 1
+  fi
+
+  sep
+  echo -e "  ${CYAN}NetTest — Local Dashboard Login${NC}"
+  sep
+  echo ""
+
+  LOCAL_USERNAME="${NETTEST_LOCAL_USER:-}"
+  if [[ -z "$LOCAL_USERNAME" ]]; then
+    read -r -p "  Username: " LOCAL_USERNAME || true
+  fi
+  if [[ -z "$LOCAL_USERNAME" ]]; then
+    echo "Username cannot be empty"
+    exit 1
+  fi
+
+  LOCAL_PASSWORD="${NETTEST_LOCAL_PASSWORD:-}"
+  if [[ -z "$LOCAL_PASSWORD" ]]; then
+    read -r -s -p "  Password: " LOCAL_PASSWORD || true; echo ""
+    read -r -s -p "  Confirm password: " LOCAL_PASSWORD_CONFIRM || true; echo ""
+    if [[ "$LOCAL_PASSWORD" != "$LOCAL_PASSWORD_CONFIRM" ]]; then
+      echo "Passwords do not match"
+      exit 1
+    fi
+  fi
+  if [[ -z "$LOCAL_PASSWORD" ]]; then
+    echo "Password cannot be empty"
+    exit 1
+  fi
+  if [[ "${#LOCAL_PASSWORD}" -lt 8 ]]; then
+    echo "Password must be at least 8 characters"
+    exit 1
+  fi
+
+  echo ""
+  info "Hashing password and updating config..."
+  NETTEST_LU_USER="$LOCAL_USERNAME" NETTEST_LU_PASS="$LOCAL_PASSWORD" \
+    "${APP_DIR}/venv/bin/python3" - "$CONFIG_FILE" << 'PYEOF'
+import os, sys
+import yaml
+from werkzeug.security import generate_password_hash
+
+config_path = sys.argv[1]
+username = os.environ["NETTEST_LU_USER"]
+password = os.environ["NETTEST_LU_PASS"]
+
+with open(config_path) as f:
+    raw = yaml.safe_load(f)
+
+auth  = raw.setdefault("auth", {})
+users = auth.setdefault("local_users", [])
+pw_hash = generate_password_hash(password)
+
+for u in users:
+    if u.get("username") == username:
+        u["password_hash"] = pw_hash
+        break
+else:
+    users.append({"username": username, "password_hash": pw_hash})
+
+# Only set a method if one isn't already active. If RADIUS is already
+# configured, leave it as the primary method — this new local account
+# becomes its fallback instead of replacing it.
+if not auth.get("method"):
+    auth["method"] = "radius" if auth.get("radius_server") else "local"
+
+with open(config_path, "w") as f:
+    yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+print(f"auth.method is now: {auth['method']!r}")
+PYEOF
+
+  chown "${APP_USER}:${APP_GROUP}" "${CONFIG_FILE}"
+  chmod 0640 "${CONFIG_FILE}"
+  ok "Local user '${LOCAL_USERNAME}' saved"
+  echo ""
+
+  if systemctl is-active --quiet nettest-web 2>/dev/null; then
+    info "Restarting nettest-web to apply..."
+    systemctl restart nettest-web
+    ok "nettest-web restarted"
+  else
+    warn "nettest-web isn't running — start it to apply this change:"
+    echo "     sudo systemctl start nettest-web"
+  fi
+  echo ""
   exit 0
 fi
 
@@ -452,6 +566,7 @@ server {
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 10m;
 
+    client_max_body_size      100M;
     proxy_buffering           off;
     proxy_cache               off;
     chunked_transfer_encoding on;
@@ -554,6 +669,11 @@ if [[ "$UPGRADE" == "false" ]]; then
   echo "     before onboarding any air-gapped agents."
   echo "     Required packages: iperf3, libiperf0, libsctp1, mtr-tiny,"
   echo "     iputils-ping, traceroute, psmisc"
+  echo ""
+  echo "  7. To require dashboard login without a RADIUS server (or as a"
+  echo "     fallback login if RADIUS is unreachable), add a local account:"
+  echo "     sudo ./install.sh --setup-local-user"
+  echo "     (local users can also be managed later from Config → Auth)"
   echo ""
 fi
 

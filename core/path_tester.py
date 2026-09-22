@@ -192,6 +192,7 @@ class PathTester:
                             server_managed=server_managed,
                             port_override=dst_iperf3_port,
                             directions=path.directions,
+                            parallel_streams=path.parallel_streams,
                         )
                     # Retry busy iPerf3 tests
                     retries = getattr(result, "_iperf_retry", [])
@@ -215,6 +216,7 @@ class PathTester:
                                 server_managed=server_managed,
                                 port_override=dst_iperf3_port,
                                 directions=path.directions,
+                                parallel_streams=path.parallel_streams,
                             )
                         result._iperf_retry = []
                         # Remove "busy" errors from result.error for any tests that succeeded
@@ -248,6 +250,7 @@ class PathTester:
                                 server_managed=True,
                                 port_override=None,
                                 directions=path.directions,
+                                parallel_streams=path.parallel_streams,
                             )
                         # Retry any iPerf3 tests that failed due to busy server
                         retries = getattr(result, "_iperf_retry", [])
@@ -272,6 +275,7 @@ class PathTester:
                                     server_managed=True,
                                     port_override=None,
                                     directions=path.directions,
+                                    parallel_streams=path.parallel_streams,
                                 )
                             result._iperf_retry = []
 
@@ -324,12 +328,15 @@ class PathTester:
                   src_ssh, dst_ssh, dst_host: str,
                   server_managed: bool = True,
                   port_override: int = None,
-                  directions: List[str] = None):
+                  directions: List[str] = None,
+                  parallel_streams: int = 8):
         """Run a single test type. result can be PathTestResult or SegmentResult.
         server_managed=False skips iPerf3 server start (agent_not_installed destinations).
         port_override sets the iPerf3 port when not using test_params default.
         directions (throughput only) is per-path: any combination of
         upload | download | bidir, run as separate iPerf3 invocations.
+        parallel_streams (throughput and latency_under_load) is per-path —
+        the right count depends on the path's own bandwidth/shaping.
         """
         p = self.config.test_params
         directions = directions or ["upload"]
@@ -343,7 +350,7 @@ class PathTester:
                     port = port_override or p.throughput.iperf3_port
                     logger.info(f"  Connecting to assumed-running iPerf3 server "
                                 f"on {dst_host}:{port}...")
-                logger.info(f"  Running {p.throughput.parallel_streams}-stream TCP throughput "
+                logger.info(f"  Running {parallel_streams}-stream TCP throughput "
                             f"for {p.throughput.duration_sec}s each "
                             f"({', '.join(DIR_LABELS.get(d, d) for d in directions)})")
                 runner = ThroughputRunner(p.throughput)
@@ -358,6 +365,7 @@ class PathTester:
                         port_override=port_override,
                         busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
                         direction=direction,
+                        parallel_streams=parallel_streams,
                     ))
                 result.throughput = throughput_results
 
@@ -373,7 +381,7 @@ class PathTester:
                 runner = LatencyUnderLoadRunner(
                     params=p.latency_under_load,
                     iperf3_port=p.throughput.iperf3_port,
-                    iperf3_streams=p.throughput.parallel_streams,
+                    iperf3_streams=parallel_streams,
                 )
                 result.latency_under_load = runner.run(
                     src_ssh, dst_ssh, dst_host,

@@ -41,6 +41,11 @@ def setup_logging(log_level: str, log_dir: str):
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(log_file),
     ]
+    # Pin the handlers to the configured level: timed debug mode (see
+    # core/debug_mode.py) drops the root logger to DEBUG, and that must reach
+    # only its own debug log — not the console or controller.log.
+    for h in handlers:
+        h.setLevel(level)
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
 
@@ -259,6 +264,11 @@ def main():
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+
+    # Only the long-running service watches for debug mode — one-shot CLI runs
+    # would otherwise contend with it for the same rotating debug log.
+    from core import debug_mode
+    debug_mode.start_watcher("scheduler", config.log_dir)
 
     scheduler.start()
 

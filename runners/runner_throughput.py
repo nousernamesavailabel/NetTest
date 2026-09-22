@@ -7,7 +7,7 @@ import json
 import logging
 import time
 
-from core.ssh_manager import SSHManager
+from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
 from core.results import ThroughputResult
 from core.config_loader import ThroughputParams
 
@@ -51,7 +51,8 @@ class ThroughputRunner:
             server_managed: bool = True,
             port_override: int = None,
             busy_retry_seconds: int = 0,
-            direction: str = "upload") -> ThroughputResult:
+            direction: str = "upload",
+            parallel_streams: int = 8) -> ThroughputResult:
         p    = self.params
         port = port_override if port_override else p.iperf3_port
 
@@ -62,20 +63,21 @@ class ThroughputRunner:
         else:
             logger.info(f"  Using assumed-running iPerf3 server on {dst_host}:{port}...")
 
-        # Bidirectional requires server-side control — not possible for agent_not_installed
+        # --bidir is a client-side iPerf3 flag; it works against any already-listening
+        # server the same way upload/download do, so it needs no server-side control
+        # and is not restricted for agent_not_installed (assumed-running) destinations.
         effective_direction = direction
-        if direction == "bidir" and not server_managed:
-            logger.info("  Note: bidirectional disabled for Agent Not Installed "
-                        "(no server-side control) — running upload only")
-            effective_direction = "upload"
-        cmd = self._build_client_command(dst_host, p, port, direction=effective_direction)
+        cmd = self._build_client_command(dst_host, p, port, direction=effective_direction,
+                                         parallel_streams=parallel_streams)
         dir_label = {"upload": "upload only", "download": "download only",
                      "bidir": "bidirectional"}.get(effective_direction, effective_direction)
-        logger.info(f"  Running {p.parallel_streams}-stream TCP test for {p.duration_sec}s "
+        logger.info(f"  Running {parallel_streams}-stream TCP test for {p.duration_sec}s "
                     f"({dir_label})...")
         logger.info(f"  Please wait {p.duration_sec}s for test to complete...")
 
-        timeout_sec = p.duration_sec + 30
+        # iperf3 -J is silent until it exits; the remote `timeout` makes a hung
+        # client stop and report instead of running into netmiko's read_timeout.
+        cmd, timeout_sec, limit_sec = guard_iperf3_client(cmd, p.duration_sec)
         # Retry loop for agent_not_installed — server may be busy with another client
         raw_output = None
         deadline   = time.time() + (busy_retry_seconds if not server_managed else 0)
@@ -113,7 +115,7 @@ class ThroughputRunner:
             elif _re.search(r'bits/sec', line) and                  (_re.search(r'sender', line) or _re.search(r'receiver', line)):
                 logger.info(f"    {line}")
 
-        return self._parse_output(raw_output, p, effective_direction)
+        return self._parse_output(raw_output, p, effective_direction, limit_sec, parallel_streams)
 
 
 
@@ -131,14 +133,15 @@ class ThroughputRunner:
 
     def _build_client_command(self, dst_host: str, p: ThroughputParams,
                               port: int = None,
-                              direction: str = "upload") -> str:
+                              direction: str = "upload",
+                              parallel_streams: int = 8) -> str:
         port = port or p.iperf3_port
         cmd_parts = [
             "iperf3",
             f"-c {dst_host}",
             f"-p {port}",
             f"-t {p.duration_sec}",
-            f"-P {p.parallel_streams}",
+            f"-P {parallel_streams}",
             "-J",
             "--connect-timeout 5000",
         ]
@@ -151,7 +154,9 @@ class ThroughputRunner:
         return " ".join(cmd_parts)
 
     def _parse_output(self, raw_output: str, p: ThroughputParams,
-                       direction: str = "upload") -> ThroughputResult:
+                       direction: str = "upload",
+                       limit_sec: int = None,
+                       parallel_streams: int = 8) -> ThroughputResult:
         json_start = raw_output.find("{")
         if json_start == -1:
             raise ValueError(
@@ -166,7 +171,7 @@ class ThroughputRunner:
             raise ValueError(f"Could not parse iPerf3 output: {e}")
 
         if "error" in data:
-            raise RuntimeError(f"iPerf3 error: {data['error']}")
+            raise RuntimeError(f"iPerf3 error: {iperf3_error_text(data['error'], limit_sec)}")
 
         end         = data.get("end", {})
         sum_sent    = end.get("sum_sent", end.get("streams", [{}])[0].get("sender", {}))
@@ -208,7 +213,7 @@ class ThroughputRunner:
             tx_mbps=tx_mbps,
             rx_mbps=rx_mbps,
             retransmits=retransmits,
-            parallel_streams=p.parallel_streams,
+            parallel_streams=parallel_streams,
             duration_sec=p.duration_sec,
             protocol=p.protocol,
             direction=direction,

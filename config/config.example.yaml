@@ -19,14 +19,24 @@ controller:
   log_dir: logs
 
   # Log verbosity: DEBUG | INFO | WARNING | ERROR
+  # For troubleshooting, prefer Config → Logging in the web UI: it turns on
+  # debug logging for 15 min – 3 hours, then switches itself off, and keeps
+  # the extra output out of controller.log.
   log_level: INFO
 
 
 # ── Authentication ─────────────────────────────────────────
 auth:
-  # RADIUS server IP or hostname.
+  # Which login method to use: "" | "radius" | "local"
   # Leave blank ("") to disable authentication entirely —
   # the dashboard will be accessible without login.
+  # If left blank but radius_server or local_users below are set, the
+  # method is inferred (radius_server wins) for backward compatibility —
+  # but setting this explicitly is recommended.
+  method: ""
+
+  # ── RADIUS (method: radius) ──
+  # RADIUS server IP or hostname.
   radius_server: ""
 
   # RADIUS UDP port (default: 1812)
@@ -37,6 +47,29 @@ auth:
 
   # RADIUS request timeout in seconds
   radius_timeout: 5
+
+  # ── Local accounts (method: local, or fallback when method: radius) ──
+  # One or more local username/password accounts, checked against the
+  # dashboard's own login form — no external server required.
+  #
+  # When method is "radius" and local_users is non-empty, these accounts
+  # are also used as an automatic fallback login whenever the RADIUS
+  # server can't be reached (timeout/connection error) — not when RADIUS
+  # is reachable but simply rejects the credentials.
+  #
+  # Manage these from Config → Auth in the web UI, or via:
+  #   sudo ./install.sh --setup-local-user
+  #
+  # Passwords are never stored in plaintext. To hand-edit this file instead,
+  # generate a password_hash with:
+  #   /opt/nettest/venv/bin/python3 -c \
+  #     "from werkzeug.security import generate_password_hash; \
+  #      print(generate_password_hash(input('Password: ')))"
+  #
+  # local_users:
+  #   - username: admin
+  #     password_hash: "pbkdf2:sha256:..."
+  local_users: []
 
   # Secret key for signing Flask session cookies.
   # REQUIRED even if RADIUS is disabled.

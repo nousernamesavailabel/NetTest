@@ -61,6 +61,8 @@ a:hover{text-decoration:underline}
 .badge-endpoint  {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
 .badge-svi       {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
 .badge-noagent   {background:#1e0d3c;color:#b48ae0;border:1px solid #5a2a9a}
+.badge-on        {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
+.badge-off       {background:var(--surf3);color:var(--mt);border:1px solid var(--bdr2)}
 .badge-source    {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
 .badge-dest      {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
 
@@ -84,12 +86,35 @@ select option{background:var(--bg)}
 .test-toggle.svi-disabled{opacity:0.35;cursor:not-allowed;pointer-events:none;text-decoration:line-through}
 .test-toggle input{display:none}
 
+/* ── Path groups ── */
+.path-group{display:flex;flex-direction:column;gap:12px}
+.path-group + .path-group{margin-top:4px;padding-top:12px;border-top:1px dashed var(--bdr)}
+.path-group-header{display:flex;align-items:center;gap:8px;font-size:10px;font-weight:700;
+                    text-transform:uppercase;letter-spacing:.8px;color:var(--mt)}
+.path-group-header .count{font-weight:400;text-transform:none;letter-spacing:0}
+.path-group-rename{background:none;border:none;color:var(--mt);cursor:pointer;font-size:11px;
+                    padding:1px 4px;opacity:.7}
+.path-group-rename:hover{opacity:1;color:var(--cy)}
+.path-drag-handle{cursor:grab;color:var(--mt);font-size:13px;padding:0 2px}
+.path-drag-handle:active{cursor:grabbing}
+.card.dragging{opacity:.4}
+.card.drag-over{border-color:var(--cy)}
+.path-move-btn{background:transparent;color:var(--mt);border:1px solid var(--bdr2);
+                border-radius:3px;font-size:9px;padding:2px 5px;cursor:pointer;line-height:1}
+.path-move-btn:hover{color:var(--tx);background:var(--surf3)}
+.path-move-btn:disabled{opacity:.25;cursor:not-allowed}
+
 /* ── Path flow viz ── */
 .path-flow{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:12px;flex-wrap:wrap}
 .path-node{background:var(--surf3);border:1px solid var(--bdr2);border-radius:4px;
            padding:4px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .path-node-svi{border-color:var(--yw);color:var(--yw)}
 .path-arrow{color:var(--cy);font-size:16px;flex-shrink:0}
+
+/* ── Debug log viewer ── */
+.dbg-log{background:#080a0d;border:1px solid var(--bdr);border-radius:4px;padding:10px 12px;
+         font-family:var(--fn);font-size:11px;line-height:1.5;color:var(--mt2);
+         height:420px;overflow:auto;white-space:pre;margin:0}
 
 /* ── Buttons ── */
 .btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:4px;
@@ -232,11 +257,17 @@ select option{background:var(--bg)}
     <div class="tab" onclick="showSection('https',this)">
       <span class="tab-icon">🔒</span> HTTPS
     </div>
+    <div class="tab" onclick="showSection('auth',this)">
+      <span class="tab-icon">👤</span> Auth
+    </div>
     <div class="tab" onclick="showSection('exportimport',this)">
       <span class="tab-icon">⇅</span> Export/Import
     </div>
     <div class="tab" onclick="showSection('updates',this)">
       <span class="tab-icon">⬆</span> Updates
+    </div>
+    <div class="tab" onclick="showSection('logging',this)">
+      <span class="tab-icon">📋</span> Logging
     </div>
 
   </nav>
@@ -545,7 +576,7 @@ select option{background:var(--bg)}
           </div>
           <div class="form-row">
             <label>Parallel streams</label>
-            <input type="number" id="tp-tput-streams" min="1" max="32" style="width:80px">
+            <span style="color:var(--mt);font-size:11px">set per path below (Test Paths section) — the right count depends on each path's own bandwidth</span>
           </div>
           <div class="form-row">
             <label>Direction</label>
@@ -740,6 +771,73 @@ select option{background:var(--bg)}
           <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
             <button class="btn btn-primary" onclick="uploadCert()">Upload & Apply</button>
             <span id="https-upload-status" style="font-size:11px;color:var(--mt)"></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+
+    <!-- ── Auth ── -->
+    <div class="section" id="section-auth">
+
+      <!-- Login Method -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Login Method</span></div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Method</label>
+            <select id="auth-method" style="flex:1" onchange="onAuthMethodChange()">
+              <option value="">Disabled — no login required</option>
+              <option value="radius">RADIUS</option>
+              <option value="local">Local accounts</option>
+            </select>
+          </div>
+          <div id="auth-radius-info" style="display:none;font-size:11px;color:var(--mt);margin-top:6px">
+            RADIUS server: <span id="auth-radius-server-view" style="color:var(--tx)">—</span>
+            &nbsp;— edit <code>config/config.yaml</code> or re-run <code>install.sh</code> to change RADIUS settings.
+          </div>
+          <div id="auth-no-radius-warn" style="display:none;background:#2a1500;border:1px solid #a05000;
+                      border-radius:4px;padding:8px 12px;font-size:11px;color:#e09050;margin-top:10px">
+            ⚠ RADIUS isn't configured yet (no radius_server in config.yaml). Set it in
+            <code>config/config.yaml</code> first.
+          </div>
+          <div id="auth-fallback-note" style="display:none;background:#0d1f3c;border:1px solid #1a3a5c;
+                      border-radius:4px;padding:8px 12px;font-size:11px;color:#5bc4f5;margin-top:10px">
+            ℹ If the RADIUS server can't be reached at login time, any account listed below
+            under Local Users is used as an automatic fallback login.
+          </div>
+        </div>
+      </div>
+
+      <!-- Local Users -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Local Users <span id="auth-user-count" style="color:var(--mt);font-weight:400">(0)</span></span>
+        </div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Local accounts log in directly against this dashboard — no external RADIUS server
+            needed. Passwords are stored as salted hashes, never in plaintext.
+          </p>
+          <div id="auth-users-list"></div>
+          <div style="border-top:1px solid var(--bdr);margin-top:14px;padding-top:14px">
+            <div class="form-row">
+              <label>Username</label>
+              <input type="text" id="auth-new-username" autocomplete="off" placeholder="e.g. ops">
+            </div>
+            <div class="form-row">
+              <label>Password</label>
+              <input type="password" id="auth-new-password" autocomplete="new-password" placeholder="min. 8 characters">
+            </div>
+            <div class="form-row">
+              <label>Confirm</label>
+              <input type="password" id="auth-new-password2" autocomplete="new-password" placeholder="min. 8 characters">
+            </div>
+            <div style="margin-top:10px">
+              <button class="btn btn-primary" onclick="addLocalUser()">+ Add / Update User</button>
+            </div>
+            <div id="auth-user-status" style="display:none;font-size:11px;margin-top:8px"></div>
           </div>
         </div>
       </div>
@@ -976,6 +1074,64 @@ select option{background:var(--bg)}
 
     </div>
 
+    <!-- ── Logging ── -->
+    <div class="section" id="section-logging">
+
+      <!-- Debug mode -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Debug Mode</span>
+          <span class="badge badge-off" id="dbg-badge">Off</span>
+        </div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt)">
+            Verbose logging for troubleshooting — raw SSH command output, Netmiko's
+            channel trace, timings and tracebacks. It switches itself off when the time
+            is up. This applies immediately; it isn't part of Save Config.
+          </p>
+          <div id="dbg-status" style="font-size:12px;font-family:monospace">Loading...</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary" data-dbg onclick="dbgEnable(15)">15 min</button>
+            <button class="btn btn-primary" data-dbg onclick="dbgEnable(30)">30 min</button>
+            <button class="btn btn-primary" data-dbg onclick="dbgEnable(60)">1 hour</button>
+            <button class="btn btn-primary" data-dbg onclick="dbgEnable(180)">3 hours</button>
+            <button class="btn btn-danger" id="dbg-stop" style="display:none"
+                    onclick="dbgStop()">Turn off now</button>
+          </div>
+          <p style="font-size:10px;color:var(--mt)">
+            Choosing a duration starts the timer from now (and restarts it if debug is
+            already on). Debug output goes to its own size-capped files and doesn't change
+            live output or controller.log. It can include hostnames, IPs and raw command
+            output — check before sharing.
+          </p>
+        </div>
+      </div>
+
+      <!-- Debug log viewer -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Debug Log</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="dbg-source" style="width:auto" onchange="dbgLoadTail()">
+              <option value="scheduler">Scheduler</option>
+              <option value="dashboard">Dashboard</option>
+            </select>
+            <button class="btn" onclick="dbgRefreshStatus();dbgLoadTail()">↻ Refresh</button>
+            <a class="btn" id="dbg-download" href="#" style="text-decoration:none">⬇ Download</a>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div style="font-size:10px;color:var(--mt)">
+            Scheduler: the background service running scheduled tests.
+            Dashboard: tests started from the web UI, plus web/API activity.
+          </div>
+          <div id="dbg-fileinfo" style="font-size:11px;color:var(--mt)"></div>
+          <pre class="dbg-log" id="dbg-log"></pre>
+        </div>
+      </div>
+
+    </div>
+
     <!-- ── Save bar (always visible) ── -->
     <div class="save-bar">
       <span class="save-status" id="save-status"></span>
@@ -998,6 +1154,8 @@ let paths      = [];
 let schedule   = {};
 let sshDefs    = {};
 let testParams = {};
+let authConfig     = {};
+let authLocalUsers = [];
 
 const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu','traceroute'];
 const SVI_TESTS  = ['latency','mtu','traceroute'];   // tests supported by switch_router agents
@@ -1029,6 +1187,8 @@ async function loadConfig() {
     schedule   = raw.schedule    || {};
     sshDefs    = raw.ssh_defaults|| {};
     testParams = raw.test_params || {};
+    authConfig     = raw.auth || {};
+    authLocalUsers = (authConfig.local_users || []).map(u => ({ username: u.username }));
     renderAll();
     setStatus('');
   } catch(e) {
@@ -1047,6 +1207,7 @@ function showSection(name, el) {
   if (name === 'https') loadHTTPSStatus();
   if (name === 'updates') loadUpdateStatus();
   if (name === 'schedule') renderScheduleGrid();
+  if (name === 'logging') loggingEnter(); else loggingLeave();
 }
 
 // ── Render all ─────────────────────────────────────────────
@@ -1056,6 +1217,7 @@ function renderAll() {
   renderSchedule();
   renderSSH();
   renderTests();
+  renderAuth();
 }
 
 // ── Agents ─────────────────────────────────────────────────
@@ -1174,6 +1336,8 @@ async function testAgent(i) {
 }
 
 // ── Paths ──────────────────────────────────────────────────
+let _dragPathIdx = null;
+
 function renderPaths() {
   const list = document.getElementById('paths-list');
   document.getElementById('path-count').textContent = '(' + paths.length + ')';
@@ -1183,22 +1347,60 @@ function renderPaths() {
     return;
   }
 
-  list.innerHTML = paths.map((p, i) => {
-    const srcAgent  = agents.find(a => a.id === p.source);
-    const dstAgent  = agents.find(a => a.id === p.destination);
-    const srcLabel  = srcAgent ? (srcAgent.label || srcAgent.id) : (p.source || '?');
-    const dstLabel  = dstAgent ? (dstAgent.label || dstAgent.id) : (p.destination || '?');
-    const tests     = p.tests || [];
+  // Cluster paths by group (in order of first appearance) so paths sharing
+  // a group render together under one header, even if not stored
+  // contiguously. Ungrouped paths render bare, in place — a config with no
+  // groups defined looks exactly like a flat list.
+  const groupOrder = [];
+  const groupMap = {};
+  paths.forEach((p, i) => {
+    const key = p.group || '';
+    if (!(key in groupMap)) { groupMap[key] = []; groupOrder.push(key); }
+    groupMap[key].push(i);
+  });
+  const existingGroups = groupOrder.filter(g => g);
+  const groupListHtml = `<datalist id="path-group-list">${existingGroups.map(g => `<option value="${escHtml(g)}">`).join('')}</datalist>`;
 
+  const sections = groupOrder.map(key => {
+    const cards = groupMap[key].map(i => renderPathCard(i)).join('');
+    if (!key) return cards;
     return `
-    <div class="card" id="path-card-${i}">
+    <div class="path-group">
+      <div class="path-group-header">
+        <span>${escHtml(key)}</span>
+        <span class="count">(${groupMap[key].length})</span>
+        <button class="path-group-rename" type="button" title="Rename this group"
+          onclick="renameGroup('${escHtml(key).replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">✎ rename</button>
+      </div>
+      ${cards}
+    </div>`;
+  }).join('');
+
+  list.innerHTML = groupListHtml + sections;
+}
+
+function renderPathCard(i) {
+  const p = paths[i];
+  const srcAgent  = agents.find(a => a.id === p.source);
+  const dstAgent  = agents.find(a => a.id === p.destination);
+  const srcLabel  = srcAgent ? (srcAgent.label || srcAgent.id) : (p.source || '?');
+  const dstLabel  = dstAgent ? (dstAgent.label || dstAgent.id) : (p.destination || '?');
+  const tests     = p.tests || [];
+
+  return `
+    <div class="card" id="path-card-${i}" draggable="true"
+      ondragstart="pathDragStart(event,${i})" ondragover="pathDragOver(event,${i})"
+      ondragleave="pathDragLeave(event)" ondrop="pathDrop(event,${i})" ondragend="pathDragEnd(event)">
       <div class="card-header" onclick="toggleCard('path-body-${i}','path-chev-${i}')">
         <div class="card-title">
+          <span class="path-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">⠿</span>
           <span class="card-chevron" id="path-chev-${i}">▶</span>
           <span>${escHtml(p.label || p.id || 'Path ' + (i+1))}</span>
           <span style="color:var(--mt);font-size:11px">${tests.length} tests</span>
         </div>
         <div class="card-actions" onclick="event.stopPropagation()">
+          <button class="path-move-btn" title="Move up" ${i===0?'disabled':''} onclick="movePath(${i},-1)">▲</button>
+          <button class="path-move-btn" title="Move down" ${i===paths.length-1?'disabled':''} onclick="movePath(${i},1)">▼</button>
           <button class="btn btn-danger" style="font-size:10px;padding:3px 8px"
             onclick="removePath(${i})">✕</button>
         </div>
@@ -1225,6 +1427,13 @@ function renderPaths() {
           <label>Label</label>
           <input type="text" value="${escHtml(p.label||'')}" placeholder="Branch A → Hub DC"
             oninput="paths[${i}].label=this.value;updatePathHeader(${i});markDirty()">
+        </div>
+        <div class="form-row">
+          <label>Group</label>
+          <input type="text" list="path-group-list" value="${escHtml(p.group||'')}"
+            placeholder="e.g. Branch Sites (optional)"
+            oninput="paths[${i}].group=this.value||null;markDirty()"
+            onchange="reflowGroups(${i})">
         </div>
         <div class="form-row">
           <label>Source <span style="color:var(--rd)">*</span></label>
@@ -1298,13 +1507,82 @@ function renderPaths() {
                 </label>`;
               }).join('')}
             </div>
-            <div style="color:var(--mt);font-size:11px;margin-top:4px">Each checked direction runs as its own iPerf3 test — select more than one to run them all. Duration/streams stay global, set above in Throughput test params.</div>
+            <div style="color:var(--mt);font-size:11px;margin-top:4px">Each checked direction runs as its own iPerf3 test — select more than one to run them all. Duration stays global, set above in Throughput test params.</div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label>Parallel streams</label>
+          <div>
+            <input type="number" min="1" max="32" style="width:80px" value="${p.parallel_streams ?? 8}"
+              oninput="paths[${i}].parallel_streams=parseInt(this.value)||1;markDirty()">
+            <div style="color:var(--mt);font-size:11px;margin-top:4px">iPerf3 -P for this path's Throughput test, and the saturation stream count for Latency Under Load. A constrained or policed link can collapse (stalled streams, heavy retransmits) with too many streams open at once — lower this if that happens.</div>
           </div>
         </div>
 
       </div>
     </div>`;
-  }).join('');
+}
+
+function movePath(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= paths.length) return;
+  [paths[i], paths[j]] = [paths[j], paths[i]];
+  renderPaths();
+  markDirty();
+}
+
+function reflowGroups(i) {
+  const body = document.getElementById('path-body-' + i);
+  const wasOpen = body && !body.classList.contains('hidden');
+  renderPaths();
+  if (wasOpen) toggleCard('path-body-' + i, 'path-chev-' + i);
+}
+
+function renameGroup(oldName) {
+  const next = prompt('Rename group', oldName);
+  if (next === null) return;
+  const trimmed = next.trim();
+  paths.forEach(p => { if ((p.group || '') === oldName) p.group = trimmed || null; });
+  markDirty();
+  renderPaths();
+}
+
+function pathDragStart(e, i) {
+  if (!e.target.closest('.path-drag-handle')) { e.preventDefault(); return; }
+  _dragPathIdx = i;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(i));
+  e.currentTarget.classList.add('dragging');
+}
+
+function pathDragOver(e) {
+  if (_dragPathIdx === null) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+
+function pathDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function pathDrop(e, i) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const from = _dragPathIdx;
+  _dragPathIdx = null;
+  if (from === null || from === i) return;
+  const [moved] = paths.splice(from, 1);
+  paths.splice(i, 0, moved);
+  renderPaths();
+  markDirty();
+}
+
+function pathDragEnd() {
+  _dragPathIdx = null;
+  document.querySelectorAll('.card.dragging').forEach(c => c.classList.remove('dragging'));
+  document.querySelectorAll('.card.drag-over').forEach(c => c.classList.remove('drag-over'));
 }
 
 function addHop(pathIdx) {
@@ -1411,7 +1689,7 @@ function enforceSviTests(pathIdx) {
 }
 
 function addPath() {
-  paths.push({ id: '', label: '', source: '', hops: [], destination: '', tests: ['latency','jitter'], directions: ['upload'] });
+  paths.push({ id: '', label: '', source: '', hops: [], destination: '', tests: ['latency','jitter'], directions: ['upload'], parallel_streams: 8 });
   renderPaths();
   const i = paths.length - 1;
   toggleCard('path-body-' + i, 'path-chev-' + i);
@@ -1642,6 +1920,108 @@ function collectSSH() {
   };
 }
 
+// ── Auth ───────────────────────────────────────────────────
+function renderAuth() {
+  setVal('auth-method', authConfig.method || '');
+  document.getElementById('auth-method').addEventListener('change', () => markDirty());
+  updateAuthMethodHints();
+  renderLocalUsersList();
+}
+
+function onAuthMethodChange() {
+  updateAuthMethodHints();
+  markDirty();
+}
+
+function updateAuthMethodHints() {
+  const method = getVal('auth-method');
+  const hasRadius = !!authConfig.radius_server;
+
+  document.getElementById('auth-radius-info').style.display = hasRadius ? '' : 'none';
+  document.getElementById('auth-radius-server-view').textContent = authConfig.radius_server || '—';
+  document.getElementById('auth-no-radius-warn').style.display   = (method === 'radius' && !hasRadius) ? '' : 'none';
+  document.getElementById('auth-fallback-note').style.display    = (method === 'radius' && authLocalUsers.length > 0) ? '' : 'none';
+}
+
+function collectAuth() {
+  authConfig = { ...authConfig, method: getVal('auth-method') };
+}
+
+function renderLocalUsersList() {
+  document.getElementById('auth-user-count').textContent = '(' + authLocalUsers.length + ')';
+  const list = document.getElementById('auth-users-list');
+  if (!authLocalUsers.length) {
+    list.innerHTML = '<div class="empty-state" style="padding:10px 0">No local users yet</div>';
+    return;
+  }
+  list.innerHTML = authLocalUsers.map(u => `
+    <div class="card" style="margin-bottom:6px">
+      <div class="card-header" style="cursor:default">
+        <div class="card-title"><span>${escHtml(u.username)}</span></div>
+        <div class="card-actions">
+          <button class="btn btn-danger" style="font-size:10px;padding:3px 8px"
+            onclick="removeLocalUser('${escHtml(u.username)}')">✕ Remove</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function addLocalUser() {
+  const username  = getVal('auth-new-username');
+  const password  = getVal('auth-new-password');
+  const password2 = getVal('auth-new-password2');
+  const status = document.getElementById('auth-user-status');
+
+  const showStatus = (msg, type) => {
+    status.style.display = '';
+    status.textContent = msg;
+    status.style.color = type === 'err' ? 'var(--rd)' : 'var(--gn)';
+  };
+
+  if (!username)              return showStatus('Username is required', 'err');
+  if (password.length < 8)    return showStatus('Password must be at least 8 characters', 'err');
+  if (password !== password2) return showStatus('Passwords do not match', 'err');
+
+  try {
+    const r   = await fetch('/api/config/local-users', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ username, password }),
+    });
+    const res = await r.json();
+    if (!r.ok || res.error) return showStatus(res.error || 'Save failed', 'err');
+
+    authLocalUsers = res.users;
+    renderLocalUsersList();
+    updateAuthMethodHints();
+    setVal('auth-new-username', '');
+    setVal('auth-new-password', '');
+    setVal('auth-new-password2', '');
+    showStatus(`User '${username}' saved`, 'ok');
+    toast(`Local user '${username}' saved ✓`, 'ok');
+  } catch(e) {
+    showStatus('Save error: ' + e.message, 'err');
+  }
+}
+
+async function removeLocalUser(username) {
+  if (!confirm(`Remove local user '${username}'?`)) return;
+  try {
+    const r   = await fetch('/api/config/local-users/' + encodeURIComponent(username), {
+      method: 'DELETE',
+    });
+    const res = await r.json();
+    if (!r.ok || res.error) return toast(res.error || 'Remove failed', 'err');
+    authLocalUsers = res.users;
+    renderLocalUsersList();
+    updateAuthMethodHints();
+    toast(`Local user '${username}' removed`, 'ok');
+  } catch(e) {
+    toast('Remove error: ' + e.message, 'err');
+  }
+}
+
 // ── Tests ──────────────────────────────────────────────────
 function renderTests() {
   const tp = testParams;
@@ -1667,7 +2047,6 @@ function renderTests() {
   setVal('tp-jit-size',   ji.packet_size_bytes ?? 172);
 
   setVal('tp-tput-dur',     th.duration_sec     ?? 30);
-  setVal('tp-tput-streams', th.parallel_streams ?? 8);
 
   setVal('tp-lul-count',    lu.ping_count       ?? 50);
   setVal('tp-lul-interval', lu.ping_interval_ms ?? 200);
@@ -1706,7 +2085,6 @@ function collectTests() {
     },
     throughput: {
       duration_sec:     parseInt(getVal('tp-tput-dur'))     || 30,
-      parallel_streams: parseInt(getVal('tp-tput-streams')) || 8,
       iperf3_port:      testParams.throughput?.iperf3_port  || 5201,
       protocol:         testParams.throughput?.protocol     || 'tcp',
     },
@@ -2417,13 +2795,19 @@ async function previewUpdate(input) {
   fd.append('file', file);
 
   try {
-    const res  = await fetch('/api/update/preview', { method: 'POST', body: fd });
-    const data = await res.json();
+    const res = await fetch('/api/update/preview', { method: 'POST', body: fd });
     if (!res.ok) {
+      let msg = `Validation failed (HTTP ${res.status})`;
+      if ((res.headers.get('content-type') || '').includes('application/json')) {
+        msg = (await res.json()).error || msg;
+      } else if (res.status === 413) {
+        msg = 'Bundle rejected as too large by the reverse proxy — contact your administrator';
+      }
       status.style.color = 'var(--rd)';
-      status.textContent = '✗ ' + (data.error || 'Validation failed');
+      status.textContent = '✗ ' + msg;
       return;
     }
+    const data = await res.json();
 
     _updateId = data.update_id;
     status.style.color = 'var(--gn)';
@@ -2553,6 +2937,7 @@ function markDirty() {
 async function saveConfig() {
   collectSchedule();
   collectSSH();
+  collectAuth();
 
   // Validate
   const errs = [];
@@ -2567,6 +2952,8 @@ async function saveConfig() {
     if (!p.tests || !p.tests.length) errs.push(`Path ${i+1} (${p.id||'?'}): At least one test required`);
     if ((p.tests||[]).includes('throughput') && (!p.directions || !p.directions.length))
       errs.push(`Path ${i+1} (${p.id||'?'}): At least one throughput direction required`);
+    if (!p.parallel_streams || p.parallel_streams < 1 || p.parallel_streams > 32)
+      errs.push(`Path ${i+1} (${p.id||'?'}): Parallel streams must be between 1 and 32`);
   });
 
   if (errs.length) {
@@ -2588,11 +2975,13 @@ async function saveConfig() {
           // Clean empty hop entries before saving
           if (out.hops) out.hops = out.hops.filter(h => h);
           if (!out.hops || !out.hops.length) delete out.hops;
+          if (!out.group) delete out.group;
           return out;
         }),
         schedule,
         ssh_defaults: sshDefs,
-        test_params: testParams
+        test_params: testParams,
+        auth: { method: authConfig.method || '' },
       }),
     });
     if (res.ok) {
@@ -2618,6 +3007,133 @@ function toggleCard(bodyId, chevId) {
   const open = !body.classList.contains('hidden');
   body.classList.toggle('hidden', open);
   if (chev) chev.classList.toggle('open', !open);
+}
+
+// ── Logging / debug mode ───────────────────────────────────
+const DBG_LABELS = {15: '15 min', 30: '30 min', 60: '1 hour', 180: '3 hours'};
+let _dbgDeadline = 0;      // browser-clock ms when debug ends (0 = off)
+let _dbgFiles    = [];
+let _dbgTick = null, _dbgPoll = null;
+
+function loggingEnter() {
+  dbgRefreshStatus();
+  dbgLoadTail();
+  clearInterval(_dbgPoll);
+  _dbgPoll = setInterval(dbgRefreshStatus, 30000);   // resync the countdown with the server
+}
+
+function loggingLeave() {
+  clearInterval(_dbgPoll);
+  clearInterval(_dbgTick);
+  _dbgPoll = _dbgTick = null;
+}
+
+async function dbgPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+
+async function dbgRefreshStatus() {
+  try {
+    dbgRender(await apiFetch('/api/logging/debug'));
+  } catch(e) {
+    document.getElementById('dbg-status').textContent = 'Could not load status: ' + e.message;
+  }
+}
+
+function dbgFmtRemaining(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const mm = String(m).padStart(h ? 2 : 1, '0'), ss = String(s).padStart(2, '0');
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function dbgRender(d) {
+  _dbgFiles    = d.files || [];
+  _dbgDeadline = d.active ? Date.now() + d.remaining_sec * 1000 : 0;
+
+  const badge = document.getElementById('dbg-badge');
+  badge.textContent = d.active ? 'On' : 'Off';
+  badge.className   = 'badge ' + (d.active ? 'badge-on' : 'badge-off');
+  document.getElementById('dbg-stop').style.display = d.active ? '' : 'none';
+
+  clearInterval(_dbgTick);
+  if (d.active) {
+    dbgPaintCountdown();
+    _dbgTick = setInterval(dbgPaintCountdown, 1000);
+  } else {
+    document.getElementById('dbg-status').innerHTML =
+      '<span style="color:var(--mt)">Debug mode is off.</span>';
+  }
+  dbgPaintFileInfo();
+}
+
+function dbgPaintCountdown() {
+  const left = Math.max(0, Math.round((_dbgDeadline - Date.now()) / 1000));
+  if (left === 0) {                      // expired — let the server confirm
+    clearInterval(_dbgTick);
+    setTimeout(dbgRefreshStatus, 1500);
+  }
+  const until = new Date(_dbgDeadline).toLocaleTimeString();
+  document.getElementById('dbg-status').innerHTML =
+    `<span style="color:var(--yw)">● Debug mode is ON</span> — ` +
+    `<span style="color:var(--tx)">${dbgFmtRemaining(left)}</span> remaining ` +
+    `<span style="color:var(--mt)">(until ${escHtml(until)})</span>`;
+}
+
+async function dbgEnable(minutes) {
+  const btns = document.querySelectorAll('[data-dbg]');
+  btns.forEach(b => b.disabled = true);
+  try {
+    dbgRender(await dbgPost('/api/logging/debug', {minutes}));
+    toast('Debug mode on for ' + (DBG_LABELS[minutes] || minutes + ' min'), 'ok');
+    dbgLoadTail();
+  } catch(e) {
+    toast('Could not enable debug mode: ' + e.message, 'err');
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function dbgStop() {
+  try {
+    dbgRender(await dbgPost('/api/logging/debug/stop'));
+    toast('Debug mode turned off', 'ok');
+    dbgLoadTail();
+  } catch(e) {
+    toast('Could not turn off debug mode: ' + e.message, 'err');
+  }
+}
+
+function dbgPaintFileInfo() {
+  const src  = document.getElementById('dbg-source').value;
+  const f    = _dbgFiles.find(x => x.source === src);
+  const el   = document.getElementById('dbg-fileinfo');
+  if (!f || !f.modified) { el.textContent = ''; return; }
+  const kb = f.size >= 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(f.size / 1024)) + ' KB';
+  el.textContent = `debug-${src}.log · ${kb} · last written ${new Date(f.modified * 1000).toLocaleString()} · showing the last 500 lines`;
+}
+
+async function dbgLoadTail() {
+  const src = document.getElementById('dbg-source').value;
+  const pre = document.getElementById('dbg-log');
+  document.getElementById('dbg-download').href = '/api/logging/download?source=' + encodeURIComponent(src);
+  dbgPaintFileInfo();
+  try {
+    const d = await apiFetch('/api/logging/tail?source=' + encodeURIComponent(src) + '&lines=500');
+    // textContent, not innerHTML — log lines can carry arbitrary remote output.
+    pre.textContent = d.lines.length
+      ? d.lines.join('\n')
+      : 'No debug log yet — turn debug mode on above, then run a test.';
+    pre.scrollTop = pre.scrollHeight;
+  } catch(e) {
+    pre.textContent = 'Could not load log: ' + e.message;
+  }
 }
 
 function setStatus(msg, type) {

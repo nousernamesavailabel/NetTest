@@ -33,6 +33,7 @@ from core.config_loader import load_config
 from core.results import ResultStore
 from core.path_tester import PathTester
 from core.annotations import AnnotationStore
+from core import debug_mode
 
 app = Flask(__name__, static_folder="web/static")
 
@@ -57,6 +58,11 @@ except Exception as _init_err:
     _tester      = None
     _annotations = None
     app.secret_key = secrets.token_hex(32)
+
+# Timed debug logging (Config → Logging). Started here rather than in main so it
+# also runs under gunicorn.
+if _config:
+    debug_mode.start_watcher("dashboard", _config.log_dir)
 
 # ── Debounced scheduler restart ────────────────────────────
 # Config saves/imports can happen in quick succession (e.g. editing
@@ -115,7 +121,7 @@ def login_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not _config or not _config.auth.radius_server:
+        if not _config or not _config.auth.method:
             return f(*args, **kwargs)
         if not session.get("authenticated"):
             if request.path.startswith("/api/"):
@@ -137,6 +143,13 @@ _MAX_HISTORY_JOBS    = 20     # evict oldest jobs when over this limit
 _MAX_HISTORY_LINES   = 2000   # cap per-job log lines kept in memory
 _import_cache: dict  = {}     # stores parsed import data server-side (avoids session size limit)
 _import_cache_lock   = threading.Lock()
+
+
+def _quiet_libs(*names: str):
+    """Hold noisy third-party loggers at WARNING for job output — except
+    while timed debug mode is on, when they run at debug-mode levels."""
+    for name in names:
+        logging.getLogger(name).setLevel(debug_mode.lib_level(name, logging.WARNING))
 
 
 # ── Log handler that feeds job history (read by the SSE tail poller) ──
@@ -165,12 +178,10 @@ def _run_job(job_id: str, path_id: str, test_filter: List[str] = None,
     handler.setLevel(logging.INFO)
 
     # Silence noisy third-party loggers
-    logging.getLogger("netmiko").setLevel(logging.WARNING)
-    logging.getLogger("paramiko").setLevel(logging.WARNING)
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    _quiet_libs("netmiko", "paramiko", "werkzeug")
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(debug_mode.root_level(logging.INFO))
     root_logger.addHandler(handler)
 
     with _jobs_lock:
@@ -323,6 +334,7 @@ def api_paths():
             "destination": p.destination,
             "tests":       p.tests,
             "directions":  p.directions,
+            "group":       p.group,
         }
         for p in _config.paths
     ]
@@ -846,10 +858,9 @@ def api_onboard():
 
     def run_onboard():
         root = logging.getLogger()
-        root.setLevel(logging.INFO)
+        root.setLevel(debug_mode.root_level(logging.INFO))
         root.addHandler(handler)
-        logging.getLogger("netmiko").setLevel(logging.WARNING)
-        logging.getLogger("paramiko").setLevel(logging.WARNING)
+        _quiet_libs("netmiko", "paramiko")
         with _jobs_lock:
             _jobs[job_id]["status"] = "running"
         try:
@@ -1058,8 +1069,7 @@ def api_ssh_push_key():
         _log = logging.getLogger("push-key")
         _log.setLevel(logging.DEBUG)
         _log.addHandler(handler)
-        logging.getLogger("netmiko").setLevel(logging.WARNING)
-        logging.getLogger("paramiko").setLevel(logging.WARNING)
+        _quiet_libs("netmiko", "paramiko")
 
         with _jobs_lock:
             _jobs[job_id]["status"] = "running"
@@ -1202,6 +1212,7 @@ def api_export():
             "hops":        p.hops,
             "tests":       p.tests,
             **({"schedule": p.schedule} if p.schedule else {}),
+            **({"group": p.group} if p.group else {}),
         }
         for p in _config.paths
     ]
@@ -1245,10 +1256,15 @@ def api_export():
         a = _config.auth
         raw["auth"] = {
             "enabled":                    a.enabled,
+            "method":                     a.method,
             "radius_server":              a.radius_server,
             "radius_port":                a.radius_port,
             "radius_secret":              a.radius_secret,
             "radius_timeout":             a.radius_timeout,
+            "local_users": [
+                {"username": u.username, "password_hash": u.password_hash}
+                for u in a.local_users
+            ],
             "session_secret":             a.session_secret,
             "session_lifetime_minutes":   a.session_lifetime_minutes,
             "login_max_attempts":         a.login_max_attempts,
@@ -1924,7 +1940,7 @@ def api_update_rollback():
 @app.route("/live")
 def live_output_page():
     """Standalone live output page — opened as a popout window."""
-    if _config and _config.auth.radius_server and not session.get("authenticated"):
+    if _config and _config.auth.method and not session.get("authenticated"):
         return ("<html><body style='background:#0a0c10;color:#f44336;"
                 "font-family:monospace;padding:40px;font-size:14px'>"
                 "Not authenticated. Log in to the dashboard first.</body></html>"), 401
@@ -2293,6 +2309,7 @@ server {
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 10m;
 
+    client_max_body_size      100M;
     proxy_buffering           off;
     proxy_cache               off;
     chunked_transfer_encoding on;
@@ -2688,6 +2705,7 @@ def api_job_stream(job_id: str):
 # ── Config API ─────────────────────────────────────────────
 
 @app.route('/api/config', methods=['GET'])
+@login_required
 def api_config_get():
     import yaml
     with open(_config_path, 'r') as f:
@@ -2696,6 +2714,7 @@ def api_config_get():
 
 
 @app.route('/api/config', methods=['POST'])
+@login_required
 def api_config_save():
     import yaml
     global _config, _tester
@@ -2713,6 +2732,25 @@ def api_config_save():
     if 'ssh_defaults'in body: raw['ssh_defaults'].update(body['ssh_defaults'])
     if 'schedule'    in body: raw['schedule'].update(body['schedule'])
 
+    if 'auth' in body:
+        raw.setdefault('auth', {})
+        incoming_auth = dict(body['auth'])
+        # Local users are only ever changed via /api/config/local-users, so a
+        # password hash can never be overwritten (or wiped) by a generic save.
+        incoming_auth.pop('local_users', None)
+
+        # Note: 200 status (not 4xx) — the frontend's generic save handler
+        # reads {ok|error} from the body rather than the HTTP status code.
+        new_method = incoming_auth.get('method', raw['auth'].get('method', ''))
+        if new_method == 'local' and not raw['auth'].get('local_users'):
+            return jsonify({'error': 'Cannot set login method to "Local accounts" — '
+                                      'add a local user first.'})
+        if new_method == 'radius' and not raw['auth'].get('radius_server'):
+            return jsonify({'error': 'Cannot set login method to "RADIUS" — no radius_server '
+                                      'configured (edit config.yaml or re-run install.sh).'})
+
+        raw['auth'].update(incoming_auth)
+
     with open(_config_path, 'w') as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -2726,6 +2764,89 @@ def api_config_save():
         return jsonify({'ok': True, 'agents': len(_config.agents), 'paths': len(_config.paths)})
     except Exception as e:
         return jsonify({'error': f'Config saved but reload failed: {e}'}), 500
+
+
+@app.route('/api/config/local-users', methods=['GET'])
+@login_required
+def api_local_users_list():
+    return jsonify({'users': [{'username': u.username} for u in _config.auth.local_users]})
+
+
+@app.route('/api/config/local-users', methods=['POST'])
+@login_required
+def api_local_users_add():
+    """Add a new local user, or reset an existing one's password (upsert)."""
+    import yaml
+    from werkzeug.security import generate_password_hash
+    global _config, _tester
+
+    body     = request.get_json(silent=True) or {}
+    username = (body.get('username') or '').strip()
+    password = body.get('password') or ''
+
+    if not username:
+        return jsonify({'error': 'Username is required'}), 400
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+    with open(_config_path, 'r') as f:
+        raw = yaml.safe_load(f)
+
+    auth  = raw.setdefault('auth', {})
+    users = auth.setdefault('local_users', [])
+    pw_hash = generate_password_hash(password)
+
+    for u in users:
+        if u.get('username') == username:
+            u['password_hash'] = pw_hash
+            break
+    else:
+        users.append({'username': username, 'password_hash': pw_hash})
+
+    with open(_config_path, 'w') as f:
+        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    try:
+        _config = load_config(_config_path)
+        _tester = PathTester(_config)
+    except Exception as e:
+        return jsonify({'error': f'Saved but reload failed: {e}'}), 500
+
+    return jsonify({'ok': True, 'users': [{'username': u.username} for u in _config.auth.local_users]})
+
+
+@app.route('/api/config/local-users/<username>', methods=['DELETE'])
+@login_required
+def api_local_users_delete(username):
+    import yaml
+    global _config, _tester
+
+    with open(_config_path, 'r') as f:
+        raw = yaml.safe_load(f)
+
+    auth  = raw.setdefault('auth', {})
+    users = auth.get('local_users', [])
+    remaining = [u for u in users if u.get('username') != username]
+    if len(remaining) == len(users):
+        return jsonify({'error': f'No such user: {username}'}), 404
+
+    if not remaining and auth.get('method') == 'local':
+        return jsonify({'error': 'Cannot remove the last local user while "Local accounts" is '
+                                  'the active login method — switch method or add another '
+                                  'user first.'}), 400
+
+    auth['local_users'] = remaining
+
+    with open(_config_path, 'w') as f:
+        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    try:
+        _config = load_config(_config_path)
+        _tester = PathTester(_config)
+    except Exception as e:
+        return jsonify({'error': f'Saved but reload failed: {e}'}), 500
+
+    return jsonify({'ok': True, 'users': [{'username': u.username} for u in _config.auth.local_users]})
 
 
 @app.route('/api/config/test-agent', methods=['POST'])
@@ -2754,6 +2875,141 @@ def api_test_agent():
         return jsonify({'ok': False, 'error': str(e)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
+
+
+# ── Logging API ────────────────────────────────────────────
+
+def _debug_status() -> dict:
+    state = debug_mode.read_state(_config.log_dir)
+    files = []
+    for src in debug_mode.SOURCES:
+        try:
+            st = os.stat(debug_mode.log_path(_config.log_dir, src))
+            files.append({"source": src, "size": st.st_size, "modified": st.st_mtime})
+        except OSError:
+            files.append({"source": src, "size": 0, "modified": None})
+    return {
+        "active":        bool(state),
+        "until":         state["until"] if state else None,
+        "duration_min":  state["duration_min"] if state else None,
+        # Countdown is driven from remaining_sec, not "until", so a browser
+        # clock that differs from the server's doesn't skew it.
+        "remaining_sec": max(0, int(state["until"] - time.time())) if state else 0,
+        "options":       list(debug_mode.DURATION_OPTIONS_MIN),
+        "files":         files,
+    }
+
+
+def _tail_lines(path: str, max_lines: int, max_bytes: int = 512 * 1024) -> List[str]:
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]   # first line is cut off mid-way
+    return lines[-max_lines:]
+
+
+@app.route("/api/logging/debug", methods=["GET"])
+@login_required
+def api_debug_get():
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    return jsonify(_debug_status())
+
+
+@app.route("/api/logging/debug", methods=["POST"])
+@login_required
+def api_debug_enable():
+    """Turn debug mode on for N minutes from now (or restart the timer)."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    body = request.get_json(silent=True) or {}
+    try:
+        minutes = int(body.get("minutes"))
+        debug_mode.enable(_config.log_dir, minutes)
+    except (TypeError, ValueError):
+        return jsonify({"error": "minutes must be one of "
+                                 + ", ".join(map(str, debug_mode.DURATION_OPTIONS_MIN))}), 400
+    except OSError as e:
+        return jsonify({"error": f"Could not write debug state: {e}"}), 500
+    debug_mode.sync_now()   # takes effect here immediately; the scheduler polls every few seconds
+    # After the sync, so the first enable's audit line lands in the debug log too.
+    logging.getLogger("debug_mode").info("Debug mode requested for %d min by '%s'",
+                                         minutes, session.get("username", "?"))
+    return jsonify(_debug_status())
+
+
+@app.route("/api/logging/debug/stop", methods=["POST"])
+@login_required
+def api_debug_stop():
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    try:
+        debug_mode.disable(_config.log_dir)
+    except OSError as e:
+        return jsonify({"error": f"Could not clear debug state: {e}"}), 500
+    # Before the sync, while the debug log is still attached.
+    logging.getLogger("debug_mode").info("Debug mode turned off by '%s'",
+                                         session.get("username", "?"))
+    debug_mode.sync_now()
+    return jsonify(_debug_status())
+
+
+def _log_source_arg() -> Optional[str]:
+    src = request.args.get("source", "scheduler")
+    return src if src in debug_mode.SOURCES else None   # allowlist — never a path
+
+
+@app.route("/api/logging/tail")
+@login_required
+def api_debug_tail():
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    src = _log_source_arg()
+    if not src:
+        return jsonify({"error": "Unknown log source"}), 400
+    try:
+        max_lines = min(5000, max(1, int(request.args.get("lines", 500))))
+    except ValueError:
+        max_lines = 500
+    path = debug_mode.log_path(_config.log_dir, src)
+    try:
+        lines = _tail_lines(path, max_lines)
+    except FileNotFoundError:
+        lines = []
+    return jsonify({"source": src, "lines": lines})
+
+
+@app.route("/api/logging/download")
+@login_required
+def api_debug_download():
+    """The whole debug log for a source — rotated backups oldest-first, then the live file."""
+    if not _config:
+        return jsonify({"error": "Config not loaded"}), 503
+    src = _log_source_arg()
+    if not src:
+        return jsonify({"error": "Unknown log source"}), 400
+    base  = debug_mode.log_path(_config.log_dir, src)
+    parts = [p for p in (f"{base}.2", f"{base}.1", base) if os.path.isfile(p)]
+    if not parts:
+        return jsonify({"error": "No debug log yet"}), 404
+
+    def generate():
+        for part in parts:
+            try:
+                with open(part, "rb") as f:
+                    while chunk := f.read(64 * 1024):
+                        yield chunk
+            except FileNotFoundError:
+                continue   # rotated away mid-download
+
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    return Response(generate(), mimetype="text/plain",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="nettest-debug-{src}-{stamp}.log"'})
 
 
 # ── Results utility API ────────────────────────────────────
@@ -2837,7 +3093,7 @@ def api_results_clear():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if not _config or not _config.auth.radius_server:
+    if not _config or not _config.auth.method:
         session["authenticated"] = True
         session["username"] = "admin"
         return redirect(request.args.get("next", "/"))
@@ -2855,8 +3111,37 @@ def login():
         else:
             _record_attempt(ip)
             try:
-                from core.radius_auth import authenticate_radius
-                if authenticate_radius(username, password, _config.auth):
+                if _config.auth.method == "local":
+                    from core.local_auth import authenticate_local
+                    authed = authenticate_local(username, password, _config.auth)
+                else:
+                    from core.radius_auth import authenticate_radius, RadiusAuthError
+                    try:
+                        authed = authenticate_radius(username, password, _config.auth)
+                    except RadiusAuthError as radius_err:
+                        # RADIUS didn't respond (down/unreachable/misconfigured) rather
+                        # than actively rejecting the credentials — fall back to a
+                        # local account if one is configured, instead of locking
+                        # everyone out whenever the RADIUS server is unavailable.
+                        if not _config.auth.local_users:
+                            raise
+                        from core.local_auth import authenticate_local, LocalAuthError
+                        auth_log = logging.getLogger("auth")
+                        auth_log.warning(
+                            "RADIUS unreachable (%s) — trying local fallback for user '%s'",
+                            radius_err, username,
+                        )
+                        try:
+                            authed = authenticate_local(username, password, _config.auth)
+                        except LocalAuthError:
+                            authed = False
+                        if authed:
+                            auth_log.warning(
+                                "User '%s' authenticated via local fallback account "
+                                "(RADIUS unreachable)", username,
+                            )
+
+                if authed:
                     session.permanent = True
                     session["authenticated"] = True
                     session["username"] = username

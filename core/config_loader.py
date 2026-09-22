@@ -92,13 +92,23 @@ class TestPath:
     destination: str                   # Agent ID
     tests: List[str]                   # e.g. [throughput, latency, jitter]
     hops: List[str] = field(default_factory=list)  # Intermediate agent IDs
+    # Free-text label used to cluster paths in the dashboard sidebar and the
+    # config editor. Empty/None means ungrouped. Display order of groups
+    # follows the order paths appear in config.yaml, not alphabetical.
+    group: Optional[str] = None
     # Per-day 48-char '0'/'1' strings (30-min slots, index 0 = 00:00).
     # Missing entirely, or missing a given day, means "always active".
     schedule: Optional[Dict[str, str]] = None
     # Throughput directions to run for this path — any combination of
     # upload | download | bidir. Each runs as its own iPerf3 invocation.
-    # Duration/streams/protocol stay global (test_params.throughput).
+    # Duration/protocol stay global (test_params.throughput).
     directions: List[str] = field(default_factory=lambda: ["upload"])
+    # Per-path iPerf3 parallel stream count — also used as the saturation
+    # stream count for this path's Latency Under Load test. Per-path because
+    # the right number depends on the path's own bandwidth/shaping: too many
+    # streams on a constrained or policed link causes congestion collapse
+    # (retransmit storms, stalled streams) rather than a useful measurement.
+    parallel_streams: int = 8
 
     @property
     def all_agents(self) -> List[str]:
@@ -125,7 +135,6 @@ class TestPath:
 @dataclass
 class ThroughputParams:
     duration_sec: int
-    parallel_streams: int
     protocol: str
     iperf3_port: int
 
@@ -192,12 +201,22 @@ class Schedule:
 
 
 @dataclass
+class LocalUser:
+    username: str
+    password_hash: str  # werkzeug generate_password_hash() output — never plaintext
+
+
+@dataclass
 class AuthConfig:
     enabled: bool = False
+    # "" (disabled) | "radius" | "local" — inferred from radius_server /
+    # local_users when not set explicitly, for backward compatibility.
+    method: str = ""
     radius_server: str = ""
     radius_port: int = 1812
     radius_secret: str = ""
     radius_timeout: int = 5
+    local_users: List[LocalUser] = field(default_factory=list)
     session_secret: str = ""
     session_lifetime_minutes: int = 480
     login_max_attempts: int = 5
@@ -271,6 +290,12 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
             return [p["direction"]]
         return list(default_directions)
 
+    # Back-compat: parallel_streams used to be a single global value under
+    # test_params.throughput. A config saved before per-path streams existed
+    # has no per-path value at all — fall back to that old global (or 8) so
+    # existing paths keep behaving exactly as before until edited.
+    legacy_streams = raw.get("test_params", {}).get("throughput", {}).get("parallel_streams", 8)
+
     paths = [
         TestPath(
             id=p["id"],
@@ -281,12 +306,15 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
             hops=p.get("hops", []),
             schedule=p.get("schedule"),
             directions=_path_directions(p),
+            parallel_streams=int(p.get("parallel_streams") or legacy_streams),
+            group=(p.get("group") or None),
         )
         for p in raw["paths"]
     ]
 
     tp = raw["test_params"]
-    throughput_kwargs = {k: v for k, v in tp["throughput"].items() if k != "bidirectional"}
+    throughput_kwargs = {k: v for k, v in tp["throughput"].items()
+                          if k not in ("bidirectional", "parallel_streams")}
     test_params = TestParams(
         throughput=ThroughputParams(**throughput_kwargs),
         latency=LatencyParams(**tp["latency"]),
@@ -297,7 +325,24 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
     )
 
     schedule = Schedule(**raw["schedule"])
-    auth = AuthConfig(**(raw.get("auth") or {}))
+
+    raw_auth = dict(raw.get("auth") or {})
+    raw_local_users = raw_auth.pop("local_users", None) or []
+    local_users = [
+        LocalUser(username=u["username"], password_hash=u["password_hash"])
+        for u in raw_local_users
+    ]
+    method = (raw_auth.pop("method", "") or "").strip().lower()
+    if method not in ("", "radius", "local"):
+        method = ""
+    if not method:
+        # Backward compat: older configs only set radius_server, with no
+        # explicit method field.
+        if raw_auth.get("radius_server"):
+            method = "radius"
+        elif local_users:
+            method = "local"
+    auth = AuthConfig(method=method, local_users=local_users, **raw_auth)
 
     ctrl = raw["controller"]
     return ControllerConfig(
