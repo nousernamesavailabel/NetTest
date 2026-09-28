@@ -11,13 +11,19 @@ Usage (via main.py):
 """
 
 import getpass
+import hashlib
+import io
 import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 import yaml
 
 from dataclasses import asdict
+
+from core.agent_packages import REQUIRED_TOOLS, debs_for_agent, os_release_id
 
 
 # ── Colour helpers for terminal output ────────────────────
@@ -89,7 +95,7 @@ def _run(conn, cmd: str, timeout: int = 60) -> str:
 def _sudo_init(conn, password: str) -> None:
     """Prime sudo credential cache so subsequent sudo calls need no password."""
     conn.send_command_timing(
-        f"echo '{password}' | sudo -S true 2>/dev/null",
+        f" printf '%s\\n' {shlex.quote(password)} | sudo -S -p '' -v 2>/dev/null",
         last_read=2.0,
         strip_prompt=True,
     )
@@ -104,6 +110,152 @@ def _sudo(conn, cmd: str, password: str = "", timeout: int = 120) -> str:
         strip_prompt=True,
         strip_command=True,
     )
+
+
+# ── Air-gapped package install ─────────────────────────────
+
+_REMOTE_PKG_DIR = "/tmp/nettest_packages"
+
+# Runs on the agent as root. Serves the staged .debs to apt as a temporary
+# local repository — the only source apt sees — and installs the requested
+# package *names*: apt picks only what the agent is missing, resolves
+# dependencies, and never downgrades. --no-remove: an installed package whose
+# matching upgrade isn't staged would otherwise be removed to make room.
+_REMOTE_INSTALL_SCRIPT = r"""#!/bin/bash
+set -u
+D="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$D/lists/partial"
+echo "deb [trusted=yes] file:$D ./" > "$D/sources.list"
+A=(-o Dir::Etc::SourceList="$D/sources.list"
+   -o Dir::Etc::SourceParts=/nonexistent
+   -o Dir::State::Lists="$D/lists"
+   -o APT::Sandbox::User=root
+   -o DPkg::Lock::Timeout=300)
+export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
+apt-get "${A[@]}" update -qq || exit 10
+apt-get "${A[@]}" install -y -q --no-install-recommends --no-remove \
+  -o Dpkg::Options::=--force-confold "$@"
+"""
+
+
+# apt progress chatter, left out when showing a failed install's output
+_APT_PROGRESS = re.compile(r"^\s*((Ign|Get|Hit):\d+ |Reading |Building dependency|Solving dependencies)")
+
+
+def _packages_index(deb_paths) -> str:
+    """Build an apt Packages index for the staged .debs (a flat local repo)."""
+    entries = []
+    for path in deb_paths:
+        deb = os.path.basename(path)
+        fields = subprocess.run(["dpkg-deb", "-f", path], capture_output=True,
+                                text=True, check=True).stdout.rstrip("\n")
+        with open(path, "rb") as f:
+            sha256 = hashlib.sha256(f.read()).hexdigest()
+        entries.append(f"{fields}\nFilename: ./{deb}\n"
+                       f"Size: {os.path.getsize(path)}\nSHA256: {sha256}\n")
+    return "\n".join(entries)
+
+
+def _pkg_installed(conn, pkg: str) -> bool:
+    # The \n matters: without it the status and the next shell prompt share a
+    # line, and netmiko's strip_prompt drops that whole line — status included.
+    out = _run(conn, f"dpkg-query -W -f='${{Status}}\\n' {pkg} 2>/dev/null || echo NOT_INSTALLED")
+    return "install ok installed" in out
+
+
+def _install_offline(conn, admin_pass: str, pkg_dir: str, required_tools) -> None:
+    """Install the missing required tools from the controller's staged .debs.
+    Raises RuntimeError if anything is still missing afterwards."""
+    needed = [pkg for tool, pkg in required_tools if not _pkg_installed(conn, pkg)]
+    if not needed:
+        _ok("All required tools already present")
+        return
+    _info(f"Missing on agent: {' '.join(needed)}")
+
+    os_release = _strip_ansi(_run(conn, "cat /etc/os-release 2>/dev/null"))
+    release = os_release_id(os_release)
+    m = re.search(r'^PRETTY_NAME="?([^"\n]*)', os_release, re.M)
+    _info(f"Agent OS: {m.group(1) if m else 'unknown'} ({release or 'release unknown'})")
+
+    # Uploaded packages, plus any a release bundle staged for this OS release
+    deb_paths = debs_for_agent(pkg_dir, release)
+    bundled = [p for p in deb_paths if os.path.dirname(p) != pkg_dir]
+    if not deb_paths:
+        _err(f"No packages staged for this agent's release ({release or 'unknown'}) in {pkg_dir}")
+        _err("Upload packages built for that release via Config → Packages and retry onboarding")
+        raise RuntimeError("Air-gapped install failed — no packages staged")
+    _info(f"Using {len(deb_paths) - len(bundled)} uploaded and {len(bundled)} bundled package(s) "
+          f"— uploaded packages must be built for this agent's release")
+
+    try:
+        index = _packages_index(deb_paths)
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"Could not read staged packages in {pkg_dir}: {e}")
+
+    remote = _REMOTE_PKG_DIR
+    _run(conn, f" printf '%s\\n' {shlex.quote(admin_pass)} | sudo -S -p '' rm -rf {remote} 2>/dev/null; "
+               f"rm -rf {remote} 2>/dev/null; mkdir -p {remote}")
+
+    # Copy over SFTP on the existing admin connection
+    import paramiko
+    try:
+        sftp = paramiko.SFTPClient.from_transport(conn.remote_conn.get_transport())
+    except Exception as e:
+        raise RuntimeError(f"Could not open SFTP channel to agent: {e}")
+    try:
+        _info(f"Copying {len(deb_paths)} package(s) to agent...")
+        for path in deb_paths:
+            sftp.put(path, f"{remote}/{os.path.basename(path)}")
+        sftp.putfo(io.BytesIO(index.encode()), f"{remote}/Packages")
+        sftp.putfo(io.BytesIO(_REMOTE_INSTALL_SCRIPT.encode()), f"{remote}/install.sh")
+    except Exception as e:
+        raise RuntimeError(f"Copying packages to agent failed: {e}")
+    finally:
+        sftp.close()
+    _ok("Packages copied")
+
+    # Run apt and wait for it to really finish — the __RC_n__ marker only
+    # prints once apt exits, however long unpacking takes.
+    _info(f"Installing with apt from the staged packages: {' '.join(needed)}")
+    _sudo_init(conn, admin_pass)
+    out = conn.send_command(
+        f"sudo -n bash {remote}/install.sh {' '.join(needed)} > {remote}/apt.log 2>&1; "
+        f"echo __RC_$?__",
+        expect_string=r"__RC_\d+__", read_timeout=900,
+        strip_prompt=True, strip_command=True)
+    m = re.search(r"__RC_(\d+)__", out)
+    rc = int(m.group(1)) if m else -1
+    log_tail = _strip_ansi(_run(conn, f"tail -n 40 {remote}/apt.log 2>/dev/null"))
+
+    _run(conn, f" printf '%s\\n' {shlex.quote(admin_pass)} | sudo -S -p '' rm -rf {remote} 2>/dev/null; true")
+
+    if rc != 0:
+        _warn(f"apt exited with code {rc} — output:")
+        for line in log_tail.splitlines():
+            if line.strip() and not _APT_PROGRESS.match(line):
+                _warn(f"    {line.rstrip()[:160]}")
+        if "remove is disabled" in log_tail:
+            _err("Installing would REMOVE packages already on the agent: the staged packages upgrade")
+            _err("something they depend on without including their matching upgrade. Nothing was changed.")
+            _err("Stage those packages' .debs too (same version as the staged ones), or stage")
+            _err("packages that match the versions already on the agent.")
+        elif "unmet dependencies" in log_tail.lower() or "Unable to locate package" in log_tail:
+            _err("A required .deb or one of its dependencies is not staged, or the staged packages")
+            _err("were built for a different OS release than the agent. Nothing was changed.")
+        elif "a password is required" in log_tail:
+            _err("sudo refused — check the admin account can run sudo")
+
+    failures = []
+    for tool, pkg in required_tools:
+        if _pkg_installed(conn, pkg):
+            _ok(f"  {tool} installed")
+        else:
+            _warn(f"  {tool} NOT installed ({pkg})")
+            failures.append(pkg)
+    if failures:
+        _err("Upload the missing packages (and their dependencies) via Config → Packages and retry onboarding")
+        raise RuntimeError(f"Air-gapped install failed — missing packages: {', '.join(failures)}")
+    _ok("All packages installed successfully")
 
 
 # ── Main onboarding logic ──────────────────────────────────
@@ -236,135 +388,17 @@ def onboard_agent(config_path: str,
     success = False
     try:
         # ── Step 2: Install required tools ───────────────────
-        REQUIRED_TOOLS = [
-            ("iperf3",      "iperf3"),
-            ("mtr",         "mtr-tiny"),
-            ("ping",        "iputils-ping"),
-            ("traceroute",  "traceroute"),
-            ("fuser",       "psmisc"),
-            ("libsctp1",    "libsctp1"),
-        ]
-
         if air_gapped:
             _step(2, TOTAL_STEPS, "Air-gapped mode — installing packages from staged .deb files...")
-            pkg_dir = packages_dir or os.path.join(
-                os.path.dirname(os.path.abspath(config_path)), "..", "packages"
-            )
-            pkg_dir = os.path.abspath(pkg_dir)
-            deb_files = sorted([
-                f for f in os.listdir(pkg_dir) if f.endswith(".deb")
-            ]) if os.path.isdir(pkg_dir) else []
-
-            if not deb_files:
-                _warn(f"No .deb files found in {pkg_dir}")
-                _warn("Upload packages via Config → Packages before onboarding air-gapped agents")
-            else:
-                _info(f"Found {len(deb_files)} package(s): {', '.join(deb_files)}")
-                remote_tmp = "/tmp/nettest_packages"
-                _run(conn, f"mkdir -p {remote_tmp}")
-
-                # Open SFTP channel over the existing admin SSH connection
-                # netmiko's remote_conn is a paramiko Channel; get Transport from it
-                try:
-                    import paramiko
-                    transport = conn.remote_conn.get_transport()
-                    sftp = paramiko.SFTPClient.from_transport(transport)
-                except Exception:
-                    # Fallback: try remote_conn directly as Transport
-                    try:
-                        transport = conn.remote_conn
-                        sftp = paramiko.SFTPClient.from_transport(transport)
-                    except Exception as e:
-                        _warn(f"Could not open SFTP channel: {e}")
-                        sftp = None
-
-                for deb in deb_files:
-                    local_path = os.path.join(pkg_dir, deb)
-                    _info(f"  Copying {deb} to agent...")
-                    if sftp is None:
-                        _warn(f"  Skipping {deb} — no SFTP channel")
-                        continue
-                    try:
-                        sftp.put(local_path, f"{remote_tmp}/{deb}")
-                        _ok(f"  {deb} copied")
-                    except Exception as e:
-                        _warn(f"  SFTP error for {deb}: {e}")
-
-                if sftp:
-                    sftp.close()
-
-                # Air-gapped dpkg install — in strict dependency order:
-                # libsctp1 → libiperf0 → iperf3 → everything else
-                # No log file — output captured directly by netmiko to avoid
-                # permission issues with root-owned log files from prior attempts.
-                _info("Installing packages with dpkg...")
-
-                install_steps = [
-                    ("libsctp1",  f"{remote_tmp}/libsctp1*.deb"),
-                    ("libiperf0", f"{remote_tmp}/libiperf0*.deb"),
-                    ("iperf3",    f"{remote_tmp}/iperf3_*.deb"),
-                    ("all",       f"{remote_tmp}/*.deb"),
-                ]
-
-                for label, glob in install_steps:
-                    _info(f"  Installing {label}...")
-                    out = _run(conn,
-                        f"echo '{admin_pass}' | sudo -S bash -c "
-                        f"'DEBIAN_FRONTEND=noninteractive "
-                        f"DEBCONF_NONINTERACTIVE_SEEN=true "
-                        f"dpkg -i {glob} 2>&1'",
-                        timeout=60)
-                    out_clean = _strip_ansi(out)
-                    for line in out_clean.splitlines():
-                        line = line.strip()
-                        if line and "@" not in line and "3008" not in line:
-                            if "error" in line.lower() or "depend" in line.lower():
-                                _warn(line[:120])
-
-                # Verify each tool — fail onboarding if any missing
-                pkg_failures = []
-                for tool, pkg in REQUIRED_TOOLS:
-                    chk = _run(conn,
-                        f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
-                        f"|| echo NOT_INSTALLED")
-                    if "install ok installed" in chk:
-                        _ok(f"  {tool} installed")
-                    else:
-                        _warn(f"  {tool} NOT installed — ensure {pkg}_*.deb "
-                              f"and all its dependencies are staged")
-                        pkg_failures.append(pkg)
-
-                if pkg_failures:
-                    _err(f"Package installation failed for: {', '.join(pkg_failures)}")
-                    _err("Upload missing packages via Config → Packages and retry onboarding")
-                    raise RuntimeError(
-                        f"Air-gapped install failed — missing packages: "
-                        f"{', '.join(pkg_failures)}"
-                    )
-                else:
-                    _ok("All packages installed successfully")
-
-                _run(conn, f"echo '{admin_pass}' | sudo -S rm -rf {remote_tmp} 2>/dev/null; rm -rf {remote_tmp} 2>/dev/null; true")
-
-                # Verify each tool was actually installed
-                for tool, pkg in REQUIRED_TOOLS:
-                    chk = _run(conn,
-                        f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null || echo NOT_INSTALLED")
-                    if "install ok installed" in chk:
-                        _ok(f"  {tool} installed")
-                    else:
-                        _warn(f"  {tool} not installed — stage {pkg}_*.deb and its dependencies")
-
-                _run(conn, f"echo '{admin_pass}' | sudo -S rm -rf {remote_tmp} 2>/dev/null; rm -rf {remote_tmp} 2>/dev/null; true")
+            pkg_dir = os.path.abspath(packages_dir or os.path.join(
+                os.path.dirname(os.path.abspath(config_path)), "..", "packages"))
+            _install_offline(conn, admin_pass, pkg_dir, REQUIRED_TOOLS)
         else:
             _step(2, TOTAL_STEPS, "Installing required packages via apt...")
             _info("Checking which packages are needed...")
             pkgs_needed = []
             for tool, pkg in REQUIRED_TOOLS:
-                result = _run(conn,
-                    f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
-                    f"|| echo NOT_INSTALLED")
-                if "install ok installed" in result:
+                if _pkg_installed(conn, pkg):
                     _ok(f"{tool} already installed")
                 else:
                     _info(f"{tool} not installed — will install")
@@ -394,10 +428,7 @@ def onboard_agent(config_path: str,
                             _warn(line[:120])
                 for tool, pkg in REQUIRED_TOOLS:
                     if pkg in pkgs_needed:
-                        result = _run(conn,
-                            f"dpkg-query -W -f='${{Status}}' {pkg} 2>/dev/null "
-                            f"|| echo NOT_INSTALLED")
-                        if "install ok installed" in result:
+                        if _pkg_installed(conn, pkg):
                             _ok(f"{tool} installed successfully")
                         else:
                             _warn(f"{tool} still not found — run manually: sudo apt install {pkg}")

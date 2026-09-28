@@ -267,6 +267,13 @@ class LatencyUnderLoadRunner:
             line = line.strip()
             if line and ('packet' in line or 'rtt' in line or '---' in line):
                 logger.info(f"    {line}")
+        if not _has_ping_rtt(idle_output):
+            # Nothing to compare the loaded latency against — and no point
+            # saturating a path the source can't reach.
+            raise RuntimeError(
+                f"no replies to any of the {p.ping_count} baseline pings to "
+                f"{dst_host} — destination unreachable from the source, "
+                f"so there is no idle latency to measure against")
         idle_result = _parse_ping_avg(idle_output)
         logger.info(f"  Baseline latency: {idle_result}ms")
 
@@ -330,19 +337,24 @@ class LatencyUnderLoadRunner:
             line = line.strip()
             if line and ('packet' in line or 'rtt' in line or '---' in line):
                 logger.info(f"    {line}")
+        loaded_replied = _has_ping_rtt(loaded_output)
         loaded_result = _parse_ping_avg(loaded_output)
         loaded_loss   = _parse_ping_loss(loaded_output)
-        logger.info(f"  Loaded latency: {loaded_result}ms")
+        if loaded_replied:
+            logger.info(f"  Loaded latency: {loaded_result}ms")
 
-        # Phase 4: MTR hop breakdown
-        logger.info(f"  Phase 4/4: Running MTR hop trace ({p.mtr_cycles} cycles)...")
-        mtr_output = src_ssh.run(
-            f"mtr --report --report-cycles {p.mtr_cycles} --json {dst_host}",
-            timeout=p.mtr_cycles * 3 + 30
-        )
-        mtr_hops = _parse_mtr(mtr_output)
-        if mtr_hops:
-            logger.info(f"  MTR traced {len(mtr_hops)} hop(s)")
+        # Phase 4: MTR hop breakdown — skipped when nothing answered under
+        # load, since the test fails below and would discard it anyway
+        mtr_hops = []
+        if loaded_replied:
+            logger.info(f"  Phase 4/4: Running MTR hop trace ({p.mtr_cycles} cycles)...")
+            mtr_output = src_ssh.run(
+                f"mtr --report --report-cycles {p.mtr_cycles} --json {dst_host}",
+                timeout=p.mtr_cycles * 3 + 30
+            )
+            mtr_hops = _parse_mtr(mtr_output)
+            if mtr_hops:
+                logger.info(f"  MTR traced {len(mtr_hops)} hop(s)")
 
         # Cleanup — dst_ssh may be None for agent_not_installed destinations
         src_ssh.kill_background("iperf3")
@@ -360,6 +372,14 @@ class LatencyUnderLoadRunner:
         logger.info(f"  Saturation load stopped")
         # Brief cooldown to let iPerf3 fully release the port before next test
         time.sleep(3)
+
+        if not loaded_replied:
+            # Raised only now so the saturation load above is always stopped.
+            # A 0.0ms "loaded" figure would read as a large latency improvement.
+            raise RuntimeError(
+                f"all {p.ping_count} pings lost while the link was saturated "
+                f"(idle baseline {idle_result}ms) — the path drops all "
+                f"traffic under load, so there is no loaded latency to report")
 
         delta = round(loaded_result - idle_result, 3)
         sign  = "+" if delta >= 0 else ""
@@ -455,6 +475,12 @@ class MTURunner:
 
 
 # ── Parse helpers ──────────────────────────────────────────
+
+def _has_ping_rtt(output: str) -> bool:
+    """True if any ping got a reply — with none, ping prints no rtt line and
+    _parse_ping_avg's 0.0 is not a measurement."""
+    return bool(re.search(r"rtt min/avg/max/mdev = ", _strip_escapes(output)))
+
 
 def _parse_ping_avg(output: str) -> float:
     output = _strip_escapes(output)

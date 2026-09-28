@@ -12,7 +12,10 @@
 #   NETTEST_APP_DIR        Install path  (default: /opt/nettest)
 #   NETTEST_USER           Service user  (default: nettest)
 #   NETTEST_ONLINE         "false" for an offline / air-gapped install
-#                          (skips the interactive prompt)
+#                          (skips the interactive prompt). Release bundles
+#                          ship their dependencies in vendor/ and install
+#                          offline automatically; set "true" to use apt
+#                          and PyPI instead.
 #   NETTEST_PACKAGES_DIR   Directory of .deb files for an offline install
 #                          (skips the interactive prompt)
 #   NETTEST_WHEELS_DIR     Directory of .whl files for an offline install
@@ -151,7 +154,7 @@ else:
 # Only set a method if one isn't already active. If RADIUS is already
 # configured, leave it as the primary method — this new local account
 # becomes its fallback instead of replacing it.
-if not auth.get("method"):
+if auth.get("method") in (None, "", "none"):
     auth["method"] = "radius" if auth.get("radius_server") else "local"
 
 with open(config_path, "w") as f:
@@ -206,9 +209,21 @@ echo ""
 
 # ── Connectivity: online or offline (air-gapped)? ─────────
 # Governs how both system packages and Python wheels are obtained.
+# A release bundle (make_release.sh) carries every dependency in vendor/,
+# so it installs offline without asking.
+BUNDLED_DEBS="${SRC_DIR}/vendor/debs"
+BUNDLED_WHEELS="${SRC_DIR}/vendor/wheels"
+HAS_BUNDLED_DEBS=false; HAS_BUNDLED_WHEELS=false
+compgen -G "${BUNDLED_DEBS}/*.deb"   > /dev/null && HAS_BUNDLED_DEBS=true
+compgen -G "${BUNDLED_WHEELS}/*.whl" > /dev/null && HAS_BUNDLED_WHEELS=true
+
 ONLINE="${NETTEST_ONLINE:-}"
 if [[ -z "$ONLINE" && ( -n "${NETTEST_PACKAGES_DIR:-}" || -n "${NETTEST_WHEELS_DIR:-}" ) ]]; then
   ONLINE=false
+fi
+if [[ -z "$ONLINE" && "$HAS_BUNDLED_DEBS" == "true" && "$HAS_BUNDLED_WHEELS" == "true" ]]; then
+  ONLINE=false
+  info "Using dependencies bundled in vendor/ — no internet connection needed"
 fi
 if [[ -z "$ONLINE" && "$UPGRADE" != "true" ]]; then
   echo ""
@@ -251,36 +266,43 @@ elif [[ "$ONLINE" != "false" ]]; then
   ok "System packages ready"
 else
   # ── Offline: install from a local directory of .deb files ──
-  OS_ID="ubuntu"; OS_VER="24.04"
-  [[ -r /etc/os-release ]] && OS_VER="$(. /etc/os-release; echo "${VERSION_ID:-$OS_VER}")"
-
-  warn "Offline install — system packages will come from a local directory"
-  echo ""
-  echo "  Needed: ${REQUIRED_PACKAGES[*]}"
-  echo ""
-  echo "  Collect these plus every dependency on an online machine of the SAME"
-  echo "  OS release. Two ways — either produces a bundle this installer then"
-  echo "  filters down to what the target is actually missing:"
-  echo ""
-  echo "  a) Any online box (apt-get download ignores what that box already"
-  echo "     has installed, so it works even on a fully-provisioned machine):"
-  echo ""
-  echo "        mkdir pkgs && cd pkgs"
-  echo "        apt-get download \$(apt-cache depends --recurse --no-recommends \\"
-  echo "          --no-suggests --no-conflicts --no-breaks --no-replaces \\"
-  echo "          --no-enhances ${REQUIRED_PACKAGES[*]} | grep '^[a-z0-9]' | sort -u)"
-  echo ""
-  echo "  b) Fresh container (smaller bundle — base already matches):"
-  echo ""
-  echo "        docker run --rm -v \"\$PWD/pkgs:/pkgs\" ${OS_ID}:${OS_VER} sh -c '\\"
-  echo "          apt-get update && apt-get install -y --no-install-recommends \\"
-  echo "            --download-only ${REQUIRED_PACKAGES[*]} && \\"
-  echo "          cp /var/cache/apt/archives/*.deb /pkgs/'"
-  echo ""
-  echo "  Then point this installer at that 'pkgs' directory."
-  echo ""
-
   PKG_DIR="${NETTEST_PACKAGES_DIR:-}"
+  if [[ -z "$PKG_DIR" && "$HAS_BUNDLED_DEBS" == "true" ]]; then
+    PKG_DIR="${BUNDLED_DEBS}"
+  fi
+
+  if [[ -z "$PKG_DIR" ]]; then
+    OS_ID="ubuntu"; OS_VER="24.04"
+    [[ -r /etc/os-release ]] && OS_VER="$(. /etc/os-release; echo "${VERSION_ID:-$OS_VER}")"
+
+    warn "Offline install — system packages will come from a local directory"
+    echo ""
+    echo "  Needed: ${REQUIRED_PACKAGES[*]}"
+    echo ""
+    echo "  Release bundles built by make_release.sh already include these in"
+    echo "  vendor/debs. Otherwise, collect them plus every dependency on an"
+    echo "  online machine of the SAME OS release. Two ways — the installer only"
+    echo "  installs what the target is actually missing from either:"
+    echo ""
+    echo "  a) Any online box (apt-get download ignores what that box already"
+    echo "     has installed, so it works even on a fully-provisioned machine):"
+    echo ""
+    echo "        mkdir pkgs && cd pkgs"
+    echo "        apt-get download \$(apt-cache depends --recurse --no-recommends \\"
+    echo "          --no-suggests --no-conflicts --no-breaks --no-replaces \\"
+    echo "          --no-enhances ${REQUIRED_PACKAGES[*]} | grep '^[a-z0-9]' | sort -u)"
+    echo ""
+    echo "  b) Fresh container (smaller bundle — base already matches):"
+    echo ""
+    echo "        docker run --rm -v \"\$PWD/pkgs:/pkgs\" ${OS_ID}:${OS_VER} sh -c '\\"
+    echo "          apt-get update && apt-get install -y --no-install-recommends \\"
+    echo "            --download-only ${REQUIRED_PACKAGES[*]} && \\"
+    echo "          cp /var/cache/apt/archives/*.deb /pkgs/'"
+    echo ""
+    echo "  Then point this installer at that 'pkgs' directory."
+    echo ""
+  fi
+
   while true; do
     if [[ -z "$PKG_DIR" ]]; then
       read -r -p "  Path to directory containing the .deb packages: " PKG_DIR || true
@@ -293,45 +315,60 @@ else
     [[ -n "${NETTEST_PACKAGES_DIR:-}" ]] && exit 1
     PKG_DIR=""
   done
-  PKG_DIR="$(cd "$PKG_DIR" && pwd)"   # absolute — so apt treats entries as files, not names
+  PKG_DIR="$(cd "$PKG_DIR" && pwd)"
 
-  info "Scanning ${PKG_DIR} ..."
+  info "Installing system packages from ${PKG_DIR}..."
   export DEBIAN_FRONTEND=noninteractive
 
-  # Skip any .deb whose exact version is already installed, so a broad
-  # "everything + dependencies" bundle can't try to reinstall base-system
-  # packages (libc6, libpam-modules, ...) offline.
-  TO_INSTALL=()
-  SKIPPED=0
+  # Serve the directory to apt as a temporary local repository and install
+  # the package *names*, not the files. apt then installs only what this
+  # server is missing, never downgrades anything already installed, and
+  # skips alternatives it doesn't need. Only this repo is consulted, so
+  # nothing reaches for the network.
+  LOCAL_REPO="$(mktemp -d /tmp/nettest-apt-XXXXXX)"
+  mkdir -p "${LOCAL_REPO}/repo" "${LOCAL_REPO}/lists/partial"
   for _deb in "${PKG_DIR}"/*.deb; do
-    _pkg=$(dpkg-deb -f "$_deb" Package 2>/dev/null) || continue
-    _ver=$(dpkg-deb -f "$_deb" Version 2>/dev/null)
-    if [[ "$(dpkg-query -W -f='${Version}' "$_pkg" 2>/dev/null)" == "$_ver" ]]; then
-      SKIPPED=$((SKIPPED + 1))
-      continue
-    fi
-    TO_INSTALL+=("$_deb")
-  done
-  [[ $SKIPPED -gt 0 ]] && info "${SKIPPED} package(s) already at the bundled version — skipped"
-
-  if [[ ${#TO_INSTALL[@]} -eq 0 ]]; then
-    ok "System packages already satisfied"
-  else
-    info "Installing ${#TO_INSTALL[@]} package(s) from ${PKG_DIR}..."
-    # apt-get (not raw dpkg) resolves install order among the local .debs and
-    # names any dependency still missing from the directory. --no-download
-    # keeps it from reaching for the network.
-    if ! apt-get install -y --no-download --no-install-recommends \
-         -o Dpkg::Options::="--force-confold" \
-         "${TO_INSTALL[@]}"; then
+    ln -s "$_deb" "${LOCAL_REPO}/repo/"
+    {
+      dpkg-deb -f "$_deb"
+      echo "Filename: ./$(basename "$_deb")"
+      echo "Size: $(stat -c %s "$_deb")"
+      echo "SHA256: $(sha256sum "$_deb" | cut -d' ' -f1)"
       echo ""
-      warn "A required dependency .deb is missing from ${PKG_DIR}"
-      warn "(apt listed the unmet package(s) above)."
-      warn "Add those .deb files and run this installer again."
-      exit 1
-    fi
-    ok "System packages installed from ${PKG_DIR}"
+    } >> "${LOCAL_REPO}/repo/Packages"
+  done
+  echo "deb [trusted=yes] file:${LOCAL_REPO}/repo ./" > "${LOCAL_REPO}/sources.list"
+  APT_LOCAL=(
+    -o Dir::Etc::SourceList="${LOCAL_REPO}/sources.list"
+    -o Dir::Etc::SourceParts=/nonexistent
+    -o Dir::State::Lists="${LOCAL_REPO}/lists"
+    -o APT::Sandbox::User=root
+  )
+
+  # --no-remove: only the bundle is visible to apt here, so an installed
+  # package whose matching upgrade isn't bundled has no candidate, and apt
+  # would remove it (and everything depending on it) to proceed. Stop instead.
+  if ! apt-get "${APT_LOCAL[@]}" update -qq ||
+     ! apt-get "${APT_LOCAL[@]}" install -y -q --no-install-recommends --no-remove \
+         -o Dpkg::Options::="--force-confold" \
+         "${REQUIRED_PACKAGES[@]}"; then
+    rm -rf "${LOCAL_REPO}"
+    echo ""
+    warn "apt can't install from ${PKG_DIR} without changes to this server"
+    warn "(details above). Nothing was installed or removed. Either:"
+    warn "  - a required dependency .deb is missing, or"
+    warn "  - installing would REMOVE packages already on this server, because"
+    warn "    the bundle upgrades a package they're tied to without including"
+    warn "    their matching upgrade."
+    warn "Add the .deb files for the packages apt named (same versions as the"
+    warn "bundle, from an online machine on the same OS release) to ${PKG_DIR},"
+    warn "or rebuild the bundle with NETTEST_TARGET_MANIFEST set to this"
+    warn "server's package list:  dpkg-query -W -f='\${Package}\\n' > manifest.txt"
+    warn "then run this installer again."
+    exit 1
   fi
+  rm -rf "${LOCAL_REPO}"
+  ok "System packages installed from ${PKG_DIR}"
 fi
 
 # ── Create user and group ──────────────────────────────────
@@ -378,8 +415,10 @@ fi
 if [[ "$UPGRADE" == "true" ]]; then
   KEY_FILE_CONF=$(grep "key_file:" "${APP_DIR}/config/config.yaml" 2>/dev/null |                   awk '{print $2}' | tr -d '"' | sed "s|~|$HOME|g" | head -1)
   KEY_FILE_CONF="${KEY_FILE_CONF:-${APP_DIR}/.ssh/nettest_key}"
-  KEY_BACKUP_DIR="/tmp/nettest-key-backup-$$"
-  mkdir -p "${KEY_BACKUP_DIR}"
+  # Private (0700) and unpredictable, and removed however the script exits —
+  # a failed step before the restore below must not leave a key copy in /tmp.
+  KEY_BACKUP_DIR="$(mktemp -d /tmp/nettest-key-backup-XXXXXX)"
+  trap 'rm -rf "${KEY_BACKUP_DIR}"' EXIT
   for kf in "${KEY_FILE_CONF}" "${KEY_FILE_CONF}.pub"; do
     [[ -f "$kf" ]] && cp "$kf" "${KEY_BACKUP_DIR}/" && info "Backed up: $kf"
   done
@@ -398,7 +437,14 @@ rsync -a \
   --exclude "results/" \
   --exclude "config/config.yaml" \
   --exclude ".ssh/" \
+  --exclude "vendor/" \
   "${SRC_DIR}/" "${APP_DIR}/"
+# Keep the bundled wheels (not the .debs — those are only needed once) so
+# rollbacks and web-UI updates can reinstall Python packages offline.
+if [[ "$HAS_BUNDLED_WHEELS" == "true" ]]; then
+  mkdir -p "${APP_DIR}/vendor/wheels"
+  rsync -a --delete "${BUNDLED_WHEELS}/" "${APP_DIR}/vendor/wheels/"
+fi
 ok "Code files synced"
 
 # Restore SSH keys if they were wiped by rsync
@@ -425,6 +471,18 @@ install -d -o "${APP_USER}" -g "${APP_GROUP}" \
 install -d -m 755 /opt/nettest/ssl
 ok "Runtime directories ready"
 
+# ── Agent packages for air-gapped onboarding ───────────────
+# The bundled .debs include the agent tools, built for this server's OS
+# release. Stage them so agents on the same release onboard offline with
+# nothing uploaded (packages/bundled/<os>-<version>/).
+if [[ "$HAS_BUNDLED_DEBS" == "true" ]]; then
+  if (cd "${APP_DIR}" && python3 -m core.agent_packages "${BUNDLED_DEBS}" "${APP_DIR}/packages"); then
+    ok "Agent packages staged for air-gapped onboarding"
+  else
+    warn "Couldn't stage bundled agent packages — upload them via Config → Packages instead"
+  fi
+fi
+
 # ── Config file ────────────────────────────────────────────
 if [[ ! -f "${APP_DIR}/config/config.yaml" ]]; then
   cp "${APP_DIR}/config/config.example.yaml" \
@@ -438,29 +496,38 @@ else
 fi
 
 # ── Python virtual environment ─────────────────────────────
-# Installs requirements.txt from PyPI (online) or from a local wheelhouse
-# (offline). Offline wheels must match this server's OS and Python version.
+# Installs the pinned requirements.lock (falling back to requirements.txt)
+# from PyPI (online) or from a local wheelhouse (offline). Offline wheels
+# must match this server's OS and Python version; release bundles carry
+# a matching set in vendor/wheels.
+REQ_FILE="${APP_DIR}/requirements.lock"
+[[ -f "$REQ_FILE" ]] || REQ_FILE="${APP_DIR}/requirements.txt"
+
 install_python_deps() {
   if [[ "$ONLINE" != "false" ]]; then
     "${APP_DIR}/venv/bin/pip" install --upgrade pip -q
-    "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/requirements.txt" -q
+    "${APP_DIR}/venv/bin/pip" install -r "${REQ_FILE}" -q
     return
   fi
 
-  echo ""
-  echo "  Offline install — Python packages will come from a local directory."
-  echo "  It must contain wheels (.whl) for every entry in requirements.txt"
-  echo "  AND all their transitive dependencies. Generate the full set on an"
-  echo "  online machine with the same OS and Python $(python3 -V 2>&1 | awk '{print $2}'):"
-  echo ""
-  echo "      pip download -r requirements.txt -d <wheels-dir>"
-  echo ""
-  echo "  Direct requirements: netmiko, PyYAML, pytz, rich, flask, gunicorn,"
-  echo "  gevent, pyrad  (these pull in paramiko, cryptography, greenlet and"
-  echo "  ~20 more — 'pip download' resolves them all)."
-  echo ""
-
   WHEELS_DIR="${NETTEST_WHEELS_DIR:-}"
+  if [[ -z "$WHEELS_DIR" && "$HAS_BUNDLED_WHEELS" == "true" ]]; then
+    WHEELS_DIR="${BUNDLED_WHEELS}"
+  fi
+
+  if [[ -z "$WHEELS_DIR" ]]; then
+    echo ""
+    echo "  Offline install — Python packages will come from a local directory."
+    echo "  It must contain wheels (.whl) for every entry in ${REQ_FILE##*/}"
+    echo "  AND all their transitive dependencies. Generate the full set on an"
+    echo "  online machine with the same OS and Python $(python3 -V 2>&1 | awk '{print $2}'):"
+    echo ""
+    echo "      pip download -r ${REQ_FILE##*/} -d <wheels-dir>"
+    echo ""
+    echo "  (Release bundles built by make_release.sh include these in vendor/wheels.)"
+    echo ""
+  fi
+
   while true; do
     if [[ -z "$WHEELS_DIR" ]]; then
       read -r -p "  Path to directory containing the Python wheels: " WHEELS_DIR || true
@@ -476,7 +543,7 @@ install_python_deps() {
 
   info "Installing Python packages from ${WHEELS_DIR}..."
   if ! "${APP_DIR}/venv/bin/pip" install --no-index --find-links "${WHEELS_DIR}" \
-       -r "${APP_DIR}/requirements.txt" -q; then
+       -r "${REQ_FILE}" -q; then
     warn "pip could not resolve every package from ${WHEELS_DIR}."
     warn "Add the missing .whl files and run this installer again."
     exit 1
@@ -485,14 +552,18 @@ install_python_deps() {
 
 info "Setting up Python virtual environment..."
 if [[ "$UPGRADE" == "true" ]]; then
-  # Upgrade: venv already exists — skip pip entirely.
-  # Dependencies only change on major releases; run manually if needed:
-  #   sudo /opt/nettest/venv/bin/pip install -r /opt/nettest/requirements.txt
   if [[ ! -d "${APP_DIR}/venv" ]]; then
     python3 -m venv "${APP_DIR}/venv"
     install_python_deps
     ok "Python environment created"
+  elif [[ "$HAS_BUNDLED_WHEELS" == "true" ]]; then
+    # The bundle carries its exact dependency set, so syncing is offline
+    # and a no-op when nothing changed — new dependencies can't be missed.
+    install_python_deps
+    ok "Python environment synced to ${REQ_FILE##*/}"
   else
+    # No bundled wheels — skip pip; run manually if dependencies changed:
+    #   sudo /opt/nettest/venv/bin/pip install -r /opt/nettest/requirements.txt
     ok "Python environment unchanged (upgrade mode — skipping pip)"
   fi
 else

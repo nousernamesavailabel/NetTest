@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NetTest — Network Monitor</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="/static/chart.umd.js"></script>
 <style>
   :root {
     --bg:        #0d0f12;
@@ -146,6 +146,7 @@
   .td-time { color: var(--muted); font-size: 11px; }
   .ok-dot   { color: var(--green); }
   .fail-dot { color: var(--red); }
+  .warn-dot { color: var(--yellow); }
 
   /* ── Hop table ── */
   .hop-bar-wrap { display: flex; align-items: center; gap: 8px; }
@@ -466,7 +467,7 @@
         <div class="panel">
           <div class="panel-header">
             <span class="panel-title">Path Overview</span>
-            <span style="font-size:10px;color:var(--muted)">latest value per path — click path name to drill in</span>
+            <span style="font-size:10px;color:var(--muted)">averages over the Recent results window — click path name to drill in</span>
           </div>
           <div class="panel-body" style="padding:0">
             <div class="sparkline-grid" id="spark-grid"></div>
@@ -1307,6 +1308,13 @@ async function updateNextRun() {
   try {
     const cfg = await api('/api/config');
     const schedule = cfg.schedule || {};
+    if (schedule.enabled === false) {
+      if (_nextRunTimer) clearInterval(_nextRunTimer);
+      el('s-nextrun').textContent = 'paused';
+      el('s-nextrun-sub').textContent = 'scheduled runs off';
+      el('s-nextrun').className = 'stat-value c-muted';
+      return;
+    }
     const intervalMin = schedule.full_test_interval_minutes || 60;
     const staggerSec  = (schedule.stagger_seconds || 0) * (paths.length || 1);
     const totalCycleSec = intervalMin * 60 + staggerSec;
@@ -1760,6 +1768,7 @@ async function exportPathSummary() {
   <div class="rpt-stats">
     ${stat('Total Runs', summary.total_runs ?? 0)}
     ${stat('Successful', summary.successful ?? 0)}
+    ${stat('With Errors', summary.partial ?? 0)}
     ${stat('Failed', summary.failed ?? 0)}
     ${stat('Avg Latency', fmt(summary.avg_latency_ms, ' ms'))}
     ${stat('Avg TX', fmt(summary.avg_throughput_mbps, ' Mbps'))}
@@ -1878,14 +1887,30 @@ function updateStats(s) {
   el('s-jitter').textContent = fmt(s.avg_jitter_ms,'ms',2);
   el('s-jitter').className   = 'stat-value ' + health(s.avg_jitter_ms, T.jitWarn, T.jitCrit);
 
-  el('s-fail').textContent = fail;
-  el('s-fail').className   = 'stat-value ' + (fail === 0 ? 'c-green' : 'c-red');
+  const partial = s.partial || 0;
+  el('s-fail').textContent = partial ? `${fail} +${partial} partial` : fail;
+  el('s-fail').title       = partial ? `${partial} run(s) completed with some tests failing` : '';
+  el('s-fail').className   = 'stat-value ' + (fail ? 'c-red' : partial ? 'c-yellow' : 'c-green');
+}
+
+// success only means the run reached both endpoints and attempted every test;
+// r.error lists the individual tests that failed.
+function runState(r) {
+  if (!r || !r.success) return 'fail';
+  return r.error ? 'partial' : 'ok';
+}
+
+function statusMark(r) {
+  const st = runState(r);
+  if (st === 'ok')      return '<span class="ok-dot" title="All tests passed">✓</span>';
+  if (st === 'partial') return `<span class="warn-dot" title="${escapeHtml('Completed with errors: ' + r.error)}">⚠</span>`;
+  return `<span class="fail-dot" title="${escapeHtml(r?.error || 'Failed')}">✗</span>`;
 }
 
 function updateBadges() {
   // All badge
   const total = paths.length;
-  const okPaths = paths.filter(p => latestMap[p.id]?.success).length;
+  const okPaths = paths.filter(p => runState(latestMap[p.id]) === 'ok').length;
   const allBadge = document.getElementById('badge-all');
   allBadge.textContent = `${okPaths}/${total}`;
   allBadge.className = 'nav-badge ' + (okPaths === total ? 'badge-ok' : okPaths < total-2 ? 'badge-crit' : 'badge-warn');
@@ -1896,8 +1921,10 @@ function updateBadges() {
     if (!b) return;
     const r = latestMap[p.id];
     if (!r) { b.textContent = '?'; b.className = 'nav-badge badge-dim'; return; }
-    b.textContent = r.success ? 'OK' : 'FAIL';
-    b.className   = 'nav-badge ' + (r.success ? 'badge-ok' : 'badge-crit');
+    const st = runState(r);
+    b.textContent = { ok: 'OK', partial: 'PARTIAL', fail: 'FAIL' }[st];
+    b.className   = 'nav-badge ' + { ok: 'badge-ok', partial: 'badge-warn', fail: 'badge-crit' }[st];
+    b.title       = r.error || '';
   });
 }
 
@@ -1958,7 +1985,7 @@ function renderTable(records) {
       </td>
       <td class="td-time" style="color:var(--muted);font-size:10px">${r.timestamp_utc.slice(0,10)}</td>
       <td class="td-time">${ts}</td>
-      <td>${r.success ? '<span class="ok-dot">✓</span>' : '<span class="fail-dot">✗</span>'}</td>
+      <td>${statusMark(r)}</td>
       <td class="${txC}">${fmt(t?.tx_mbps)}</td>
       <td>${fmt(t?.rx_mbps)}</td>
       <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.tx_mbps)}</td>
@@ -2159,7 +2186,7 @@ async function renderSparklines(minutes) {
   // Cache agents for banner use (await to ensure available before banner renders)
   try { window._cachedAgents = await api('/api/agents'); } catch(e) {}
 
-  const [tsData, agentsList] = await Promise.all([
+  const [tsData, agentsList, winSummary] = await Promise.all([
     Promise.all(
       paths.map(p => api(`/api/timeseries/latency?minutes=${minutes}&path_id=${p.id}`)
         .then(d => ({ pid: p.id, points: d[0]?.points || [] }))
@@ -2167,6 +2194,7 @@ async function renderSparklines(minutes) {
       )
     ),
     api('/api/agents').catch(() => []),
+    api(`/api/summary/by_path?minutes=${minutes}`).catch(() => ({})),
   ]);
   const tsMap = {};
   tsData.forEach(d => { tsMap[d.pid] = d.points; });
@@ -2191,20 +2219,22 @@ async function renderSparklines(minutes) {
   `;
 
   paths.forEach(p => {
-    const r  = latestMap[p.id];
+    // Values are aggregated over the selected Recent results window
+    const s   = winSummary[p.id];
     const pts = tsMap[p.id] || [];
-    const l  = r?.latency;
-    const t  = throughputSummary(r);
-    const j  = r?.jitter;
-    const lu = r?.latency_under_load;
-    const m  = r?.mtu;
-    const segs = r?.segments || [];
+    const lat  = s?.avg_latency_ms;
+    const tx   = s?.avg_tx_mbps;
+    const jit  = s?.avg_jitter_ms;
+    const bb   = s?.avg_bufferbloat_ms;
+    const loss = s?.avg_loss_pct;
+    const m  = s?.mtu;
+    const segs = s?.segments || [];
 
-    const latC  = l  ? health(l.rtt_avg_ms,       T.latWarn,  T.latCrit)       : 'c-muted';
-    const tputC = t  ? health(t.tx_mbps,           T.tputWarn, T.tputCrit,false): 'c-muted';
-    const jitC  = j  ? health(j.jitter_ms,         T.jitWarn,  T.jitCrit)       : 'c-muted';
-    const bbC   = lu ? health(lu.delta_ms,          T.bbWarn,   T.bbCrit)        : 'c-muted';
-    const lssC  = l  ? health(l.packet_loss_pct,   T.lossWarn, T.lossCrit)      : 'c-muted';
+    const latC  = health(lat,  T.latWarn,  T.latCrit);
+    const tputC = health(tx,   T.tputWarn, T.tputCrit, false);
+    const jitC  = health(jit,  T.jitWarn,  T.jitCrit);
+    const bbC   = health(bb,   T.bbWarn,   T.bbCrit);
+    const lssC  = health(loss, T.lossWarn, T.lossCrit);
 
     const mtuVal = m ? m.effective_mtu_bytes : null;
     const mtuHtml = !mtuVal ? '—'
@@ -2212,9 +2242,7 @@ async function renderSparklines(minutes) {
         ? `<span class="mtu-warn">${mtuVal}</span>`
         : `<span style="color:var(--green)">${mtuVal}</span>`;
 
-    const statusIcon = !r ? '<span style="color:var(--muted)">?</span>'
-      : r.success ? '<span style="color:var(--green)">✓</span>'
-                  : '<span style="color:var(--red)">✗</span>';
+    const statusIcon = windowStatusMark(s);
 
     const hasHops = segs.length > 0;
     const canvasId = 'spark-' + p.id;
@@ -2240,11 +2268,11 @@ async function renderSparklines(minutes) {
           <div class="spark-cell-chart">
             <div class="spark-canvas-wrap"><canvas id="${canvasId}"></canvas></div>
           </div>
-          <div class="spark-cell spark-val ${latC}">${l ? fmt(l.rtt_avg_ms,'ms') : '—'}</div>
-          <div class="spark-cell spark-val ${tputC}">${t ? fmt(t.tx_mbps) : '—'}</div>
-          <div class="spark-cell spark-val ${jitC}">${j ? fmt(j.jitter_ms,'ms',2) : '—'}</div>
-          <div class="spark-cell spark-val ${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</div>
-          <div class="spark-cell spark-val ${lssC}">${l ? fmt(l.packet_loss_pct,'%') : '—'}</div>
+          <div class="spark-cell spark-val ${latC}">${fmt(lat,'ms')}</div>
+          <div class="spark-cell spark-val ${tputC}">${fmt(tx)}</div>
+          <div class="spark-cell spark-val ${jitC}">${fmt(jit,'ms',2)}</div>
+          <div class="spark-cell spark-val ${bbC}">${bb != null ? (bb >= 0 ? '+' : '')+fmt(bb,'ms') : '—'}</div>
+          <div class="spark-cell spark-val ${lssC}">${fmt(loss,'%')}</div>
           <div class="spark-cell spark-val">${mtuHtml}</div>
           <div class="spark-cell spark-val">${statusIcon}</div>
         </div>
@@ -2290,9 +2318,9 @@ async function renderSparklines(minutes) {
       segs.forEach((seg, si) => {
         const hopAgent = seg.destination_agent_id;
         const hopLabel = seg.destination_agent_id;
-        const sl  = seg.latency;
+        const sLat = seg.avg_latency_ms;
         const sm  = seg.mtu;
-        const hLatC = sl ? health(sl.rtt_avg_ms, T.latWarn, T.latCrit) : 'c-muted';
+        const hLatC = health(sLat, T.latWarn, T.latCrit);
         const hMtuHtml = !sm ? '—'
           : sm.fragmentation_detected
             ? `<span class="mtu-warn">${sm.effective_mtu_bytes}</span>`
@@ -2307,7 +2335,7 @@ async function renderSparklines(minutes) {
             <div class="spark-cell-chart">
               <div class="spark-canvas-wrap"><canvas id="${hcid}"></canvas></div>
             </div>
-            <div class="spark-cell-sm spark-val ${hLatC}">${sl ? fmt(sl.rtt_avg_ms,'ms') : '—'}</div>
+            <div class="spark-cell-sm spark-val ${hLatC}">${fmt(sLat,'ms')}</div>
             <div class="spark-cell-sm spark-val c-muted">—</div>
             <div class="spark-cell-sm spark-val c-muted">—</div>
             <div class="spark-cell-sm spark-val c-muted">—</div>
@@ -2322,7 +2350,7 @@ async function renderSparklines(minutes) {
         requestAnimationFrame(() => {
           const hcanvas = document.getElementById(hcid);
           if (!hcanvas || !values.length) return;
-          const hopVal = sl ? sl.rtt_avg_ms : null;
+          const hopVal = sLat;
           if (!hopVal) return;
           // Flat line at hop latency using same Y scale as parent
           const hopLine = values.map(() => hopVal);
@@ -2344,6 +2372,15 @@ async function renderSparklines(minutes) {
       });
     }
   });
+}
+
+// Status across every run in the window: ✓ all passed, ⚠ some partial, ✗ any failed
+function windowStatusMark(s) {
+  if (!s || !s.total_runs) return '<span style="color:var(--muted)" title="No runs in this period">?</span>';
+  const tip = `${s.successful} ok, ${s.partial} partial, ${s.failed} failed of ${s.total_runs} runs`;
+  if (s.failed)  return `<span class="fail-dot" title="${tip}">✗ ${s.failed}</span>`;
+  if (s.partial) return `<span class="warn-dot" title="${tip}">⚠ ${s.partial}</span>`;
+  return `<span class="ok-dot" title="${tip}">✓</span>`;
 }
 
 function toggleSparkHops(pid) {

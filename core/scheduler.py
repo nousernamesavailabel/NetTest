@@ -75,6 +75,11 @@ class Scheduler:
 
     def start(self):
         """Start scheduler threads. Returns immediately (non-blocking)."""
+        if not self.config.schedule.enabled:
+            logger.info("Scheduled runs are disabled (schedule.enabled: false) — "
+                        "not starting schedule loops; manual runs still work")
+            return
+
         logger.info(f"Starting scheduler — full suite every "
                     f"{self.config.schedule.full_test_interval_minutes}m, "
                     f"latency-only every "

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NetTest — Compare Runs</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="/static/chart.umd.js"></script>
 <style>
 :root {
   --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
@@ -589,7 +589,9 @@ function renderMeta(side, record) {
     <span class="rm-path">${escapeHtml(record.path_label)}</span>
     <span class="rm-hosts">${escapeHtml(record.source_host)} → ${escapeHtml(record.destination_host)}</span>
     <span class="rm-ts">${(record.timestamp_utc||'').replace('T',' ').slice(0,19)} UTC ·
-      <span class="${record.success ? 'badge-ok' : 'badge-fail'}">${record.success ? '✓ success' : '✗ failed'}</span>
+      ${!record.success ? '<span class="badge-fail">✗ failed</span>'
+        : record.error ? '<span class="c-yw">⚠ completed with errors</span>'
+        : '<span class="badge-ok">✓ success</span>'}
     </span>
     ${errLine}
     ${notesLine}

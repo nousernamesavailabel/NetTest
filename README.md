@@ -37,12 +37,37 @@ sudo ./install.sh                 # fresh install
 sudo ./install.sh --upgrade       # upgrade code, keep config and keys
 sudo ./install.sh --show-key      # print the controller's SSH public key
 sudo ./install.sh --setup-https   # also configure nginx + self-signed TLS
+sudo ./install.sh --setup-local-user  # add a local dashboard login account
 ```
 
-For air-gapped controllers, set `NETTEST_ONLINE=false` (or answer the
-interactive prompt) and point `NETTEST_PACKAGES_DIR` / `NETTEST_WHEELS_DIR`
-at local `.deb` / `.whl` directories — see `install-packages/` and
-`requirements/` for examples of what to stage.
+Release bundles install with no internet connection. `make_release.sh`
+ships every system package (with dependencies) in `vendor/debs` and every
+Python wheel pinned in `requirements.lock` in `vendor/wheels`, and
+`install.sh` uses them automatically (set `NETTEST_ONLINE=true` to use apt
+and PyPI instead). Build releases on an online machine running the same
+OS release as the controllers (currently Ubuntu 26.04, Python 3.14).
+
+Offline installs never remove packages. If a target is at an older patch
+level than the build machine, apt may have to upgrade some of its installed
+packages to the bundled versions. The bundle includes the exact-version
+companions of those upgrades (e.g. `libpython3.14` with `python3.14`) for
+every package installed on the build machine. If a target has one the build
+machine doesn't, `install.sh` stops without changing anything and names it.
+In that case, rebuild with that target's package list:
+
+```bash
+# on the target
+dpkg-query -W -f='${Package}\n' > manifest.txt
+# on the build machine
+NETTEST_TARGET_MANIFEST=manifest.txt ./make_release.sh
+```
+
+To install from your own package directories instead, set
+`NETTEST_PACKAGES_DIR` / `NETTEST_WHEELS_DIR` to local `.deb` / `.whl`
+directories.
+
+Python dependencies: edit `requirements.txt`, then run
+`./make_release.sh --lock` to regenerate the exact pins in `requirements.lock`.
 
 Then edit `config/config.yaml` (Steps 2–5 below still apply) and start the
 service:
@@ -116,9 +141,11 @@ sudo ufw allow 22/tcp
 - Update agent IPs to match your environment
 - Define your actual test paths
 - Adjust schedule intervals as needed
-- Set `auth.session_secret` (and `auth.radius_server` if you want login
-  protection on the web dashboard — see `config/config.example.yaml` for
-  all `auth:` options)
+- Set `auth.session_secret` to a long random string (it signs dashboard
+  login cookies; if blank, a new one is generated on every restart and
+  everyone is logged out)
+- Dashboard login (RADIUS or local accounts) can be set here or later
+  from Config → Auth in the web UI — see [Authentication](#authentication)
 
 ---
 
@@ -174,13 +201,74 @@ python tui.py --path branch_a_to_hub
 - **Dashboard** (`/`) — live streaming test output, sparkline trend grid,
   traceroute and MTR hop visualization
 - **Config** (`/config`) — edit agents, paths, schedule, SSH, tests,
-  packages, and HTTPS settings from the browser; export/import config as
-  a `.tar.gz` bundle
+  packages, HTTPS and login (Auth) settings from the browser;
+  export/import config as a `.tar.gz` bundle; apply or roll back release
+  updates (Updates); turn on timed debug logging (Logging)
 - **Compare** (`/compare`) — side-by-side comparison of past runs
 - **Speed Test** (`/speedtest`) — on-demand ping/download/upload/MTU probe
 - Result annotations — attach notes and tags to individual test runs
-- Optional RADIUS-backed login with session management and rate limiting
-  (`auth:` section in `config.yaml`)
+- Optional login (RADIUS or local accounts) with session management and
+  rate limiting — see [Authentication](#authentication)
+
+### Authentication
+
+Dashboard login is off by default. Choose the login method under
+**Config → Auth**, which also holds the RADIUS server settings and the
+local user list, so no `config.yaml` editing is needed. The methods are:
+
+- **Disabled** — no login; anyone who can reach the dashboard can use it,
+  including the Config page.
+- **RADIUS** — logins are checked against a RADIUS server. Set the server,
+  port (default 1812), shared secret and timeout on the Auth page; the
+  method can't be switched to RADIUS until a server and secret are set.
+  If the RADIUS server can't be reached (timeout or connection error),
+  any local users are accepted as a fallback login. A rejected password
+  is not retried against local users.
+- **Local accounts** — logins are checked against accounts stored in
+  `config.yaml` as salted password hashes. Add them on the Auth page or
+  with `sudo ./install.sh --setup-local-user`.
+
+The same settings live in the `auth:` section of `config.yaml`
+(`method: none | radius | local`; see `config/config.example.yaml`).
+`method: none` disables login even when RADIUS or local users are
+configured. A blank `method` is inferred for older configs:
+`radius_server` set means RADIUS, otherwise local users mean local,
+otherwise disabled. The Auth page always shows the method actually in use.
+
+Secrets stay on the server: the RADIUS shared secret, `session_secret`,
+local password hashes and the SSH default password are never sent to the
+browser. The RADIUS secret field on the Auth page starts blank; leave it
+blank to keep the saved secret, or type a new one to replace it.
+
+
+### Onboarding agents without internet
+
+Agents on the same OS release as the controller need no preparation. A
+release bundle already contains the agent tools and their dependencies, and
+`install.sh` and Config → Updates stage them in `packages/bundled/<os>-<version>/`
+(e.g. `ubuntu-26.04`). Just onboard with **Air-gapped** ticked.
+
+For agents on another release, first upload their packages under
+**Config → Packages**: `iperf3`, `mtr-tiny`, `iputils-ping`, `traceroute`,
+`psmisc` and their dependencies (`libiperf0`, `libsctp1`, and so on), built
+for that release. Uploaded packages are offered to every agent. Bundled ones
+are offered only to agents whose release matches, so an agent on another
+release never gets packages it can't use.
+
+Onboarding copies the staged packages to the agent as a temporary local apt
+repository and installs only the tools the agent is missing. apt resolves
+dependencies from the staged packages, never downgrades, and never removes
+anything. If a package is missing, built for a different release, or would
+force a removal, onboarding stops without changing the agent. It shows
+apt's error and the agent's OS release.
+
+To collect the packages for another release, on an online machine running it:
+
+```bash
+apt-get download $(apt-cache depends --recurse --no-recommends --no-suggests \
+  --no-conflicts --no-breaks --no-replaces --no-enhances \
+  iperf3 mtr-tiny iputils-ping traceroute psmisc | grep '^[a-z0-9]' | sort -u)
+```
 
 ---
 
@@ -195,7 +283,8 @@ nettest/
 ├── rollback.sh                # Restore a previous version from a snapshot
 ├── make_release.sh            # Build a versioned release tarball
 ├── version.txt
-├── requirements.txt
+├── requirements.txt           # Top-level Python dependencies
+├── requirements.lock          # Exact pins (generated: make_release.sh --lock)
 ├── config/
 │   ├── config.example.yaml   # Sanitized starter config committed to git
 │   └── config.yaml           # Local/private config ignored by git
@@ -206,17 +295,21 @@ nettest/
 │   ├── ssh_manager.py        # Netmiko SSH wrapper with retry logic
 │   ├── path_tester.py        # Orchestrates tests for one path
 │   ├── scheduler.py          # Drives periodic test execution
-│   └── radius_auth.py        # RADIUS authentication for the web dashboard
+│   ├── radius_auth.py        # RADIUS authentication for the web dashboard
+│   └── agent_packages.py     # Agent packages for air-gapped onboarding
 ├── runners/
 │   ├── runner_throughput.py  # iPerf3 TCP/UDP throughput
 │   ├── runner_latency.py     # Ping latency, UDP jitter, MTU discovery,
 │   │                         # and latency-under-load (bufferbloat)
 │   └── runner_traceroute.py  # Traceroute with forward/reverse hop flow
 ├── web/                       # Dashboard static pages (index, config,
-│                              # compare, speedtest, login)
+│   │                          # compare, speedtest, login)
+│   └── static/chart.umd.js    # Chart.js, bundled so graphs work offline
 ├── systemd/                   # nettest.service + nettest-web.service units
-├── requirements/              # Vendored wheels for offline/air-gapped installs
-├── install-packages/          # Vendored .deb packages for offline installs
+├── vendor/                    # Release bundles only (built by make_release.sh)
+│   ├── wheels/                # Python wheels for requirements.lock
+│   └── debs/                  # System packages + dependencies
+├── packages/                  # Agent .debs: uploads, plus bundled/<os>-<version>/
 ├── results/                  # Auto-created — JSONL result files per day
 └── logs/                     # Auto-created — controller.log
 ```

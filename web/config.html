@@ -312,6 +312,14 @@ select option{background:var(--bg)}
         </div>
         <div class="panel-body" id="schedule-form">
           <div class="form-row">
+            <label>Scheduled runs</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="sch-enabled" style="width:auto;accent-color:var(--cy)">
+              <span style="color:var(--mt);font-size:11px" id="sch-enabled-hint">run tests automatically on the intervals below</span>
+            </div>
+          </div>
+          <div id="sch-fields">
+          <div class="form-row">
             <label>Full test interval</label>
             <div style="display:flex;align-items:center;gap:8px">
               <input type="number" id="sch-full" min="5" max="1440" style="width:80px">
@@ -350,6 +358,7 @@ select option{background:var(--bg)}
           <div class="form-row">
             <label>Timezone</label>
             <select id="sch-tz"></select>
+          </div>
           </div>
         </div>
       </div>
@@ -658,6 +667,13 @@ select option{background:var(--bg)}
         </div>
         <div class="panel-body">
 
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Agents on the same OS release as this controller don't need uploads — each release
+            bundle stages their packages automatically (<code>packages/bundled/</code>, not listed
+            here). Upload packages here for agents on other releases; they must be built for the
+            agent's release.
+          </p>
+
           <!-- Upload area -->
           <div id="pkg-upload-area" style="border:2px dashed var(--bdr2);border-radius:6px;
                padding:24px;text-align:center;cursor:pointer;margin-bottom:16px;
@@ -793,19 +809,51 @@ select option{background:var(--bg)}
               <option value="local">Local accounts</option>
             </select>
           </div>
-          <div id="auth-radius-info" style="display:none;font-size:11px;color:var(--mt);margin-top:6px">
-            RADIUS server: <span id="auth-radius-server-view" style="color:var(--tx)">—</span>
-            &nbsp;— edit <code>config/config.yaml</code> or re-run <code>install.sh</code> to change RADIUS settings.
-          </div>
           <div id="auth-no-radius-warn" style="display:none;background:#2a1500;border:1px solid #a05000;
                       border-radius:4px;padding:8px 12px;font-size:11px;color:#e09050;margin-top:10px">
-            ⚠ RADIUS isn't configured yet (no radius_server in config.yaml). Set it in
-            <code>config/config.yaml</code> first.
+            ⚠ RADIUS isn't fully configured yet — enter the server and shared secret under
+            RADIUS Server below.
           </div>
           <div id="auth-fallback-note" style="display:none;background:#0d1f3c;border:1px solid #1a3a5c;
                       border-radius:4px;padding:8px 12px;font-size:11px;color:#5bc4f5;margin-top:10px">
             ℹ If the RADIUS server can't be reached at login time, any account listed below
             under Local Users is used as an automatic fallback login.
+          </div>
+        </div>
+      </div>
+
+      <!-- RADIUS Server -->
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">RADIUS Server</span></div>
+        <div class="panel-body">
+          <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+            Used when the login method is RADIUS. Changes take effect after you click Save Config.
+          </p>
+          <div class="form-row">
+            <label>Server</label>
+            <input type="text" id="auth-radius-server" autocomplete="off" placeholder="IP or hostname, e.g. 10.0.0.5"
+                   oninput="onRadiusFieldChange()">
+          </div>
+          <div class="form-row">
+            <label>Port</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="auth-radius-port" min="1" max="65535" placeholder="1812" style="width:100px"
+                     oninput="onRadiusFieldChange()">
+              <span style="color:var(--mt);font-size:11px">UDP, default 1812</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Shared secret</label>
+            <input type="password" id="auth-radius-secret" autocomplete="new-password"
+                   oninput="onRadiusFieldChange()">
+          </div>
+          <div class="form-row">
+            <label>Timeout</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="auth-radius-timeout" min="1" max="60" placeholder="5" style="width:100px"
+                     oninput="onRadiusFieldChange()">
+              <span style="color:var(--mt);font-size:11px">seconds</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1769,6 +1817,9 @@ function renderSchedule() {
   setVal('sch-start',   s.business_hours_start          || '08:00');
   setVal('sch-end',     s.business_hours_end            || '18:00');
   document.getElementById('sch-biz').checked = !!s.business_hours_only;
+  // Missing means enabled — matches the loader's default.
+  document.getElementById('sch-enabled').checked = s.enabled !== false;
+  updateScheduleEnabledUI();
 
   ['sch-full','sch-lat','sch-stagger','sch-tz','sch-start','sch-end'].forEach(id => {
     document.getElementById(id).addEventListener('input', () => {
@@ -1778,12 +1829,26 @@ function renderSchedule() {
   document.getElementById('sch-biz').addEventListener('change', () => {
     collectSchedule(); markDirty();
   });
+  document.getElementById('sch-enabled').addEventListener('change', () => {
+    updateScheduleEnabledUI(); collectSchedule(); markDirty();
+  });
 
   renderScheduleGrid();
 }
 
+function updateScheduleEnabledUI() {
+  const on = document.getElementById('sch-enabled').checked;
+  const fields = document.getElementById('sch-fields');
+  fields.style.opacity = on ? '' : '0.45';
+  fields.querySelectorAll('input, select').forEach(i => { i.disabled = !on; });
+  document.getElementById('sch-enabled-hint').textContent = on
+    ? 'run tests automatically on the intervals below'
+    : 'paused — no automatic runs; manual runs still work';
+}
+
 function collectSchedule() {
   schedule = {
+    enabled:                       document.getElementById('sch-enabled').checked,
     full_test_interval_minutes:    parseInt(getVal('sch-full'))    || 60,
     latency_only_interval_minutes: parseInt(getVal('sch-lat'))     || 5,
     stagger_seconds:               parseInt(getVal('sch-stagger')) || 15,
@@ -1914,7 +1979,6 @@ function collectSSH() {
   sshDefs = {
     username: getVal('ssh-user')    || 'nettest',
     key_file: getVal('ssh-key')     || '~/.ssh/nettest_key',
-    password: sshDefs.password      || '',
     port:     parseInt(getVal('ssh-port'))    || 22,
     timeout:  parseInt(getVal('ssh-timeout')) || 30,
   };
@@ -1924,6 +1988,11 @@ function collectSSH() {
 function renderAuth() {
   setVal('auth-method', authConfig.method || '');
   document.getElementById('auth-method').addEventListener('change', () => markDirty());
+  setVal('auth-radius-server',  authConfig.radius_server  || '');
+  setVal('auth-radius-port',    authConfig.radius_port    || 1812);
+  setVal('auth-radius-timeout', authConfig.radius_timeout || 5);
+  setVal('auth-radius-secret',  '');
+  updateRadiusSecretPlaceholder();
   updateAuthMethodHints();
   renderLocalUsersList();
 }
@@ -1933,18 +2002,47 @@ function onAuthMethodChange() {
   markDirty();
 }
 
+function onRadiusFieldChange() {
+  updateAuthMethodHints();
+  markDirty();
+}
+
+function updateRadiusSecretPlaceholder() {
+  document.getElementById('auth-radius-secret').placeholder = authConfig.radius_secret_set
+    ? '•••••••• (saved — leave blank to keep)'
+    : 'must match the RADIUS server';
+}
+
 function updateAuthMethodHints() {
   const method = getVal('auth-method');
-  const hasRadius = !!authConfig.radius_server;
+  const hasRadius = !!getVal('auth-radius-server') &&
+    (!!authConfig.radius_secret_set || !!document.getElementById('auth-radius-secret').value);
 
-  document.getElementById('auth-radius-info').style.display = hasRadius ? '' : 'none';
-  document.getElementById('auth-radius-server-view').textContent = authConfig.radius_server || '—';
   document.getElementById('auth-no-radius-warn').style.display   = (method === 'radius' && !hasRadius) ? '' : 'none';
   document.getElementById('auth-fallback-note').style.display    = (method === 'radius' && authLocalUsers.length > 0) ? '' : 'none';
 }
 
 function collectAuth() {
-  authConfig = { ...authConfig, method: getVal('auth-method') };
+  authConfig = {
+    ...authConfig,
+    method:         getVal('auth-method'),
+    radius_server:  getVal('auth-radius-server'),
+    radius_port:    parseInt(getVal('auth-radius-port'))    || 1812,
+    radius_timeout: parseInt(getVal('auth-radius-timeout')) || 5,
+  };
+}
+
+// Only sent when the user typed a new one; blank keeps the saved secret.
+function authSavePayload() {
+  const out = {
+    method:         authConfig.method || '',
+    radius_server:  authConfig.radius_server || '',
+    radius_port:    authConfig.radius_port,
+    radius_timeout: authConfig.radius_timeout,
+  };
+  const secret = document.getElementById('auth-radius-secret').value;
+  if (secret) out.radius_secret = secret;
+  return out;
 }
 
 function renderLocalUsersList() {
@@ -2981,10 +3079,15 @@ async function saveConfig() {
         schedule,
         ssh_defaults: sshDefs,
         test_params: testParams,
-        auth: { method: authConfig.method || '' },
+        auth: authSavePayload(),
       }),
     });
     if (res.ok) {
+      if (document.getElementById('auth-radius-secret').value) {
+        authConfig.radius_secret_set = true;
+        setVal('auth-radius-secret', '');
+        updateRadiusSecretPlaceholder();
+      }
       setStatus(`Saved — ${res.agents} agents, ${res.paths} paths`, 'ok');
       toast('Config saved and reloaded ✓', 'ok');
     } else {

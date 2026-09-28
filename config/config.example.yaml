@@ -27,12 +27,12 @@ controller:
 
 # ── Authentication ─────────────────────────────────────────
 auth:
-  # Which login method to use: "" | "radius" | "local"
-  # Leave blank ("") to disable authentication entirely —
-  # the dashboard will be accessible without login.
-  # If left blank but radius_server or local_users below are set, the
-  # method is inferred (radius_server wins) for backward compatibility —
-  # but setting this explicitly is recommended.
+  # Which login method to use: "none" | "radius" | "local"
+  # "none" disables authentication entirely — the dashboard will be
+  # accessible without login, even if RADIUS/local users are configured.
+  # If left blank (""), the method is inferred for backward compatibility:
+  # radius_server set → radius, else local_users set → local, else none.
+  # Setting this explicitly is recommended.
   method: ""
 
   # ── RADIUS (method: radius) ──
@@ -290,6 +290,10 @@ test_params:
 
 # ── Schedule ────────────────────────────────────────────────
 schedule:
+  # Master switch for automatic runs. Set to false to pause all scheduled
+  # tests (full suite and latency-only); manual runs still work.
+  enabled: true
+
   # How often to run the full test suite across all paths (minutes)
   # Each path runs all its configured tests once per interval
   full_test_interval_minutes: 60

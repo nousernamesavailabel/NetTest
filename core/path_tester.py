@@ -5,6 +5,7 @@ Orchestrates all test runners for a single path (source → destination).
 
 import logging
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from typing import List
 
@@ -12,6 +13,7 @@ from core.config_loader import ControllerConfig, TestPath, SWITCH_ROUTER_TESTS, 
 from core.results import PathTestResult, SegmentResult, make_result_id, utc_now_iso
 from runners.runner_traceroute import TracerouteRunner
 from core.ssh_manager import ssh_connection, SSHConnectionError
+from core.host_locks import iperf_hosts_locked
 from runners.runner_throughput import ThroughputRunner
 from runners.runner_latency import (
     LatencyRunner, JitterRunner, LatencyUnderLoadRunner, MTURunner
@@ -30,6 +32,9 @@ TEST_LABELS = {
     "mtu":                "MTU Discovery",
     "traceroute":         "Traceroute",
 }
+
+# Tests that start/kill iPerf3 on their endpoints — serialized per host
+IPERF_TESTS = ("throughput", "jitter", "latency_under_load")
 
 class PathTester:
 
@@ -193,6 +198,7 @@ class PathTester:
                             port_override=dst_iperf3_port,
                             directions=path.directions,
                             parallel_streams=path.parallel_streams,
+                            abort_event=abort_event,
                         )
                     # Retry busy iPerf3 tests
                     retries = getattr(result, "_iperf_retry", [])
@@ -207,6 +213,7 @@ class PathTester:
                             logger.info(f"")
                             logger.info(f"-- Retry: {label} --")
                             setattr(result, test_type, None)
+                            self._clear_test_error(result, test_type)
                             self._run_test(
                                 test_type=test_type,
                                 result=result,
@@ -217,16 +224,9 @@ class PathTester:
                                 port_override=dst_iperf3_port,
                                 directions=path.directions,
                                 parallel_streams=path.parallel_streams,
+                                abort_event=abort_event,
                             )
                         result._iperf_retry = []
-                        # Remove "busy" errors from result.error for any tests that succeeded
-                        if result.error:
-                            parts = [p for p in result.error.split(" | ")
-                                     if not any(
-                                         rt in p and "busy" in p
-                                         for rt in ("throughput","jitter","latency_under_load")
-                                     )]
-                            result.error = " | ".join(parts) or None
                 else:
                     dst_ssh_params = self.config.get_ssh_params(dst_agent)
                     logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host_mgmt_ip})...")
@@ -251,6 +251,7 @@ class PathTester:
                                 port_override=None,
                                 directions=path.directions,
                                 parallel_streams=path.parallel_streams,
+                                abort_event=abort_event,
                             )
                         # Retry any iPerf3 tests that failed due to busy server
                         retries = getattr(result, "_iperf_retry", [])
@@ -266,6 +267,7 @@ class PathTester:
                                 logger.info(f"-- Retry: {label} --")
                                 # Clear previous error for this test
                                 setattr(result, test_type, None)
+                                self._clear_test_error(result, test_type)
                                 self._run_test(
                                     test_type=test_type,
                                     result=result,
@@ -276,6 +278,7 @@ class PathTester:
                                     port_override=None,
                                     directions=path.directions,
                                     parallel_streams=path.parallel_streams,
+                                    abort_event=abort_event,
                                 )
                             result._iperf_retry = []
 
@@ -297,7 +300,19 @@ class PathTester:
 
         logger.info(f"")
         if result.success:
-            logger.info(f"PASSED: {path.label} completed in {result.duration_total_sec}s")
+            # success only means both endpoints were reached and every test
+            # was attempted — result.error lists the tests that failed.
+            if result.error:
+                failed = [TEST_LABELS.get(t, t) for t in path.tests
+                          if f"{t} failed:" in result.error]
+                logger.warning(f"COMPLETED WITH ERRORS: {path.label} in "
+                               f"{result.duration_total_sec}s — {len(failed)} of "
+                               f"{len(path.tests)} test(s) failed"
+                               + (f": {', '.join(failed)}" if failed else ""))
+                for part in filter(None, (p.strip() for p in result.error.split(" | "))):
+                    logger.warning(f"  ✗ {part}")
+            else:
+                logger.info(f"PASSED: {path.label} completed in {result.duration_total_sec}s")
             # Log intermediate segment summaries first
             if result.segments:
                 logger.info(f"  Intermediate segments:")
@@ -329,7 +344,8 @@ class PathTester:
                   server_managed: bool = True,
                   port_override: int = None,
                   directions: List[str] = None,
-                  parallel_streams: int = 8):
+                  parallel_streams: int = 8,
+                  abort_event=None):
         """Run a single test type. result can be PathTestResult or SegmentResult.
         server_managed=False skips iPerf3 server start (agent_not_installed destinations).
         port_override sets the iPerf3 port when not using test_params default.
@@ -337,12 +353,21 @@ class PathTester:
         upload | download | bidir, run as separate iPerf3 invocations.
         parallel_streams (throughput and latency_under_load) is per-path —
         the right count depends on the path's own bandwidth/shaping.
+        iPerf3 tests first take the per-host lock on both endpoints (see
+        core/host_locks.py), waiting out any other path using either host.
         """
         p = self.config.test_params
         directions = directions or ["upload"]
         DIR_LABELS = {"upload": "upload", "download": "download", "bidir": "bidirectional"}
 
+        held = ExitStack()
         try:
+            if test_type in IPERF_TESTS:
+                held.enter_context(iperf_hosts_locked(
+                    [src_ssh.host, dst_ssh.host if dst_ssh is not None else dst_host],
+                    abort_event=abort_event,
+                ))
+
             if test_type == "throughput":
                 if server_managed:
                     logger.info(f"  Starting iPerf3 server on destination ({dst_host})...")
@@ -355,19 +380,34 @@ class PathTester:
                             f"({', '.join(DIR_LABELS.get(d, d) for d in directions)})")
                 runner = ThroughputRunner(p.throughput)
                 throughput_results = []
+                direction_errors = []
                 for i, direction in enumerate(directions):
+                    dir_label = DIR_LABELS.get(direction, direction)
                     if len(directions) > 1:
-                        logger.info(f"  [{i+1}/{len(directions)}] "
-                                    f"Direction: {DIR_LABELS.get(direction, direction)}")
-                    throughput_results.append(runner.run(
-                        src_ssh, dst_ssh, dst_host,
-                        server_managed=server_managed,
-                        port_override=port_override,
-                        busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
-                        direction=direction,
-                        parallel_streams=parallel_streams,
-                    ))
+                        logger.info(f"  [{i+1}/{len(directions)}] Direction: {dir_label}")
+                    try:
+                        throughput_results.append(runner.run(
+                            src_ssh, dst_ssh, dst_host,
+                            server_managed=server_managed,
+                            port_override=port_override,
+                            busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
+                            direction=direction,
+                            parallel_streams=parallel_streams,
+                        ))
+                    except Exception as e:
+                        # Busy server → let the outer handler queue a full
+                        # throughput retry. Any other failure only loses this
+                        # direction; keep the ones that already succeeded.
+                        if "busy" in str(e).lower():
+                            raise
+                        logger.error(f"  Throughput ({dir_label}) failed: {e}")
+                        logger.debug(f"  [throughput/{direction}] traceback", exc_info=True)
+                        direction_errors.append(f"{dir_label}: {e}")
                 result.throughput = throughput_results
+                if direction_errors:
+                    existing = result.error or ""
+                    result.error = (f"{existing} | throughput failed: "
+                                    f"{'; '.join(direction_errors)}").strip(" |")
 
             elif test_type == "latency":
                 logger.info(f"  Pinging {dst_host} — "
@@ -452,6 +492,18 @@ class PathTester:
                 result._iperf_retry.append(test_type)
                 logger.warning(f"  iPerf3 was busy — will retry {test_type} "
                                f"after remaining tests complete")
+        finally:
+            held.close()
+
+    @staticmethod
+    def _clear_test_error(result, test_type: str):
+        """Drop test_type's entry from result.error before it is re-run, so
+        the retry's own outcome is the only one recorded."""
+        if not result.error:
+            return
+        parts = [p for p in result.error.split(" | ")
+                 if not p.startswith(f"{test_type} failed:")]
+        result.error = " | ".join(parts) or None
 
     def _log_summary(self, result: PathTestResult):
         """Log a clean results summary after a successful path run."""
@@ -466,8 +518,12 @@ class PathTester:
 
         if result.latency:
             l = result.latency
-            logger.info(f"    Latency           : avg {l.rtt_avg_ms}ms  max {l.rtt_max_ms}ms  "
-                        f"loss {l.packet_loss_pct}%")
+            if l.packets_received == 0:
+                logger.info(f"    Latency           : no replies — "
+                            f"all {l.packets_sent} pings lost (100% loss)")
+            else:
+                logger.info(f"    Latency           : avg {l.rtt_avg_ms}ms  max {l.rtt_max_ms}ms  "
+                            f"loss {l.packet_loss_pct}%")
 
         if result.latency_under_load:
             lu = result.latency_under_load

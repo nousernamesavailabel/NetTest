@@ -19,11 +19,14 @@ a:hover{text-decoration:underline}
 
 .shell{display:grid;grid-template-rows:48px 1fr;min-height:100vh}
 .topbar{display:flex;align-items:center;justify-content:space-between;
-        padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf)}
+        padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf);
+        position:sticky;top:0;z-index:10}
 .topbar-left{display:flex;align-items:center;gap:14px}
 .logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
 .logo span{color:var(--cy)}
 .topbar-right{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--mt)}
+#clock,#clock-local{font-variant-numeric:tabular-nums}
+@media (max-width:480px){#clock-local,#clock-local-sep{display:none}}
 
 .content{padding:20px;display:flex;flex-direction:column;gap:20px;max-width:900px;width:100%;margin:0 auto}
 
@@ -35,7 +38,7 @@ a:hover{text-decoration:underline}
 /* ── Speedometer-style gauge ── */
 .go-wrap{display:flex;justify-content:center}
 .go-ring{width:180px;height:180px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-         position:relative;transition:background .18s ease-out}
+         position:relative}
 .go-ring::before{content:'';position:absolute;inset:10px;border-radius:50%;background:var(--surf);
                   box-shadow:inset 0 0 0 1px var(--bdr)}
 .go-ring.done{animation:pulse-glow 1.4s ease-out 1}
@@ -88,6 +91,28 @@ a:hover{text-decoration:underline}
 .result-note .ok{color:var(--gn)}
 .result-note .err{color:var(--rd)}
 
+/* ── Run history ── */
+.hist-panel{background:var(--surf);border:1px solid var(--bdr);border-radius:6px;padding:12px 14px}
+.hist-wrap{overflow-x:auto;max-height:370px;overflow-y:auto}
+.hist-table thead th{position:sticky;top:0;background:var(--surf);z-index:1}
+.day-tabs{display:flex;gap:4px;flex-wrap:wrap}
+.day-tab{padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;color:var(--mt);border:1px solid transparent}
+.day-tab:hover{background:var(--surf2)}
+.day-tab.active{background:var(--surf2);border-color:var(--bdr2);color:var(--tx)}
+.hist-meta{display:flex;align-items:center;gap:12px}
+.hist-table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums}
+.hist-table th{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mt);
+               text-align:right;padding:6px 8px;border-bottom:1px solid var(--bdr);white-space:nowrap}
+.hist-table td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--bdr);color:var(--mt2);white-space:nowrap}
+.hist-table th:nth-child(-n+2),.hist-table td:nth-child(-n+2){text-align:left}
+.hist-table tr:last-child td{border-bottom:none}
+.hist-table td.ip{color:var(--tx)}
+.hist-table td.dl{color:var(--cy)} .hist-table td.ul{color:var(--bl)}
+.hist-table td .sub{color:var(--mt);font-size:9.5px;margin-left:4px}
+.hist-table td.warn{color:var(--yw)}
+.hist-table td.bf{font-weight:700}
+.hist-empty{color:var(--mt);font-size:11px;text-align:center;padding:10px 0}
+
 /* ── Bufferbloat explainer ── */
 .info-panel{background:var(--surf);border:1px solid var(--bdr);border-radius:6px;
             padding:18px 20px;display:flex;flex-direction:column;gap:12px}
@@ -132,6 +157,8 @@ a:hover{text-decoration:underline}
       <a href="/config">⚙ Config</a>
       <span style="color:var(--bdr2)">|</span>
       <a href="/logout">Logout</a>
+      <span style="color:var(--bdr2)">|</span>
+      <span id="clock-local"></span><span id="clock-local-sep" style="color:var(--bdr2)">·</span><span id="clock"></span>
     </div>
   </div>
 
@@ -194,6 +221,32 @@ a:hover{text-decoration:underline}
 
     <div class="result-note" id="result-note">&nbsp;</div>
 
+    <div class="hist-panel">
+      <div class="chart-head">
+        <span class="chart-title">Recent Runs</span>
+        <div class="hist-meta">
+          <span class="chart-legend" id="hist-count"></span>
+          <div class="day-tabs">
+            <div class="day-tab" onclick="setWindow(15,this)">15m</div>
+            <div class="day-tab" onclick="setWindow(60,this)">1h</div>
+            <div class="day-tab" onclick="setWindow(360,this)">6h</div>
+            <div class="day-tab active" onclick="setWindow(1440,this)">24h</div>
+            <div class="day-tab" onclick="setWindow(4320,this)">3d</div>
+            <div class="day-tab" onclick="setWindow(10080,this)">7d</div>
+          </div>
+        </div>
+      </div>
+      <div class="hist-wrap">
+        <table class="hist-table">
+          <thead><tr>
+            <th>Time</th><th>Source IP</th><th>Ping</th><th>Jitter</th><th>MTU</th>
+            <th>Bloat</th><th>Download</th><th>Upload</th>
+          </tr></thead>
+          <tbody id="hist-body"><tr><td colspan="8" class="hist-empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="info-panel">
       <div class="info-title">What is Bufferbloat?</div>
       <div class="info-text">
@@ -243,6 +296,7 @@ let running = false;
 // ── Small helpers ───────────────────────────────────────────
 
 function setPhase(text, active) {
+  cancelTween('go');   // don't count from one phase's reading (ms) into the next's (bytes)
   const el = document.getElementById('phase-label');
   el.textContent = text;
   el.classList.toggle('active', !!active);
@@ -257,6 +311,7 @@ function fmtMbps(v) {
 }
 
 function setStat(id, value, unit) {
+  cancelTween('stat-' + id);
   const el = document.getElementById('val-' + id);
   el.innerHTML = unit ? `${value}<span class="unit">${unit}</span>` : value;
   el.classList.remove('pop');
@@ -264,7 +319,21 @@ function setStat(id, value, unit) {
   el.classList.add('pop');
 }
 
+function setStatLive(id, value, fmt, unit) {
+  const el = document.getElementById('val-' + id);
+  tweenNumber('stat-' + id, value, fmt, (txt) => {
+    el.innerHTML = `${txt}<span class="unit">${unit}</span>`;
+  });
+}
+
+function setGoLive(value, fmt, unit) {
+  document.getElementById('go-unit').textContent = unit;
+  const valEl = document.getElementById('go-value');
+  tweenNumber('go', value, fmt, (txt) => { valEl.textContent = txt; });
+}
+
 function setGoValue(value, unit) {
+  cancelTween('go');
   const valEl = document.getElementById('go-value');
   valEl.textContent = value;
   document.getElementById('go-unit').textContent = unit || '';
@@ -275,20 +344,46 @@ function setGoValue(value, unit) {
 
 // ── Speedometer-style gauge ring ─────────────────────────────
 // A 240° arc (with a gap at the bottom, like a car speedometer) that
-// always shows the green/yellow/red zones, plus a bright marker riding
-// along it at the current reading's position.
+// always shows the red/yellow/green zones, plus a bright marker riding
+// along it at the current reading's position. Readings only set a
+// target; a requestAnimationFrame loop eases the marker (and the live
+// numbers) toward it so updates glide instead of jumping.
 
 const ringEl     = document.getElementById('go-ring');
 const GAUGE_FROM = 240;   // conic-gradient start angle -> arc runs bottom-left to bottom-right
 const GAUGE_SWEEP = 240;  // degrees of visible arc (leaves a 120° gap at the bottom)
+const EASE_RATE   = 9;    // higher = snappier easing (per second)
+const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-function zoneColor(deg) {
-  if (deg < GAUGE_SWEEP / 3)     return '#22c55e';
-  if (deg < GAUGE_SWEEP * 2 / 3) return '#eab308';
-  return '#ef4444';
+// Red at the low end, green at the high end.
+const ZONE_STOPS = [[239, 68, 68], [234, 179, 8], [34, 197, 94]];
+
+function zoneColor(frac) {
+  const x = Math.max(0, Math.min(1, frac)) * (ZONE_STOPS.length - 1);
+  const i = Math.min(ZONE_STOPS.length - 2, Math.floor(x));
+  const t = x - i, a = ZONE_STOPS[i], b = ZONE_STOPS[i + 1];
+  return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * t)).join(',')})`;
+}
+
+let gaugeActive  = false;
+let gaugeCurrent = 0;
+let gaugeTarget  = 0;
+
+function drawGauge(fraction) {
+  const deg  = fraction * GAUGE_SWEEP;
+  const tip  = zoneColor(fraction);
+  const tipA = Math.max(0, deg - 4);
+  const tipB = Math.min(GAUGE_SWEEP, deg + 4);
+  const third1 = GAUGE_SWEEP / 3, third2 = GAUGE_SWEEP * 2 / 3;
+  ringEl.style.background = `
+    conic-gradient(from ${GAUGE_FROM}deg, transparent 0deg ${tipA}deg, ${tip} ${tipA}deg ${tipB}deg, transparent ${tipB}deg 360deg),
+    conic-gradient(from ${GAUGE_FROM}deg, rgba(239,68,68,.3) 0deg ${third1}deg, rgba(234,179,8,.3) ${third1}deg ${third2}deg, rgba(34,197,94,.3) ${third2}deg ${GAUGE_SWEEP}deg, transparent ${GAUGE_SWEEP}deg 360deg)
+  `;
 }
 
 function gaugeIdle() {
+  gaugeActive = false;
+  gaugeCurrent = gaugeTarget = 0;
   ringEl.classList.remove('done');
   ringEl.style.background =
     `conic-gradient(from ${GAUGE_FROM}deg, rgba(255,255,255,.06) 0deg ${GAUGE_SWEEP}deg, transparent ${GAUGE_SWEEP}deg 360deg)`;
@@ -296,18 +391,64 @@ function gaugeIdle() {
 
 function gaugeSet(fraction) {
   ringEl.classList.remove('done');
-  const deg  = Math.max(0, Math.min(1, fraction)) * GAUGE_SWEEP;
-  const tip  = zoneColor(deg);
-  const tipA = Math.max(0, deg - 4);
-  const tipB = Math.min(GAUGE_SWEEP, deg + 4);
-  const third1 = GAUGE_SWEEP / 3, third2 = GAUGE_SWEEP * 2 / 3;
-  ringEl.style.background = `
-    conic-gradient(from ${GAUGE_FROM}deg, transparent 0deg ${tipA}deg, ${tip} ${tipA}deg ${tipB}deg, transparent ${tipB}deg 360deg),
-    conic-gradient(from ${GAUGE_FROM}deg, rgba(34,197,94,.3) 0deg ${third1}deg, rgba(234,179,8,.3) ${third1}deg ${third2}deg, rgba(239,68,68,.3) ${third2}deg ${GAUGE_SWEEP}deg, transparent ${GAUGE_SWEEP}deg 360deg)
-  `;
+  gaugeTarget = Math.max(0, Math.min(1, fraction));
+  if (!gaugeActive) { gaugeActive = true; gaugeCurrent = 0; }
+  kickAnim();
+}
+
+// ── Number tweens (live readouts) ────────────────────────────
+// key -> { cur, target, fmt, apply }
+const tweens = new Map();
+
+function tweenNumber(key, target, fmt, apply) {
+  const t = tweens.get(key);
+  if (t) { t.target = target; t.fmt = fmt; t.apply = apply; }
+  else tweens.set(key, { cur: target, target, fmt, apply, fresh: true });
+  kickAnim();
+}
+
+function cancelTween(key) { tweens.delete(key); }
+
+// ── Shared animation loop ────────────────────────────────────
+
+let animFrame = null, animLast = 0;
+
+function kickAnim() {
+  if (animFrame == null) { animLast = performance.now(); animFrame = requestAnimationFrame(animStep); }
+}
+
+function approach(cur, target, k, eps) {
+  const next = cur + (target - cur) * k;
+  return Math.abs(target - next) < eps ? target : next;
+}
+
+function animStep(now) {
+  const dt = Math.min(0.1, (now - animLast) / 1000);
+  animLast = now;
+  const k = REDUCED_MOTION ? 1 : 1 - Math.exp(-EASE_RATE * dt);
+  let busy = false;
+
+  if (gaugeActive) {
+    gaugeCurrent = approach(gaugeCurrent, gaugeTarget, k, 0.0005);
+    drawGauge(gaugeCurrent);
+    if (gaugeCurrent !== gaugeTarget) busy = true;
+  }
+
+  for (const t of tweens.values()) {
+    if (t.fresh) { t.fresh = false; t.apply(t.fmt(t.cur)); continue; }
+    const eps = Math.max(Math.abs(t.target) * 0.001, 0.01);
+    t.cur = approach(t.cur, t.target, k, eps);
+    t.apply(t.fmt(t.cur));
+    if (t.cur !== t.target) busy = true;
+  }
+
+  if (sparkStep(k)) busy = true;
+
+  animFrame = busy ? requestAnimationFrame(animStep) : null;
 }
 
 function gaugeDone() {
+  gaugeActive = false;
   ringEl.style.background = 'conic-gradient(#22c55e 360deg, #22c55e 360deg)';
   void ringEl.offsetWidth;
   ringEl.classList.add('done');
@@ -321,10 +462,20 @@ const SPARK_MAX_POINTS = 240;
 let sparkPoints = [];   // {mbps, color}
 let sparkCeil   = 10;
 
+let sparkCeilShown = 10;   // eased toward sparkCeil so rescaling glides
+
 function resetSpark() {
   sparkPoints = [];
-  sparkCeil = 10;
+  sparkCeil = sparkCeilShown = 10;
   drawSpark();
+}
+
+// Called from the animation loop; returns true while still easing.
+function sparkStep(k) {
+  if (sparkCeilShown === sparkCeil) return false;
+  sparkCeilShown = approach(sparkCeilShown, sparkCeil, k, 0.01);
+  drawSpark();
+  return sparkCeilShown !== sparkCeil;
 }
 
 function pushSpark(mbps, color) {
@@ -332,6 +483,7 @@ function pushSpark(mbps, color) {
   if (sparkPoints.length > SPARK_MAX_POINTS) sparkPoints.shift();
   sparkCeil = Math.max(10, sparkCeil, mbps * 1.15);
   drawSpark();
+  kickAnim();
 }
 
 function drawSpark() {
@@ -351,7 +503,7 @@ function drawSpark() {
   for (let i = 1; i < sparkPoints.length; i++) {
     const p0 = sparkPoints[i - 1], p1 = sparkPoints[i];
     const x0 = (offset + i - 1) * stepX, x1 = (offset + i) * stepX;
-    const y0 = h - (p0.mbps / sparkCeil) * h, y1 = h - (p1.mbps / sparkCeil) * h;
+    const y0 = h - (p0.mbps / sparkCeilShown) * h, y1 = h - (p1.mbps / sparkCeilShown) * h;
     sctx.strokeStyle = p1.color;
     sctx.beginPath(); sctx.moveTo(x0, y0); sctx.lineTo(x1, y1); sctx.stroke();
   }
@@ -482,7 +634,7 @@ async function testDownload(onTick) {
       peak = Math.max(peak, mbps);
       onTick(mbps);
     }
-  }, 200);
+  }, 100);
 
   await Promise.all([
     ...Array.from({ length: DOWNLOAD_STREAMS }, (_, i) => downloadWorker(i, deadline, loadedByStream, stopFlag)),
@@ -543,7 +695,7 @@ async function testUpload(onTick) {
       peak = Math.max(peak, mbps);
       onTick(mbps);
     }
-  }, 200);
+  }, 100);
 
   await Promise.all([
     ...Array.from({ length: UPLOAD_STREAMS }, (_, i) => uploadWorker(i, deadline, loadedByStream, blob, stopFlag)),
@@ -555,6 +707,77 @@ async function testUpload(onTick) {
   const total = loadedByStream.reduce((a, b) => a + b, 0);
   const mbps = elapsed > 0 ? (total * 8 / 1e6) / elapsed : 0;
   return { mbps, peak: Math.max(peak, mbps), totalMB: total / 1e6, loadedPingAvg: avg(loadedPings) };
+}
+
+// ── Run history ──────────────────────────────────────────────
+
+function esc(v) {
+  return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fmtOr(v, fn) { return v == null ? '—' : fn(v); }
+
+function renderHistory(runs) {
+  const body = document.getElementById('hist-body');
+  document.getElementById('hist-count').textContent = runs.length ? `${runs.length} run${runs.length === 1 ? '' : 's'}` : '';
+  if (!runs.length) {
+    body.innerHTML = '<tr><td colspan="8" class="hist-empty">No runs for this period.</td></tr>';
+    return;
+  }
+  body.innerHTML = runs.map(r => {
+    const d = new Date(r.ts);
+    const when = d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+                 d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const g = r.bufferbloat_grade ? gradeClass(r.bufferbloat_grade) : '';
+    const bfParts = [];
+    if (r.bufferbloat_dl_ms != null) bfParts.push(`↓+${r.bufferbloat_dl_ms}`);
+    if (r.bufferbloat_ul_ms != null) bfParts.push(`↑+${r.bufferbloat_ul_ms}`);
+    return `<tr title="${esc(r.user ? 'run by ' + r.user : '')}">
+      <td>${esc(when)}</td>
+      <td class="ip">${esc(r.client_ip || '—')}</td>
+      <td>${fmtOr(r.ping_ms, v => v.toFixed(1) + ' ms')}</td>
+      <td>${fmtOr(r.jitter_ms, v => v.toFixed(1) + ' ms')}</td>
+      <td class="${r.mtu_fragmented ? 'warn' : ''}">${fmtOr(r.mtu, v => v + ' B')}</td>
+      <td class="bf ${g}">${esc(r.bufferbloat_grade || '—')}${bfParts.length ? `<span class="sub">${esc(bfParts.join(' '))} ms</span>` : ''}</td>
+      <td class="dl">${fmtOr(r.download_mbps, v => fmtMbps(v) + ' Mbps')}</td>
+      <td class="ul">${fmtOr(r.upload_mbps, v => fmtMbps(v) + ' Mbps')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function gradeClass(grade) {
+  return grade === 'A+' ? 'grade-Ap' : 'grade-' + grade;
+}
+
+let histMinutes = 1440;   // rolling window ending now — default 24h, same as the dashboard
+
+function setWindow(minutes, el) {
+  histMinutes = minutes;
+  document.querySelectorAll('.day-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  loadHistory();
+}
+
+async function loadHistory() {
+  try {
+    const res = await fetch(`/api/speedtest/history?minutes=${histMinutes}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    renderHistory(await res.json());
+  } catch (e) {
+    document.getElementById('hist-body').innerHTML =
+      '<tr><td colspan="8" class="hist-empty">Could not load run history.</td></tr>';
+  }
+}
+
+async function saveRun(run) {
+  try {
+    await fetch('/api/speedtest/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(run),
+    });
+  } catch (e) { /* history is best-effort */ }
+  loadHistory();
 }
 
 // ── Orchestration ────────────────────────────────────────────
@@ -588,8 +811,8 @@ async function runSpeedTest() {
     setPhase('Testing ping…', true);
     setCardActive('ping', true);
     const ping = await measurePing(PING_SAMPLES, (ms) => {
-      setGoValue(ms.toFixed(0), 'ms');
-      gaugeSet(ms / PING_GAUGE_MAX_MS);
+      setGoLive(ms, v => v.toFixed(0), 'ms');
+      gaugeSet(1 - ms / PING_GAUGE_MAX_MS);   // low ping = green end
     });
     setCardActive('ping', false);
     if (ping) {
@@ -607,7 +830,7 @@ async function runSpeedTest() {
     setPhase('Testing MTU…', true);
     setCardActive('mtu', true);
     const mtuResult = await testMtu((size, ok) => {
-      setGoValue(size, 'bytes');
+      setGoLive(size, v => v.toFixed(0), 'bytes');
       gaugeSet((size - MTU_MIN) / (MTU_MAX - MTU_MIN));
     });
     setCardActive('mtu', false);
@@ -621,8 +844,8 @@ async function runSpeedTest() {
     setPhase('Testing download…', true);
     setCardActive('download', true);
     const dl = await testDownload((mbps) => {
-      setStat('download', fmtMbps(mbps), 'Mbps');
-      setGoValue(fmtMbps(mbps), 'Mbps ↓');
+      setStatLive('download', mbps, fmtMbps, 'Mbps');
+      setGoLive(mbps, fmtMbps, 'Mbps ↓');
       gaugeSet(mbps / sparkCeil);
       pushSpark(mbps, '#06b6d4');
     });
@@ -634,8 +857,8 @@ async function runSpeedTest() {
     setPhase('Testing upload…', true);
     setCardActive('upload', true);
     const ul = await testUpload((mbps) => {
-      setStat('upload', fmtMbps(mbps), 'Mbps');
-      setGoValue(fmtMbps(mbps), 'Mbps ↑');
+      setStatLive('upload', mbps, fmtMbps, 'Mbps');
+      setGoLive(mbps, fmtMbps, 'Mbps ↑');
       gaugeSet(mbps / sparkCeil);
       pushSpark(mbps, '#3b82f6');
     });
@@ -645,11 +868,13 @@ async function runSpeedTest() {
       `peak ${fmtMbps(ul.peak)} · ${ul.totalMB.toFixed(0)} MB`;
 
     // Bufferbloat: how much latency degraded under load vs the idle baseline.
+    let dlDelta = null, ulDelta = null, bfGrade = null;
     if (ping && (dl.loadedPingAvg != null || ul.loadedPingAvg != null)) {
-      const dlDelta = dl.loadedPingAvg != null ? dl.loadedPingAvg - ping.min : null;
-      const ulDelta = ul.loadedPingAvg != null ? ul.loadedPingAvg - ping.min : null;
+      dlDelta = dl.loadedPingAvg != null ? dl.loadedPingAvg - ping.min : null;
+      ulDelta = ul.loadedPingAvg != null ? ul.loadedPingAvg - ping.min : null;
       const worst = Math.max(dlDelta || 0, ulDelta || 0);
       const g = bufferbloatGrade(worst);
+      bfGrade = g.grade;
       const bfEl = document.getElementById('val-bufferbloat');
       bfEl.className = 'stat-value ' + g.cls;
       bfEl.style.color = '';
@@ -665,6 +890,20 @@ async function runSpeedTest() {
     gaugeDone();
     document.getElementById('result-note').innerHTML =
       `<span class="ok">✓ Test complete</span> — ${new Date().toLocaleTimeString()}`;
+
+    saveRun({
+      ping_ms:           ping ? ping.min : null,
+      jitter_ms:         ping ? ping.jitter : null,
+      mtu:               mtuResult.mtu,
+      mtu_fragmented:    mtuResult.fragmented,
+      bufferbloat_grade: bfGrade,
+      bufferbloat_dl_ms: dlDelta,
+      bufferbloat_ul_ms: ulDelta,
+      download_mbps:     dl.mbps,
+      download_peak:     dl.peak,
+      upload_mbps:       ul.mbps,
+      upload_peak:       ul.peak,
+    });
   } catch (e) {
     setPhase('Error');
     setGoValue('GO', '');
@@ -677,7 +916,19 @@ async function runSpeedTest() {
   }
 }
 
+// ── Clock (same as dashboard topbar) ─────────────────────────
+function tickClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent = now.toUTCString().slice(17, 25) + ' UTC';
+  const localTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().replace('_',' ');
+  document.getElementById('clock-local').textContent = localTime + ' ' + tz;
+}
+setInterval(tickClock, 1000);
+tickClock();
+
 gaugeIdle();
+loadHistory();
 </script>
 </body>
 </html>

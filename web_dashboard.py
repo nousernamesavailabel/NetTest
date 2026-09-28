@@ -24,7 +24,7 @@ import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from flask import Flask, jsonify, send_from_directory, request, Response, session, redirect, url_for, stream_with_context
 
@@ -154,16 +154,24 @@ def _quiet_libs(*names: str):
 
 # ── Log handler that feeds job history (read by the SSE tail poller) ──
 class JobLogHandler(logging.Handler):
-    """Attaches to the root logger and appends records to the job's history."""
-    def __init__(self, job_id: str):
+    """Attaches to the root logger and appends records to the job's history.
+
+    only_this_thread keeps just the records logged by the thread that built
+    the handler — without it, path jobs running side by side (Run All) each
+    collect every other job's lines too.
+    """
+    def __init__(self, job_id: str, only_this_thread: bool = False):
         super().__init__()
         self.job_id = job_id
+        self.thread_ident = threading.get_ident() if only_this_thread else None
         self.setFormatter(logging.Formatter(
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%H:%M:%S"
         ))
 
     def emit(self, record):
+        if self.thread_ident is not None and record.thread != self.thread_ident:
+            return
         line = self.format(record)
         with _job_logs_lock:
             hist = _job_log_history.setdefault(self.job_id, [])
@@ -172,9 +180,11 @@ class JobLogHandler(logging.Handler):
 
 
 def _run_job(job_id: str, path_id: str, test_filter: List[str] = None,
-             direction_filter: List[str] = None):
-    """Execute a test path in a background thread and stream logs via SSE."""
-    handler = JobLogHandler(job_id)
+             direction_filter: List[str] = None, start_delay: float = 0):
+    """Execute a test path in a background thread and stream logs via SSE.
+    start_delay (Run All's stagger) keeps the job queued, still abortable,
+    for that many seconds first."""
+    handler = JobLogHandler(job_id, only_this_thread=True)
     handler.setLevel(logging.INFO)
 
     # Silence noisy third-party loggers
@@ -184,15 +194,21 @@ def _run_job(job_id: str, path_id: str, test_filter: List[str] = None,
     root_logger.setLevel(debug_mode.root_level(logging.INFO))
     root_logger.addHandler(handler)
 
-    with _jobs_lock:
-        _jobs[job_id]["status"] = "running"
-
     # Create abort event for this job
     abort_event = threading.Event()
     with _abort_lock:
         _abort_events[job_id] = abort_event
 
     try:
+        if start_delay > 0:
+            logging.getLogger(__name__).info(
+                f"Queued — starting in {start_delay:.0f}s (Run All staggers paths)")
+            if abort_event.wait(timeout=start_delay):
+                raise RuntimeError("aborted before starting")
+
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "running"
+
         path = next((p for p in _config.paths if p.id == path_id), None)
         if not path:
             raise ValueError(f"Path '{path_id}' not found in config")
@@ -277,12 +293,15 @@ def _throughput_entries(record: dict) -> List[dict]:
 def _summarise(records: List[dict]) -> dict:
     if not records:
         return {
-            "total_runs": 0, "successful": 0, "failed": 0,
+            "total_runs": 0, "successful": 0, "partial": 0, "failed": 0,
             "avg_latency_ms": None, "avg_throughput_mbps": None,
             "avg_jitter_ms": None, "avg_loss_pct": None,
         }
 
-    successful  = [r for r in records if r.get("success")]
+    # A run with success=True can still have failed tests (listed in its
+    # error) — count those as partial, not successful.
+    successful  = [r for r in records if r.get("success") and not r.get("error")]
+    partial     = [r for r in records if r.get("success") and r.get("error")]
     lat_vals    = [r["latency"]["rtt_avg_ms"]     for r in records if r.get("latency")]
     # A record can hold multiple throughput entries (one per direction run:
     # upload/download/bidir). tx_mbps/rx_mbps are None on whichever entry
@@ -303,7 +322,8 @@ def _summarise(records: List[dict]) -> dict:
     return {
         "total_runs":          len(records),
         "successful":          len(successful),
-        "failed":              len(records) - len(successful),
+        "partial":             len(partial),
+        "failed":              len(records) - len(successful) - len(partial),
         "avg_latency_ms":      avg(lat_vals),
         "avg_throughput_mbps": avg(tput_vals),
         "avg_throughput_rx_mbps": avg(rx_vals),
@@ -321,6 +341,72 @@ def api_summary():
     path_id = request.args.get("path_id")
     records = _load_records(minutes, path_id)
     return jsonify(_summarise(records))
+
+
+@app.route("/api/summary/by_path")
+def api_summary_by_path():
+    """Per-path aggregates over the selected window, for the Path Overview
+    table — averages rather than just the most recent run, so it agrees with
+    the Recent results time selector."""
+    minutes = int(request.args.get("minutes", 1440))
+    by_path: Dict[str, List[dict]] = {}
+    for r in _load_records(minutes):
+        by_path.setdefault(r["path_id"], []).append(r)
+
+    def avg(lst): return round(sum(lst) / len(lst), 2) if lst else None
+
+    out = {}
+    for pid, recs in by_path.items():
+        s = _summarise(recs)
+        bb_vals = [r["latency_under_load"]["delta_ms"] for r in recs
+                   if r.get("latency_under_load") and r["latency_under_load"].get("delta_ms") is not None]
+        mtus = [r["mtu"] for r in recs if r.get("mtu") and r["mtu"].get("effective_mtu_bytes")]
+
+        # Per-hop segment aggregates, keyed by destination agent, in the
+        # hop order of the most recent run that had segments.
+        seg_lat: Dict[str, List[float]] = {}
+        seg_mtu: Dict[str, List[dict]] = {}
+        hop_order: List[str] = []
+        for r in recs:
+            segs = r.get("segments") or []
+            if segs:
+                hop_order = [sg.get("destination_agent_id") for sg in segs]
+            for sg in segs:
+                aid = sg.get("destination_agent_id")
+                if sg.get("latency") and sg["latency"].get("rtt_avg_ms") is not None:
+                    seg_lat.setdefault(aid, []).append(sg["latency"]["rtt_avg_ms"])
+                if sg.get("mtu") and sg["mtu"].get("effective_mtu_bytes"):
+                    seg_mtu.setdefault(aid, []).append(sg["mtu"])
+
+        def mtu_agg(ms):
+            if not ms:
+                return None
+            return {
+                "effective_mtu_bytes":    min(m["effective_mtu_bytes"] for m in ms),
+                "fragmentation_detected": any(m.get("fragmentation_detected") for m in ms),
+            }
+
+        out[pid] = {
+            "total_runs":      s["total_runs"],
+            "successful":      s["successful"],
+            "partial":         s["partial"],
+            "failed":          s["failed"],
+            "avg_latency_ms":  s["avg_latency_ms"],
+            "avg_tx_mbps":     s["avg_throughput_mbps"],
+            "avg_jitter_ms":   s["avg_jitter_ms"],
+            "avg_loss_pct":    s["avg_loss_pct"],
+            "avg_bufferbloat_ms": avg(bb_vals),
+            "mtu":             mtu_agg(mtus),
+            "segments": [
+                {
+                    "destination_agent_id": aid,
+                    "avg_latency_ms":       avg(seg_lat.get(aid, [])),
+                    "mtu":                  mtu_agg(seg_mtu.get(aid, [])),
+                }
+                for aid in hop_order
+            ],
+        }
+    return jsonify(out)
 
 
 @app.route("/api/paths")
@@ -800,6 +886,97 @@ def api_speedtest_mtu_probe():
     return jsonify({"size": size, "success": success})
 
 
+# Completed speed test runs are appended here, one JSON object per line.
+# Deliberately not named results_*.jsonl so ResultStore/run listings,
+# CSV export and "clear results" leave it alone.
+_SPEEDTEST_HISTORY_FILE  = "speedtest_history.jsonl"
+_SPEEDTEST_HISTORY_LIMIT = 50
+_SPEEDTEST_WINDOW_LIMIT  = 500
+_speedtest_history_lock  = threading.Lock()
+
+
+def _speedtest_history_path() -> str:
+    return os.path.join(_config.results_dir, _SPEEDTEST_HISTORY_FILE)
+
+
+def _num(v, ndigits=1):
+    """Coerce a client-supplied value to a rounded float, or None."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return round(f, ndigits)
+
+
+@app.route("/api/speedtest/history")
+@login_required
+def api_speedtest_history():
+    """Completed speed test runs, newest first.
+
+    With ?minutes=N, returns runs from the last N minutes (capped at
+    _SPEEDTEST_WINDOW_LIMIT); otherwise the most recent
+    _SPEEDTEST_HISTORY_LIMIT runs.
+    """
+    minutes = request.args.get("minutes", type=int)
+    path = _speedtest_history_path()
+    runs = []
+    if os.path.exists(path):
+        with _speedtest_history_lock, open(path) as f:
+            lines = list(f) if minutes else collections.deque(f, maxlen=_SPEEDTEST_HISTORY_LIMIT)
+        for line in lines:
+            try:
+                runs.append(json.loads(line))
+            except ValueError:
+                continue
+    if minutes:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        def in_window(r):
+            try:
+                return datetime.fromisoformat(r["ts"]) >= cutoff
+            except (KeyError, TypeError, ValueError):
+                return False
+        runs = [r for r in runs if in_window(r)][-_SPEEDTEST_WINDOW_LIMIT:]
+    runs.reverse()
+    return jsonify(runs)
+
+
+@app.route("/api/speedtest/history", methods=["POST"])
+@login_required
+def api_speedtest_history_add():
+    """Record a completed browser speed test run.
+
+    The source IP is taken from the request (nginx's X-Real-IP), not
+    from the client payload, so it reflects where the test really ran.
+    """
+    body = request.get_json(silent=True) or {}
+    grade = body.get("bufferbloat_grade")
+    if grade not in ("A+", "A", "B", "C", "D", "F"):
+        grade = None
+    entry = {
+        "ts":                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "client_ip":         request.headers.get("X-Real-IP", request.remote_addr),
+        "user":              session.get("username"),
+        "ping_ms":           _num(body.get("ping_ms")),
+        "jitter_ms":         _num(body.get("jitter_ms")),
+        "mtu":               _num(body.get("mtu"), 0),
+        "mtu_fragmented":    bool(body.get("mtu_fragmented")),
+        "bufferbloat_grade": grade,
+        "bufferbloat_dl_ms": _num(body.get("bufferbloat_dl_ms"), 0),
+        "bufferbloat_ul_ms": _num(body.get("bufferbloat_ul_ms"), 0),
+        "download_mbps":     _num(body.get("download_mbps")),
+        "download_peak":     _num(body.get("download_peak")),
+        "upload_mbps":       _num(body.get("upload_mbps")),
+        "upload_peak":       _num(body.get("upload_peak")),
+    }
+    if entry["mtu"] is not None:
+        entry["mtu"] = int(entry["mtu"])
+    with _speedtest_history_lock, open(_speedtest_history_path(), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    return jsonify(entry)
+
+
 def _warm_light_cache():
     """Pre-build the lightweight run index at startup so the first
     /api/runs or /api/result call of a process doesn't have to eat the
@@ -1228,6 +1405,7 @@ def api_export():
     if include.get("schedule"):
         s = _config.schedule
         raw["schedule"] = {
+            "enabled":                       s.enabled,
             "full_test_interval_minutes":    s.full_test_interval_minutes,
             "latency_only_interval_minutes": s.latency_only_interval_minutes,
             "business_hours_only":           s.business_hours_only,
@@ -1256,7 +1434,7 @@ def api_export():
         a = _config.auth
         raw["auth"] = {
             "enabled":                    a.enabled,
-            "method":                     a.method,
+            "method":                     a.method or "none",   # blank would re-infer on import
             "radius_server":              a.radius_server,
             "radius_port":                a.radius_port,
             "radius_secret":              a.radius_secret,
@@ -1548,6 +1726,24 @@ _SNAPSHOTS_DIR = "/opt/nettest/snapshots"
 _APP_DIR       = "/opt/nettest"
 
 
+def _pip_install_cmd() -> list:
+    """pip command that syncs the venv to the pinned dependencies.
+
+    Uses requirements.lock (falling back to requirements.txt) and, when the
+    release bundled its wheels in vendor/wheels, installs from those alone
+    so updates and rollbacks work without an internet connection.
+    """
+    pip = os.path.join(_APP_DIR, "venv/bin/pip")
+    req = os.path.join(_APP_DIR, "requirements.lock")
+    if not os.path.isfile(req):
+        req = os.path.join(_APP_DIR, "requirements.txt")
+    cmd = [pip, "install", "-r", req, "-q"]
+    wheels = os.path.join(_APP_DIR, "vendor", "wheels")
+    if os.path.isdir(wheels) and any(f.endswith(".whl") for f in os.listdir(wheels)):
+        cmd += ["--no-index", "--find-links", wheels]
+    return cmd
+
+
 def _read_version(path: str = None) -> str:
     """Read version from version.txt."""
     vpath = path or os.path.join(_APP_DIR, "version.txt")
@@ -1772,6 +1968,7 @@ def api_update_apply():
                 "--exclude=.ssh/",
                 "--exclude=ssl/",
                 "--exclude=venv/",
+                "--exclude=vendor/",
                 "--exclude=.release_info",
                 f"{src_dir}/", f"{_APP_DIR}/"
             ], capture_output=True, text=True)
@@ -1779,6 +1976,28 @@ def api_update_apply():
                 _log.info("  ✓ Code files updated")
             else:
                 raise RuntimeError(f"rsync failed: {result.stderr}")
+
+            # Bundled wheels replace the old set so pip installs offline.
+            # The bundled .debs are skipped — system packages aren't
+            # changed by web updates.
+            src_wheels = os.path.join(src_dir, "vendor", "wheels")
+            if os.path.isdir(src_wheels):
+                os.makedirs(os.path.join(_APP_DIR, "vendor", "wheels"), exist_ok=True)
+                result = subprocess.run([
+                    "rsync", "-a", "--delete",
+                    f"{src_wheels}/", f"{_APP_DIR}/vendor/wheels/"
+                ], capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(f"rsync of bundled wheels failed: {result.stderr}")
+
+            # Refresh the agent packages staged for air-gapped onboarding
+            src_debs = os.path.join(src_dir, "vendor", "debs")
+            if os.path.isdir(src_debs):
+                try:
+                    from core.agent_packages import stage_bundled
+                    stage_bundled(src_debs, _packages_dir, log=lambda m: _log.info(f"  ✓ {m}"))
+                except Exception as e:
+                    _log.warning(f"  ⚠ Couldn't stage bundled agent packages: {e}")
 
             # Restore SSH keys if they were wiped (e.g. key outside .ssh/ dir)
             restored = 0
@@ -1794,10 +2013,8 @@ def api_update_apply():
 
             # Step 4: Update pip dependencies
             _log.info("  Updating Python dependencies...")  # Step 5
-            pip = os.path.join(_APP_DIR, "venv/bin/pip")
-            req = os.path.join(_APP_DIR, "requirements.txt")
             result = subprocess.run(
-                [pip, "install", "-r", req, "-q"],
+                _pip_install_cmd(),
                 capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0:
@@ -1902,9 +2119,7 @@ def api_update_rollback():
                 raise RuntimeError(f"rsync failed: {result.stderr}")
             _log.info("  ✓ Code files restored")
 
-            pip = os.path.join(_APP_DIR, "venv/bin/pip")
-            req = os.path.join(_APP_DIR, "requirements.txt")
-            subprocess.run([pip, "install", "-r", req, "-q"],
+            subprocess.run(_pip_install_cmd(),
                            capture_output=True, timeout=120)
             _log.info("  ✓ Dependencies synced")
 
@@ -2002,7 +2217,7 @@ def _render_live_page(job_id: str) -> str:
 <div id="output"></div>
 <div id="footer"><span id="lc">0 lines</span></div>
 <script>
-const JOB  = '""" + job_id + """';
+const JOB  = '""" + job_id + r"""';
 const out  = document.getElementById('output');
 const badge= document.getElementById('status-badge');
 const lbl  = document.getElementById('job-label');
@@ -2578,8 +2793,11 @@ def api_run_all():
     body        = request.get_json(silent=True) or {}
     test_filter = body.get("tests")
     job_ids     = []
+    # Same stagger as scheduled runs, so the paths don't all SSH in and start
+    # at once. Paths sharing a host are serialized by core/host_locks.py anyway.
+    stagger     = _config.schedule.stagger_seconds
 
-    for path in _config.paths:
+    for i, path in enumerate(_config.paths):
         job_id = str(uuid.uuid4())[:8]
         with _jobs_lock:
             _jobs[job_id] = {
@@ -2594,6 +2812,7 @@ def api_run_all():
             }
         threading.Thread(
             target=_run_job, args=(job_id, path.id, test_filter),
+            kwargs={"start_delay": i * stagger},
             daemon=True, name=f"job-{job_id}"
         ).start()
         job_ids.append(job_id)
@@ -2710,6 +2929,21 @@ def api_config_get():
     import yaml
     with open(_config_path, 'r') as f:
         raw = yaml.safe_load(f)
+    # Keep secrets out of the browser. Saves preserve them: blank or missing
+    # values keep what's on disk (see api_config_save).
+    auth = raw.setdefault('auth', {})
+    # Show the method actually in effect — blank in config.yaml can still mean
+    # RADIUS/local by inference (see load_config).
+    if _config:
+        auth['method'] = _config.auth.method
+    if 'radius_secret' in auth:
+        auth['radius_secret_set'] = bool(auth.pop('radius_secret'))
+    auth.pop('session_secret', None)
+    for u in auth.get('local_users') or []:
+        u.pop('password_hash', None)
+    ssh = raw.get('ssh_defaults') or {}
+    if 'password' in ssh:
+        ssh['password_set'] = bool(ssh.pop('password'))
     return jsonify(raw)
 
 
@@ -2729,7 +2963,12 @@ def api_config_save():
     if 'agents'      in body: raw['agents']      = body['agents']
     if 'paths'       in body: raw['paths']        = body['paths']
     if 'test_params' in body: raw['test_params']  = body['test_params']
-    if 'ssh_defaults'in body: raw['ssh_defaults'].update(body['ssh_defaults'])
+    if 'ssh_defaults'in body:
+        incoming_ssh = dict(body['ssh_defaults'])
+        incoming_ssh.pop('password_set', None)          # display-only flag from GET
+        if not incoming_ssh.get('password'):            # never sent to the browser
+            incoming_ssh.pop('password', None)
+        raw['ssh_defaults'].update(incoming_ssh)
     if 'schedule'    in body: raw['schedule'].update(body['schedule'])
 
     if 'auth' in body:
@@ -2738,16 +2977,45 @@ def api_config_save():
         # Local users are only ever changed via /api/config/local-users, so a
         # password hash can never be overwritten (or wiped) by a generic save.
         incoming_auth.pop('local_users', None)
+        incoming_auth.pop('radius_secret_set', None)   # display-only flag from GET
+        incoming_auth.pop('session_secret', None)      # never sent to the browser
 
         # Note: 200 status (not 4xx) — the frontend's generic save handler
         # reads {ok|error} from the body rather than the HTTP status code.
-        new_method = incoming_auth.get('method', raw['auth'].get('method', ''))
+        # The secret is never sent to the browser, so a blank value means
+        # "keep the current one" rather than "clear it".
+        if not incoming_auth.get('radius_secret'):
+            incoming_auth.pop('radius_secret', None)
+        if 'radius_server' in incoming_auth:
+            incoming_auth['radius_server'] = str(incoming_auth['radius_server'] or '').strip()
+        for key, default, lo, hi in (('radius_port', 1812, 1, 65535),
+                                     ('radius_timeout', 5, 1, 60)):
+            if key not in incoming_auth:
+                continue
+            try:
+                val = int(incoming_auth[key] if incoming_auth[key] not in ('', None) else default)
+            except (TypeError, ValueError):
+                return jsonify({'error': f'{key} must be a number'})
+            if not lo <= val <= hi:
+                return jsonify({'error': f'{key} must be between {lo} and {hi}'})
+            incoming_auth[key] = val
+
+        # "Disabled" in the UI is sent as "". Store it as "none": a blank method
+        # is inferred as RADIUS/local by load_config, which wouldn't disable login.
+        if 'method' in incoming_auth and not incoming_auth['method']:
+            incoming_auth['method'] = 'none'
+
+        merged = {**raw['auth'], **incoming_auth}
+        new_method = merged.get('method', '')
         if new_method == 'local' and not raw['auth'].get('local_users'):
             return jsonify({'error': 'Cannot set login method to "Local accounts" — '
                                       'add a local user first.'})
-        if new_method == 'radius' and not raw['auth'].get('radius_server'):
-            return jsonify({'error': 'Cannot set login method to "RADIUS" — no radius_server '
-                                      'configured (edit config.yaml or re-run install.sh).'})
+        if new_method == 'radius' and not merged.get('radius_server'):
+            return jsonify({'error': 'Cannot set login method to "RADIUS" — enter a RADIUS '
+                                      'server first.'})
+        if new_method == 'radius' and not merged.get('radius_secret'):
+            return jsonify({'error': 'Cannot set login method to "RADIUS" — enter the RADIUS '
+                                      'shared secret first.'})
 
         raw['auth'].update(incoming_auth)
 
@@ -2830,7 +3098,7 @@ def api_local_users_delete(username):
     if len(remaining) == len(users):
         return jsonify({'error': f'No such user: {username}'}), 404
 
-    if not remaining and auth.get('method') == 'local':
+    if not remaining and _config.auth.method == 'local':
         return jsonify({'error': 'Cannot remove the last local user while "Local accounts" is '
                                   'the active login method — switch method or add another '
                                   'user first.'}), 400
@@ -3055,7 +3323,9 @@ def api_export_csv():
         writer.writerow([
             r.get("timestamp_utc", "")[:19],
             r.get("path_label", ""),
-            "OK" if r.get("success") else "FAIL",
+            ("FAIL" if not r.get("success")
+             else "PARTIAL" if r.get("error")   # some tests failed — see error column
+             else "OK"),
             tx, rx, retr,
             bidir_tx, bidir_rx, bidir_retr,
             l.get("rtt_avg_ms", ""),    l.get("rtt_max_ms", ""),

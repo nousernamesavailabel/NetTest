@@ -6,6 +6,7 @@ Manages SSH connections to agents via Netmiko.
 import logging
 import os
 import time
+import uuid
 import getpass
 from contextlib import contextmanager
 from typing import Optional
@@ -114,6 +115,11 @@ class SSHManager:
                 logger.debug(f"SSH connecting to {self.host}:{self.port} "
                              f"as {self.username} (attempt {attempt}/{self.retries})")
                 self._connection = ConnectHandler(**self._build_netmiko_params())
+                try:
+                    self._sync_channel()
+                except Exception:
+                    self.disconnect()
+                    raise
                 logger.info(f"SSH connection established to {self.host}")
                 return
             except NetmikoAuthenticationException as e:
@@ -138,6 +144,30 @@ class SSHManager:
             f"Could not connect to {self.host} after {self.retries} attempts — "
             f"check the host is reachable on port {self.port}"
         )
+
+    def _sync_channel(self, timeout: int = 15):
+        """Consume everything the login left unread, up to a fresh prompt.
+
+        netmiko's session setup sends newlines to find the prompt and can
+        match a `$`/`#` in the login banner instead, leaving a real prompt
+        unread. run()'s expect_string r"\\$" then matches that leftover
+        prompt instantly on the first command, returning nothing, and every
+        later command reads the output of the one before it. Echoing a
+        unique marker and reading through its output and the prompt that
+        follows puts the channel back in step.
+        """
+        token = uuid.uuid4().hex[:12]
+        # The quotes keep the command echo from containing the marker —
+        # only the command's output can match.
+        self._connection.write_channel(f'echo NT_SYNC_""{token}\n')
+        self._connection.read_until_pattern(
+            pattern=rf"NT_SYNC_{token}[^\n]*\n[^\n]*\$",
+            read_timeout=timeout,
+        )
+        # Drop what followed the matched `$` (the prompt's trailing space) —
+        # left in netmiko's read buffer, it would prefix the next command's
+        # echo and stop send_command from stripping it.
+        self._connection.clear_buffer()
 
     def disconnect(self):
         if self._connection:

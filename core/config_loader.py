@@ -198,6 +198,9 @@ class Schedule:
     business_hours_end: str
     timezone: str
     stagger_seconds: int
+    # False pauses all automatic runs (both tiers). Manual runs still work.
+    # Missing from config.yaml means enabled, so older configs keep running.
+    enabled: bool = True
 
 
 @dataclass
@@ -209,8 +212,9 @@ class LocalUser:
 @dataclass
 class AuthConfig:
     enabled: bool = False
-    # "" (disabled) | "radius" | "local" — inferred from radius_server /
-    # local_users when not set explicitly, for backward compatibility.
+    # Effective method: "" (disabled) | "radius" | "local". In config.yaml,
+    # "none" disables explicitly; blank is inferred from radius_server /
+    # local_users for backward compatibility.
     method: str = ""
     radius_server: str = ""
     radius_port: int = 1812
@@ -333,9 +337,13 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
         for u in raw_local_users
     ]
     method = (raw_auth.pop("method", "") or "").strip().lower()
-    if method not in ("", "radius", "local"):
+    if method not in ("", "none", "radius", "local"):
         method = ""
-    if not method:
+    if method == "none":
+        # Explicitly disabled — skip the inference below, so login stays off
+        # even when radius_server / local_users are still configured.
+        method = ""
+    elif not method:
         # Backward compat: older configs only set radius_server, with no
         # explicit method field.
         if raw_auth.get("radius_server"):

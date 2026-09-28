@@ -106,7 +106,14 @@ rsync -a \
 ok "Code files restored"
 
 info "Syncing Python dependencies..."
-"${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/requirements.txt" -q
+# Prefer the pinned lock and the bundled wheels, which need no internet.
+REQ_FILE="${APP_DIR}/requirements.lock"
+[[ -f "$REQ_FILE" ]] || REQ_FILE="${APP_DIR}/requirements.txt"
+PIP_SRC=()
+if compgen -G "${APP_DIR}/vendor/wheels/*.whl" > /dev/null; then
+  PIP_SRC=(--no-index --find-links "${APP_DIR}/vendor/wheels")
+fi
+"${APP_DIR}/venv/bin/pip" install "${PIP_SRC[@]}" -r "${REQ_FILE}" -q
 ok "Dependencies synced"
 
 info "Starting services..."

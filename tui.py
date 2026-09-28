@@ -104,7 +104,8 @@ def make_summary_cards(records: List[dict]) -> Columns:
         return Columns([Panel("[dim]No results yet[/dim]", expand=True)])
 
     total      = len(records)
-    ok         = sum(1 for r in records if r.get("success"))
+    # success with an error means some tests failed — not OK
+    ok         = sum(1 for r in records if r.get("success") and not r.get("error"))
     failed     = total - ok
     last_ts    = records[-1]["timestamp_utc"][:19].replace("T", " ") if records else "—"
 
@@ -183,7 +184,9 @@ def make_results_table(records: List[dict], path_filter: Optional[str] = None) -
         display = [r for r in display if r.get("path_id") == path_filter]
 
     for r in display[:25]:
-        status_icon = "[green]✓[/green]" if r.get("success") else "[red]✗[/red]"
+        status_icon = ("[red]✗[/red]" if not r.get("success")
+                       else "[yellow]![/yellow]" if r.get("error")   # some tests failed
+                       else "[green]✓[/green]")
         ts          = r["timestamp_utc"][11:19]    # HH:MM:SS only
 
         t  = throughput_summary(r)
