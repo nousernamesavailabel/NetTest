@@ -36,6 +36,9 @@ from core.annotations import AnnotationStore
 from core import debug_mode
 
 app = Flask(__name__, static_folder="web/static")
+# Browsers don't send the session cookie on cross-site POSTs, so another
+# site can't make a logged-in browser start runs or clear results.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 STATIC_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _config_path  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config/config.yaml")
@@ -336,6 +339,7 @@ def _summarise(records: List[dict]) -> dict:
 # ── Read API ───────────────────────────────────────────────
 
 @app.route("/api/summary")
+@login_required
 def api_summary():
     minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
@@ -344,6 +348,7 @@ def api_summary():
 
 
 @app.route("/api/summary/by_path")
+@login_required
 def api_summary_by_path():
     """Per-path aggregates over the selected window, for the Path Overview
     table — averages rather than just the most recent run, so it agrees with
@@ -393,6 +398,7 @@ def api_summary_by_path():
             "failed":          s["failed"],
             "avg_latency_ms":  s["avg_latency_ms"],
             "avg_tx_mbps":     s["avg_throughput_mbps"],
+            "avg_rx_mbps":     s["avg_throughput_rx_mbps"],
             "avg_jitter_ms":   s["avg_jitter_ms"],
             "avg_loss_pct":    s["avg_loss_pct"],
             "avg_bufferbloat_ms": avg(bb_vals),
@@ -410,6 +416,7 @@ def api_summary_by_path():
 
 
 @app.route("/api/paths")
+@login_required
 def api_paths():
     paths = [
         {
@@ -428,6 +435,7 @@ def api_paths():
 
 
 @app.route("/api/results")
+@login_required
 def api_results():
     minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
@@ -437,6 +445,7 @@ def api_results():
 
 
 @app.route("/api/results/latest")
+@login_required
 def api_results_latest():
     records = _load_records(minutes=1440)
     latest  = {}
@@ -446,6 +455,7 @@ def api_results_latest():
 
 
 @app.route("/api/timeseries/<metric>")
+@login_required
 def api_timeseries(metric: str):
     minutes = int(request.args.get("minutes", 1440))
     path_id = request.args.get("path_id")
@@ -1010,6 +1020,23 @@ def api_onboard():
     admin_pass    = body.get("admin_pass", "")
     admin_port    = int(body.get("admin_port", 22))
     air_gapped    = bool(body.get("air_gapped", False))
+    reonboard     = bool(body.get("reonboard", False))
+
+    if reonboard:
+        # Re-onboard an agent already in the saved config: its details come
+        # from the config, not the request, so a stale or mistyped form can't
+        # onboard a different host under that ID.
+        agent = _config.get_agent(agent_id) if agent_id else None
+        if agent is None:
+            return jsonify({"error": f"Agent '{agent_id}' is not in the saved config "
+                                     f"— save the config first"}), 400
+        if agent.type != "agent_installed":
+            return jsonify({"error": f"Agent '{agent_id}' is not an installed agent "
+                                     f"— only installed agents can be re-onboarded"}), 400
+        agent_ip      = agent.host_mgmt_ip
+        agent_test_ip = agent.host_test_ip
+        agent_label   = agent.label or agent.id
+        agent_type    = agent.type
 
     if not agent_ip:   return jsonify({"error": "agent_ip is required"}), 400
     if not admin_user: return jsonify({"error": "admin_user is required"}), 400
@@ -1027,7 +1054,7 @@ def api_onboard():
         _jobs[job_id] = {
             "job_id":   job_id,
             "path_id":  "onboard",
-            "label":    f"Onboarding {agent_label}",
+            "label":    f"{'Re-onboarding' if reonboard else 'Onboarding'} {agent_label}",
             "status":   "queued",
             "started":  datetime.now(timezone.utc).isoformat(),
             "finished": None, "success": None, "error": None,
@@ -1055,6 +1082,7 @@ def api_onboard():
                 interactive=False,
                 air_gapped=air_gapped,
                 packages_dir=_packages_dir,
+                reonboard=reonboard,
             )
             global _config, _tester
             from core.config_loader import load_config
@@ -2153,6 +2181,7 @@ def api_update_rollback():
 # ── Live Output & Abort ───────────────────────────────────
 
 @app.route("/live")
+@login_required
 def live_output_page():
     """Standalone live output page — opened as a popout window."""
     if _config and _config.auth.method and not session.get("authenticated"):
@@ -2739,6 +2768,7 @@ def api_agents():
 
 
 @app.route("/api/hops/<path_id>")
+@login_required
 def api_hops(path_id: str):
     records = _load_records(minutes=1440, path_id=path_id)
     for r in reversed(records):
@@ -2758,6 +2788,7 @@ def api_hops(path_id: str):
 # ── Trigger API ────────────────────────────────────────────
 
 @app.route("/api/run/<path_id>", methods=["POST"])
+@login_required
 def api_run_path(path_id: str):
     body             = request.get_json(silent=True) or {}
     test_filter      = body.get("tests")
@@ -2789,6 +2820,7 @@ def api_run_path(path_id: str):
 
 
 @app.route("/api/run/all", methods=["POST"])
+@login_required
 def api_run_all():
     body        = request.get_json(silent=True) or {}
     test_filter = body.get("tests")
@@ -2821,6 +2853,7 @@ def api_run_all():
 
 
 @app.route("/api/jobs")
+@login_required
 def api_jobs():
     with _jobs_lock:
         jobs = list(_jobs.values())
@@ -2828,6 +2861,7 @@ def api_jobs():
 
 
 @app.route("/api/jobs/<job_id>")
+@login_required
 def api_job_status(job_id: str):
     with _jobs_lock:
         job = _jobs.get(job_id)
@@ -2837,6 +2871,7 @@ def api_job_status(job_id: str):
 
 
 @app.route("/api/jobs/<job_id>/log")
+@login_required
 def api_job_log(job_id: str):
     """Return accumulated log lines for a completed or running job."""
     with _job_logs_lock:
@@ -2854,6 +2889,7 @@ def api_job_log(job_id: str):
 
 
 @app.route("/api/jobs/<job_id>/stream")
+@login_required
 def api_job_stream(job_id: str):
     """SSE stream — tails the job's log history.
 
@@ -3117,7 +3153,50 @@ def api_local_users_delete(username):
     return jsonify({'ok': True, 'users': [{'username': u.username} for u in _config.auth.local_users]})
 
 
+@app.route('/api/config/iperf-service-status')
+@login_required
+def api_iperf_service_status():
+    """iPerf3 service state of every installed agent in the saved config.
+
+    {agent_id: "ok" | "missing" | "down" | "unreachable"} — "missing" means the
+    agent was onboarded before the service existed and needs re-onboarding.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from core import iperf_service
+    from core.ssh_manager import SSHManager
+
+    cfg  = _config
+    port = cfg.test_params.throughput.iperf3_port
+
+    def check(agent):
+        p   = cfg.get_ssh_params(agent)
+        mgr = SSHManager(host=p["host"], username=p["username"], password=p["password"],
+                         key_file=p["key_file"], port=p["port"], timeout=8, retries=1)
+        try:
+            mgr.connect()
+        except Exception:
+            return agent.id, "unreachable"
+        try:
+            if not iperf_service.has_service(mgr):
+                return agent.id, "missing"
+            return agent.id, "ok" if iperf_service.is_listening(mgr, port) else "down"
+        except Exception:
+            return agent.id, "unreachable"
+        finally:
+            try:
+                mgr.disconnect()
+            except Exception:
+                pass
+
+    installed = [a for a in cfg.agents if a.type == "agent_installed"]
+    if not installed:
+        return jsonify({})
+    with ThreadPoolExecutor(max_workers=min(8, len(installed))) as pool:
+        return jsonify(dict(pool.map(check, installed)))
+
+
 @app.route('/api/config/test-agent', methods=['POST'])
+@login_required
 def api_test_agent():
     from core.ssh_manager import SSHManager, SSHConnectionError
     body     = request.get_json(silent=True) or {}
@@ -3134,11 +3213,20 @@ def api_test_agent():
     try:
         mgr.connect()
         out   = mgr.run('echo ok && hostname && iperf3 --version 2>&1 | head -1', timeout=10)
+        from core import iperf_service
+        iperf_port = _config.test_params.throughput.iperf3_port
+        if not iperf_service.has_service(mgr):
+            state, service = 'missing', 'iPerf3 service not installed — re-onboard to install it'
+        elif iperf_service.is_listening(mgr, iperf_port):
+            state, service = 'ok', f'iPerf3 service listening on {iperf_port}'
+        else:
+            state, service = 'down', f'iPerf3 service installed but not listening on {iperf_port}'
         mgr.disconnect()
         lines    = [l.strip() for l in out.strip().splitlines() if l.strip()]
         hostname = lines[1] if len(lines) > 1 else '?'
         iperf3   = lines[2] if len(lines) > 2 else 'not found'
-        return jsonify({'ok': True, 'hostname': hostname, 'iperf3': iperf3})
+        return jsonify({'ok': True, 'hostname': hostname, 'iperf3': iperf3,
+                        'iperf3_service': service, 'iperf3_service_state': state})
     except SSHConnectionError as e:
         return jsonify({'ok': False, 'error': str(e)})
     except Exception as e:
@@ -3283,6 +3371,7 @@ def api_debug_download():
 # ── Results utility API ────────────────────────────────────
 
 @app.route("/api/results/export.csv")
+@login_required
 def api_export_csv():
     """Export results as a CSV file download."""
     import csv, io
@@ -3345,6 +3434,7 @@ def api_export_csv():
 
 
 @app.route("/api/results/clear", methods=["POST"])
+@login_required
 def api_results_clear():
     """Delete result files for the requested day range."""
     body = request.get_json(silent=True) or {}

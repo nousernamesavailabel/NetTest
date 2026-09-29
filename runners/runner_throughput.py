@@ -8,38 +8,12 @@ import logging
 import time
 
 from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
+from core import iperf_service
 from core.results import ThroughputResult
 from core.config_loader import ThroughputParams
 
 logger = logging.getLogger(__name__)
 
-
-
-
-def _start_iperf3_server(ssh, port: int, label: str = "") -> None:
-    """Kill any existing iPerf3, wait for port to free, start persistent server."""
-    ssh.run("pkill -9 -f iperf3 2>/dev/null || true", timeout=10)
-    time.sleep(0.5)
-    for _ in range(16):
-        check = ssh.run(
-            f"ss -tlnp 2>/dev/null | grep ':{port} ' || echo FREE",
-            timeout=5
-        )
-        if "FREE" in check or f":{port}" not in check:
-            break
-        time.sleep(0.5)
-    ssh.run_background(f"iperf3 -s -p {port} -D")
-    time.sleep(1.5)
-    for _ in range(6):
-        check = ssh.run(
-            f"ss -tlnp 2>/dev/null | grep ':{port} ' || echo NOT_READY",
-            timeout=5
-        )
-        if "NOT_READY" not in check and f":{port}" in check:
-            logger.debug(f"iPerf3 server confirmed listening on port {port}")
-            return
-        time.sleep(0.5)
-    logger.warning(f"iPerf3 server may not be ready on port {port} — proceeding anyway")
 
 class ThroughputRunner:
 
@@ -57,9 +31,7 @@ class ThroughputRunner:
         port = port_override if port_override else p.iperf3_port
 
         if server_managed:
-            logger.info(f"  Starting iPerf3 server on {dst_host}:{port}...")
-            self._start_server(dst_ssh, port)
-            time.sleep(1)
+            iperf_service.ensure_server(dst_ssh, port, dst_host)
         else:
             logger.info(f"  Using assumed-running iPerf3 server on {dst_host}:{port}...")
 
@@ -82,12 +54,21 @@ class ThroughputRunner:
         raw_output = None
         deadline   = time.time() + (busy_retry_seconds if not server_managed else 0)
         attempt    = 0
+        recovered  = False
         while True:
             attempt += 1
             try:
                 raw_output = src_ssh.run(cmd, timeout=timeout_sec)
             except Exception as e:
                 raise RuntimeError(f"iPerf3 client failed: {e}")
+            # Our own server refusing tests — restart it once and retry
+            if (server_managed and not recovered
+                    and iperf_service.server_unavailable(raw_output)):
+                logger.warning(f"  iPerf3 server on {dst_host}:{port} is not taking "
+                               f"tests — restarting it and retrying...")
+                iperf_service.recover_server(dst_ssh, port, dst_host)
+                recovered = True
+                continue
             # Check if server was busy
             if "server is busy" in raw_output.lower() and time.time() < deadline:
                 logger.info(f"  iPerf3 server busy — retrying in 1s "
@@ -118,18 +99,6 @@ class ThroughputRunner:
         return self._parse_output(raw_output, p, effective_direction, limit_sec, parallel_streams)
 
 
-
-    def _start_server(self, dst_ssh: SSHManager, port: int):
-        # Two-pass kill: name-based then port-based to catch zombie daemons
-        dst_ssh.run("pkill -9 -f iperf3 2>/dev/null || true", timeout=10)
-        time.sleep(0.5)
-        dst_ssh.run(
-            f"fuser -k {port}/tcp 2>/dev/null || true; "
-            f"fuser -k {port}/udp 2>/dev/null || true",
-            timeout=10
-        )
-        time.sleep(1.0)
-        _start_iperf3_server(dst_ssh, port)
 
     def _build_client_command(self, dst_host: str, p: ThroughputParams,
                               port: int = None,

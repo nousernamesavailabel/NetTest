@@ -208,6 +208,10 @@ class PathTester:
                         logger.info(f"── Retrying {len(retries)} iPerf3 test(s) "
                                     f"that failed due to busy server ──")
                         _t.sleep(3)
+                        # One retry pass: a test that is busy again goes on a fresh
+                        # list, not back into the one being looped over (which retried
+                        # forever while a public server stayed busy, holding host locks).
+                        result._iperf_retry = []
                         for test_type in retries:
                             label = TEST_LABELS.get(test_type, test_type)
                             logger.info(f"")
@@ -226,7 +230,7 @@ class PathTester:
                                 parallel_streams=path.parallel_streams,
                                 abort_event=abort_event,
                             )
-                        result._iperf_retry = []
+                        self._give_up_busy_retries(result)
                 else:
                     dst_ssh_params = self.config.get_ssh_params(dst_agent)
                     logger.info(f"Connecting to {dst_agent.label} ({dst_agent.host_mgmt_ip})...")
@@ -261,6 +265,10 @@ class PathTester:
                             logger.info(f"── Retrying {len(retries)} iPerf3 test(s) "
                                         f"that failed due to busy server ──")
                             _t.sleep(3)
+                            # One retry pass: a test that is busy again goes on a fresh
+                            # list, not back into the one being looped over (which retried
+                            # forever while a public server stayed busy, holding host locks).
+                            result._iperf_retry = []
                             for test_type in retries:
                                 label = TEST_LABELS.get(test_type, test_type)
                                 logger.info(f"")
@@ -280,7 +288,7 @@ class PathTester:
                                     parallel_streams=path.parallel_streams,
                                     abort_event=abort_event,
                                 )
-                            result._iperf_retry = []
+                            self._give_up_busy_retries(result)
 
             result.success = True
 
@@ -494,6 +502,16 @@ class PathTester:
                                f"after remaining tests complete")
         finally:
             held.close()
+
+    @staticmethod
+    def _give_up_busy_retries(result):
+        """After the retry pass, leave tests that were still busy as failed."""
+        still_busy = getattr(result, "_iperf_retry", [])
+        if still_busy:
+            logger.warning(f"  iPerf3 server still busy after retry — giving up on "
+                           f"{', '.join(TEST_LABELS.get(t, t) for t in still_busy)} "
+                           f"for this run")
+        result._iperf_retry = []
 
     @staticmethod
     def _clear_test_error(result, test_type: str):

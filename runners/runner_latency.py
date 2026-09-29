@@ -9,6 +9,7 @@ import logging
 import time
 
 from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
+from core import iperf_service
 from core.results import LatencyResult, JitterResult, LatencyUnderLoadResult
 from core.config_loader import LatencyParams, JitterParams, LatencyUnderLoadParams
 
@@ -31,46 +32,6 @@ def _strip_escapes(text: str) -> str:
 
 
 
-
-# ── iPerf3 server management ───────────────────────────────
-
-def _start_iperf3_server(ssh, port: int, label: str = "",
-                         udp: bool = False) -> None:
-    """
-    Kill any existing iPerf3, wait for port to be free,
-    start a persistent server, verify it is actually listening.
-    udp=True adds extra settle time since UDP binding is slower.
-    """
-    # Kill everything iperf3-related
-    ssh.run("pkill -9 -f iperf3 2>/dev/null || true", timeout=10)
-    time.sleep(0.5)
-
-    # Wait for port to be fully released (up to 8 seconds)
-    for _ in range(16):
-        check = ssh.run(
-            f"ss -tlnp 2>/dev/null | grep ':{port} ' || echo FREE",
-            timeout=5
-        )
-        if "FREE" in check or f":{port}" not in check:
-            break
-        time.sleep(0.5)
-
-    # Start server in daemon mode — no --one-off so it survives connection issues
-    ssh.run_background(f"iperf3 -s -p {port} -D")
-
-    # Verify it is actually listening before returning
-    settle = 2.0 if udp else 1.5
-    time.sleep(settle)
-    for _ in range(6):
-        check = ssh.run(
-            f"ss -tlnp 2>/dev/null | grep ':{port} ' || echo NOT_READY",
-            timeout=5
-        )
-        if "NOT_READY" not in check and f":{port}" in check:
-            logger.debug(f"iPerf3 server confirmed listening on port {port}")
-            return
-        time.sleep(0.5)
-    logger.warning(f"iPerf3 server may not be ready on port {port} — proceeding anyway")
 
 # ── Latency (ping) ─────────────────────────────────────────
 
@@ -161,8 +122,7 @@ class JitterRunner:
         port = port_override if port_override else p.iperf3_port
 
         if server_managed:
-            logger.info(f"  Starting iPerf3 UDP server on {dst_host}:{port}...")
-            _start_iperf3_server(dst_ssh, port, label=dst_host, udp=True)
+            iperf_service.ensure_server(dst_ssh, port, dst_host)
         else:
             logger.info(f"  Using assumed-running iPerf3 server on {dst_host}:{port}...")
 
@@ -183,9 +143,18 @@ class JitterRunner:
         # Retry loop for agent_not_installed
         deadline = time.time() + (busy_retry_seconds if not server_managed else 0)
         attempt  = 0
+        recovered = False
         while True:
             attempt += 1
             output = src_ssh.run(cmd, timeout=timeout_sec)
+            # Our own server refusing tests — restart it once and retry
+            if (server_managed and not recovered
+                    and iperf_service.server_unavailable(output)):
+                logger.warning(f"  iPerf3 server on {dst_host}:{port} is not taking "
+                               f"tests — restarting it and retrying...")
+                iperf_service.recover_server(dst_ssh, port, dst_host)
+                recovered = True
+                continue
             if "server is busy" in output.lower() and time.time() < deadline:
                 logger.info(f"  iPerf3 server busy — retrying in 1s "
                             f"(attempt {attempt}, {int(deadline - time.time())}s remaining)...")
@@ -282,16 +251,7 @@ class LatencyUnderLoadRunner:
         logger.info(f"  Phase 2/4: Saturating link with {self.iperf3_streams}-stream "
                     f"iPerf3 for {self.iperf3_duration}s...")
         if server_managed:
-            logger.info(f"  Starting iPerf3 server on {dst_host}:{port}...")
-            dst_ssh.run("pkill -9 -f iperf3 2>/dev/null || true", timeout=10)
-            time.sleep(0.5)
-            dst_ssh.run(
-                f"fuser -k {port}/tcp 2>/dev/null || true; "
-                f"fuser -k {port}/udp 2>/dev/null || true",
-                timeout=10
-            )
-            time.sleep(0.5)
-            _start_iperf3_server(dst_ssh, port, label=dst_host)
+            iperf_service.ensure_server(dst_ssh, port, dst_host)
         else:
             logger.info(f"  Using assumed-running iPerf3 server on {dst_host}:{port}...")
         # For agent_not_installed, retry background iperf3 start if server busy
@@ -311,13 +271,21 @@ class LatencyUnderLoadRunner:
                             f"(attempt {probe_attempt}, "
                             f"{int(probe_deadline - time.time())}s remaining)...")
                 time.sleep(1)
-        src_ssh.run_background(
-            f"iperf3 -c {dst_host} -p {port} "
-            f"-P {self.iperf3_streams} -t {self.iperf3_duration}"
-        )
+        load_cmd = (f"iperf3 -c {dst_host} -p {port} "
+                    f"-P {self.iperf3_streams} -t {self.iperf3_duration}")
+        src_ssh.run_background(load_cmd)
         time.sleep(2)
         bg_log = _strip_escapes(src_ssh.read_background_log())
-        if re.search(r'error|unable to connect|no route to host|connection refused',
+        # Our own server refusing tests — restart it once and relaunch the load
+        if server_managed and iperf_service.server_unavailable(bg_log):
+            logger.warning(f"  iPerf3 server on {dst_host}:{port} is not taking "
+                           f"tests — restarting it and retrying...")
+            src_ssh.kill_background("iperf3")
+            iperf_service.recover_server(dst_ssh, port, dst_host)
+            src_ssh.run_background(load_cmd)
+            time.sleep(2)
+            bg_log = _strip_escapes(src_ssh.read_background_log())
+        if re.search(r'error|unable to connect|no route to host|connection refused|busy',
                      bg_log, re.IGNORECASE):
             raise RuntimeError(
                 f"iPerf3 saturation stream never connected — 'loaded' latency "
@@ -359,16 +327,7 @@ class LatencyUnderLoadRunner:
         # Cleanup — dst_ssh may be None for agent_not_installed destinations
         src_ssh.kill_background("iperf3")
         if dst_ssh is not None:
-            dst_ssh.kill_background("iperf3")
-            # Also kill by port to handle any lingering UDP sockets
-            try:
-                dst_ssh.run(
-                    f"fuser -k {port}/tcp 2>/dev/null || true; "
-                    f"fuser -k {port}/udp 2>/dev/null || true",
-                    timeout=10
-                )
-            except Exception:
-                pass
+            iperf_service.stop_temporary_server(dst_ssh, port)
         logger.info(f"  Saturation load stopped")
         # Brief cooldown to let iPerf3 fully release the port before next test
         time.sleep(3)

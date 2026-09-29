@@ -2,7 +2,8 @@
 onboard.py
 Agent onboarding module — SSHes into a new host using admin credentials,
 installs all required tools, creates the nettest user, deploys the SSH key,
-configures sudoers and firewall, verifies the setup, then optionally adds
+configures sudoers, installs the persistent iPerf3 service, configures the
+firewall, verifies the setup, then optionally adds
 the agent to config.yaml automatically.
 
 Usage (via main.py):
@@ -10,6 +11,7 @@ Usage (via main.py):
   python main.py --onboard --agent-ip 10.5.1.10 --agent-label "Branch E"
 """
 
+import base64
 import getpass
 import hashlib
 import io
@@ -24,6 +26,7 @@ import yaml
 from dataclasses import asdict
 
 from core.agent_packages import REQUIRED_TOOLS, debs_for_agent, os_release_id
+from core import iperf_service
 
 
 # ── Colour helpers for terminal output ────────────────────
@@ -260,7 +263,45 @@ def _install_offline(conn, admin_pass: str, pkg_dir: str, required_tools) -> Non
 
 # ── Main onboarding logic ──────────────────────────────────
 
-TOTAL_STEPS = 9
+def _iperf_ports(config) -> list:
+    """The iPerf3 port(s) tests use — one service instance per port."""
+    tp = config.test_params
+    return sorted({int(tp.throughput.iperf3_port), int(tp.jitter.iperf3_port)})
+
+
+def _install_iperf_service(conn, admin_pass: str, config) -> None:
+    """Install the nettest-iperf3@ unit and enable it for each test port.
+
+    Any iPerf3 left running by the nettest user (the pre-service temporary
+    servers) is stopped first, or it would hold the port the service binds.
+    """
+    try:
+        with open(iperf_service.UNIT_SOURCE, "rb") as f:
+            unit_b64 = base64.b64encode(f.read()).decode()
+    except OSError as e:
+        _warn(f"Could not read {iperf_service.UNIT_SOURCE}: {e} — skipping iPerf3 service")
+        _warn("Tests will start a temporary iPerf3 server on this agent instead")
+        return
+    nettest_user = config.ssh_defaults.username or "nettest"
+    _sudo(conn, f"bash -c \"echo {unit_b64} | base64 -d > {iperf_service.UNIT_PATH}\"",
+          admin_pass)
+    _sudo(conn, f"chmod 644 {iperf_service.UNIT_PATH}", admin_pass)
+    _sudo(conn, f"pkill -u {nettest_user} -x iperf3", admin_pass)
+    _sudo(conn, "systemctl daemon-reload", admin_pass)
+    for port in _iperf_ports(config):
+        unit = iperf_service.unit_for_port(port)
+        _sudo(conn, f"systemctl enable {unit}", admin_pass)
+        _sudo(conn, f"systemctl restart {unit}", admin_pass)
+        time.sleep(1)
+        state = _run(conn, f"systemctl is-active --quiet {unit} "
+                           f"&& echo __ACTIVE__ || echo __INACTIVE__")
+        if "__ACTIVE__" in state and "__INACTIVE__" not in state:
+            _ok(f"{unit} running — iPerf3 listening on port {port}")
+        else:
+            _warn(f"{unit} is not running — check: sudo journalctl -u {unit}")
+
+
+TOTAL_STEPS = 10
 
 
 def onboard_agent(config_path: str,
@@ -274,14 +315,17 @@ def onboard_agent(config_path: str,
                   admin_port: int = 22,
                   interactive: bool = None,
                   air_gapped: bool = False,
-                  packages_dir: str = None) -> bool:
+                  packages_dir: str = None,
+                  reonboard: bool = False) -> bool:
     """
     Full agent onboarding flow.
+    reonboard=True re-runs it for an agent already in config.yaml (e.g. to
+    install the iPerf3 service): the config entry is left as it is.
     Returns True on success, False on failure.
     """
 
     _log.info(f"\n{'='*55}")
-    _log.info(f"  NetTest Agent Onboarding")
+    _log.info(f"  NetTest Agent {'Re-onboarding' if reonboard else 'Onboarding'}")
     _log.info(f"{'='*55}\n")
 
     # ── Load config to get SSH key and nettest username ────
@@ -479,6 +523,10 @@ def onboard_agent(config_path: str,
             f"/usr/bin/iperf3, /usr/bin/mtr, /usr/bin/pkill, /usr/bin/ping, "
             f"/usr/bin/traceroute, /usr/bin/fuser, /usr/bin/dpkg"
         )
+        # One entry per iPerf3 port — sudo(-rs) allows no wildcards in arguments
+        for port in _iperf_ports(config):
+            sudoers_line += (f", /usr/bin/systemctl restart "
+                             f"{iperf_service.unit_for_port(port)}")
         _sudo(conn,
               f"bash -c \"echo '{sudoers_line}' > /etc/sudoers.d/nettest\"",
               admin_pass)
@@ -491,8 +539,12 @@ def onboard_agent(config_path: str,
         else:
             _warn(f"Sudoers validation returned: {valid.strip()[:80]}")
 
-        # ── Step 7: Firewall ───────────────────────────────
-        _step(7, TOTAL_STEPS, "Configuring firewall...")
+        # ── Step 7: iPerf3 service ─────────────────────────
+        _step(7, TOTAL_STEPS, "Installing iPerf3 service...")
+        _install_iperf_service(conn, admin_pass, config)
+
+        # ── Step 8: Firewall ───────────────────────────────
+        _step(8, TOTAL_STEPS, "Configuring firewall...")
         ufw_status = _run(conn, "sudo ufw status 2>&1")
         if "inactive" in ufw_status.lower():
             _info("UFW is inactive — skipping firewall rules")
@@ -502,8 +554,8 @@ def onboard_agent(config_path: str,
             _sudo(conn, "ufw allow 5201/udp",  admin_pass)
             _ok("Ports 22 (SSH) and 5201 (iPerf3) opened")
 
-        # ── Step 8: Verify key-based access ───────────────
-        _step(8, TOTAL_STEPS, "Verifying key-based SSH access...")
+        # ── Step 9: Verify key-based access ───────────────
+        _step(9, TOTAL_STEPS, "Verifying key-based SSH access...")
         conn.disconnect()
         time.sleep(1)
 
@@ -546,12 +598,14 @@ def onboard_agent(config_path: str,
     if not success:
         return False
 
-    # ── Step 9: Add to config.yaml ─────────────────────────
-    _step(9, TOTAL_STEPS, "Adding agent to config.yaml...")
+    # ── Step 10: Add to config.yaml ────────────────────────
+    _step(10, TOTAL_STEPS, "Adding agent to config.yaml...")
 
     # Check for duplicate ID
     existing_ids = [a.id for a in config.agents]
-    if agent_id in existing_ids:
+    if reonboard and agent_id in existing_ids:
+        _ok(f"Agent '{agent_id}' already in config.yaml — kept as is")
+    elif agent_id in existing_ids:
         _warn(f"Agent ID '{agent_id}' already exists in config — skipping config update")
         _warn("Edit config.yaml or the web config editor to update it manually")
     else:
@@ -582,10 +636,12 @@ def onboard_agent(config_path: str,
 
     # ── Done ───────────────────────────────────────────────
     _log.info(f"\n{'='*55}")
-    _log.info(f"  Onboarding complete!  {agent_label} ({agent_ip})")
+    _log.info(f"  {'Re-onboarding' if reonboard else 'Onboarding'} complete!  "
+              f"{agent_label} ({agent_ip})")
     _log.info(f"{'='*55}")
     _log.info(f"\n  Agent ID : {agent_id}")
-    _log.info(f"  Next step: Define test paths in the config editor")
+    if not reonboard:
+        _log.info(f"  Next step: Define test paths in the config editor")
     _log.info(f"  Dashboard: http://<controller-ip>:8080/config\n")
 
     return True

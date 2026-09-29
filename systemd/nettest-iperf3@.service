@@ -1,0 +1,19 @@
+[Unit]
+Description=NetTest iPerf3 server (port %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A throwaway user nothing else runs as, so the test code's own
+# `pkill iperf3` / `fuser -k` cleanup (run as the nettest user) can't
+# kill the service's server.
+DynamicUser=yes
+# --idle-timeout (iperf3 3.10+) restarts a server stuck reporting
+# "busy" after an aborted client; older iperf3 runs without it.
+ExecStart=/bin/sh -c 'if /usr/bin/iperf3 --help 2>&1 | grep -q -- --idle-timeout; then exec /usr/bin/iperf3 -s -p %i --idle-timeout 30; else exec /usr/bin/iperf3 -s -p %i; fi'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

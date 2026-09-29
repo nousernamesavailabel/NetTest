@@ -85,10 +85,13 @@ fi
 info "Stopping services..."
 systemctl stop nettest.service nettest-web.service 2>/dev/null || true
 systemctl disable nettest.service nettest-web.service 2>/dev/null || true
+systemctl stop 'nettest-iperf3@*.service' 2>/dev/null || true
+rm -f /etc/systemd/system/multi-user.target.wants/nettest-iperf3@*.service
 ok "Services stopped and disabled"
 
 info "Removing systemd unit files..."
-rm -f /etc/systemd/system/nettest.service /etc/systemd/system/nettest-web.service
+rm -f /etc/systemd/system/nettest.service /etc/systemd/system/nettest-web.service \
+  /etc/systemd/system/nettest-iperf3@.service
 systemctl daemon-reload
 systemctl reset-failed 2>/dev/null || true
 ok "Systemd units removed"

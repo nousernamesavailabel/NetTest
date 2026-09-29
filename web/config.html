@@ -61,6 +61,7 @@ a:hover{text-decoration:underline}
 .badge-endpoint  {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
 .badge-svi       {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
 .badge-noagent   {background:#1e0d3c;color:#b48ae0;border:1px solid #5a2a9a}
+.badge-reonboard {background:#2a2000;color:var(--yw);border:1px solid #4a3800;cursor:help}
 .badge-on        {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
 .badge-off       {background:var(--surf3);color:var(--mt);border:1px solid var(--bdr2)}
 .badge-source    {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
@@ -1239,6 +1240,7 @@ async function loadConfig() {
     authLocalUsers = (authConfig.local_users || []).map(u => ({ username: u.username }));
     renderAll();
     setStatus('');
+    loadIperfServiceStatus();
   } catch(e) {
     toast('Failed to load config: ' + e.message, 'err');
   }
@@ -1287,11 +1289,15 @@ function renderAgents() {
           <span class="badge ${a.type === 'switch_router' ? 'badge-svi' : a.type === 'agent_not_installed' ? 'badge-noagent' : 'badge-endpoint'}">
             ${a.type === 'switch_router' ? 'SVI' : a.type === 'agent_not_installed' ? 'NO AGENT' : 'AGENT'}
           </span>
+          ${iperfSvcBadge(a)}
           <span style="color:var(--mt);font-size:11px">${escHtml(a.host_mgmt_ip || a.host || '')}</span>
         </div>
         <div class="card-actions" onclick="event.stopPropagation()">
           <button class="btn btn-ghost" style="font-size:10px;padding:3px 8px"
             onclick="testAgent(${i})">⚡ Test</button>
+          ${isInstalledAgent(a) ? `<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px"
+            onclick="reonboardAgent(${i})"
+            title="Re-run onboarding with admin credentials — installs the iPerf3 service and refreshes packages, key and sudoers">↻ Re-onboard</button>` : ''}
           <button class="btn btn-danger" style="font-size:10px;padding:3px 8px"
             onclick="removeAgent(${i})">✕</button>
         </div>
@@ -1360,6 +1366,43 @@ function removeAgent(i) {
   markDirty();
 }
 
+// ── iPerf3 service status ──────────────────────────────────
+// agent id -> "ok" | "missing" | "down" | "unreachable", from the saved config.
+// Kept apart from `agents` so it is never saved into config.yaml.
+let iperfSvc = {};
+
+function isInstalledAgent(a) {
+  return a.type === 'agent_installed' || a.type === 'endpoint';
+}
+
+function iperfSvcBadge(a) {
+  if (!isInstalledAgent(a)) return '';
+  const st = iperfSvc[a.id];
+  if (st === 'missing')
+    return '<span class="badge badge-reonboard" title="Onboarded before the iPerf3 service existed — tests start a temporary server each time. Re-onboard to install the service.">NEEDS RE-ONBOARD</span>';
+  if (st === 'down')
+    return '<span class="badge badge-reonboard" title="The iPerf3 service is installed but not listening — tests will try to restart it. Check: journalctl -u nettest-iperf3@5201">IPERF3 DOWN</span>';
+  return '';
+}
+
+function refreshAgentHeaders() {
+  agents.forEach((a, i) => {
+    const body = document.getElementById('agent-body-' + i);
+    if (!body) return;
+    const open = !body.classList.contains('hidden');
+    updateAgentHeader(i);
+    const chev = document.getElementById('agent-chev-' + i);
+    if (chev) chev.classList.toggle('open', open);
+  });
+}
+
+async function loadIperfServiceStatus() {
+  try {
+    iperfSvc = await apiFetch('/api/config/iperf-service-status') || {};
+    refreshAgentHeaders();
+  } catch(e) { /* badges are informational — leave them off */ }
+}
+
 async function testAgent(i) {
   collectSSH();
   const a   = agents[i];
@@ -1374,7 +1417,11 @@ async function testAgent(i) {
       body: JSON.stringify({ host: a.host_mgmt_ip || a.host, username: sshDefs.username, key_file: sshDefs.key_file, port: sshDefs.port })
     });
     if (res.ok) {
-      div.innerHTML = `<div class="ping-result ping-ok">✓ Connected — hostname: ${escHtml(res.hostname)} | ${escHtml(res.iperf3)}</div>`;
+      if (res.iperf3_service_state && a.id) {
+        iperfSvc[a.id] = res.iperf3_service_state;
+        refreshAgentHeaders();
+      }
+      div.innerHTML = `<div class="ping-result ping-ok">✓ Connected — hostname: ${escHtml(res.hostname)} | ${escHtml(res.iperf3)}${res.iperf3_service ? ' | ' + escHtml(res.iperf3_service) : ''}</div>`;
     } else {
       div.innerHTML = `<div class="ping-result ping-err">✗ ${escHtml(res.error)}</div>`;
     }
@@ -3282,7 +3329,8 @@ function updateAgentHeader(i) {
     <span class="badge ${a.type === 'switch_router' ? 'badge-svi' : a.type === 'agent_not_installed' ? 'badge-noagent' : 'badge-endpoint'}">
       ${a.type === 'switch_router' ? 'SVI' : a.type === 'agent_not_installed' ? 'NO AGENT' : 'AGENT'}
     </span>
-    <span style="color:var(--mt);font-size:11px">${escHtml(a.host || '')}</span>
+    ${iperfSvcBadge(a)}
+    <span style="color:var(--mt);font-size:11px">${escHtml(a.host_mgmt_ip || a.host || '')}</span>
   `;
   // Also update agent count
   document.getElementById('agent-count').textContent = '(' + agents.length + ')';
@@ -3338,7 +3386,7 @@ boot();
 <div class="wizard-overlay" id="wizard-overlay">
   <div class="wizard">
     <div class="wizard-header">
-      <span class="wizard-title">⬡ Onboard New Endpoint</span>
+      <span class="wizard-title" id="ob-title">⬡ Onboard New Endpoint</span>
       <button class="wizard-close" onclick="closeWizard()">✕</button>
     </div>
 
@@ -3392,14 +3440,14 @@ boot();
             <input type="number" id="ob-port" value="22" style="width:80px">
           </div>
         </div>
-        <div style="font-size:11px;color:var(--mt);padding:4px 0">
+        <div style="font-size:11px;color:var(--mt);padding:4px 0" id="ob-help">
           The controller will SSH in with these admin credentials, install tools,
           create the nettest user, deploy the SSH key, and add the agent to config.
         </div>
       </div>
       <div class="wizard-footer">
         <button class="btn btn-ghost" onclick="closeWizard()">Cancel</button>
-        <button class="btn btn-success" onclick="startOnboard()">▶ Start Onboarding</button>
+        <button class="btn btn-success" id="ob-start" onclick="startOnboard()">▶ Start Onboarding</button>
       </div>
     </div>
 
@@ -3424,6 +3472,9 @@ boot();
 <script>
 // ── Onboarding wizard ──────────────────────────────────────
 let _obStream = null;
+let _obReonboardId = null;   // agent id when re-onboarding an existing agent
+const OB_AGENT_FIELDS = ['ob-ip','ob-test-ip','ob-label','ob-id','ob-type'];
+const OB_HELP_NEW = document.getElementById('ob-help').innerHTML;
 
 function openWizard() {
   document.getElementById('wizard-overlay').classList.add('open');
@@ -3431,15 +3482,50 @@ function openWizard() {
   document.getElementById('wizard-progress').style.display = 'none';
 }
 
+// Re-onboard an existing agent: its details are fixed (the server takes
+// them from the saved config) and only admin credentials are asked for.
+function reonboardAgent(i) {
+  const a = agents[i];
+  if (!a.id) { alert('Give this agent an ID and save the config first'); return; }
+  _obReonboardId = a.id;
+  document.getElementById('ob-ip').value      = a.host_mgmt_ip || a.host || '';
+  document.getElementById('ob-test-ip').value = a.host_test_ip || '';
+  document.getElementById('ob-label').value   = a.label || '';
+  document.getElementById('ob-id').value      = a.id;
+  document.getElementById('ob-type').value    = 'endpoint';
+  OB_AGENT_FIELDS.forEach(id => document.getElementById(id).disabled = true);
+  document.getElementById('ob-title').textContent = '↻ Re-onboard ' + (a.label || a.id);
+  document.getElementById('ob-help').innerHTML =
+    'The controller will SSH in with these admin credentials and redo onboarding: ' +
+    'install missing tools and the iPerf3 service, and refresh the nettest user\'s ' +
+    'SSH key and sudoers. The agent\'s config entry is left as it is. ' +
+    'Uses the <b>saved</b> config — save any changes to this agent first.';
+  document.getElementById('ob-start').textContent = '▶ Start Re-onboarding';
+  openWizard();
+  document.getElementById('ob-user').focus();
+}
+
 function closeWizard() {
   if (_obStream) { _obStream.close(); _obStream = null; }
   document.getElementById('wizard-overlay').classList.remove('open');
   // Reset form
-  ['ob-ip','ob-label','ob-id','ob-user','ob-pass'].forEach(id => {
+  ['ob-ip','ob-test-ip','ob-label','ob-id','ob-user','ob-pass'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
   document.getElementById('ob-port').value = '22';
+  document.getElementById('ob-type').value = 'endpoint';
+  OB_AGENT_FIELDS.forEach(id => document.getElementById(id).disabled = false);
+  document.getElementById('ob-title').textContent = '⬡ Onboard New Endpoint';
+  document.getElementById('ob-help').innerHTML = OB_HELP_NEW;
+  document.getElementById('ob-start').textContent = '▶ Start Onboarding';
+  _obReonboardId = null;
+}
+
+function obSuccessFooter() {
+  const msg = _obReonboardId ? 'Agent re-onboarded successfully.' : 'Agent onboarded successfully.';
+  if (_obReonboardId) loadIperfServiceStatus();
+  return `<span style="color:var(--gn);margin-right:8px">${msg}</span><button class="btn btn-success" onclick="closeWizard();loadConfig()">View in Config Editor</button>`;
 }
 
 async function startOnboard() {
@@ -3460,7 +3546,7 @@ async function startOnboard() {
   document.getElementById('wizard-form').style.display = 'none';
   document.getElementById('wizard-progress').style.display = '';
   document.getElementById('ob-progress-label').textContent =
-    'Onboarding ' + (label || ip) + '...';
+    (_obReonboardId ? 'Re-onboarding ' : 'Onboarding ') + (label || ip) + '...';
   document.getElementById('ob-log').innerHTML = '';
 
   const badge = document.getElementById('ob-status-badge');
@@ -3473,7 +3559,7 @@ async function startOnboard() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_ip:ip, agent_test_ip:test_ip, agent_label:label, agent_id:id, air_gapped: document.getElementById('ob-airgap')?.checked||false,
                              agent_type:type, admin_user:user, admin_pass:pass,
-                             admin_port:port })
+                             admin_port:port, reonboard: !!_obReonboardId })
     });
     const data = await resp.json();
     if (data.error) {
@@ -3508,7 +3594,7 @@ function streamOnboard(jobId, label) {
         if (job && job.status === 'done') {
           badge.textContent = '✓ complete';
           badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#0f3320;color:var(--gn);border:1px solid #1a4d30;animation:none';
-          footer.innerHTML = '<span style="color:var(--gn);margin-right:8px">Agent onboarded successfully.</span><button class="btn btn-success" onclick="closeWizard();loadConfig()">View in Config Editor</button>';
+          footer.innerHTML = obSuccessFooter();
         } else {
           const errMsg = job ? (job.error || 'Check output above') : 'Could not get status';
           badge.textContent = '✗ failed';
@@ -3551,7 +3637,7 @@ function streamOnboard(jobId, label) {
     if (job && job.status === 'done') {
       badge.textContent = '✓ complete';
       badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#0f3320;color:var(--gn);border:1px solid #1a4d30;animation:none';
-      footer.innerHTML = '<span style="color:var(--gn);margin-right:8px">Agent onboarded successfully.</span><button class="btn btn-success" onclick="closeWizard();loadConfig()">View in Config Editor</button>';
+      footer.innerHTML = obSuccessFooter();
     } else {
       badge.textContent = '✗ failed';
       badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:3px;background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a;animation:none';

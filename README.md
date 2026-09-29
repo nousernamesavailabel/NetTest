@@ -127,7 +127,31 @@ sudo chmod 700 /home/nettest/.ssh
 sudo chmod 600 /home/nettest/.ssh/authorized_keys
 ```
 
-#### 4. Open firewall ports on agents
+#### 4. Install the iPerf3 service on agents
+Onboarding does this for you. By hand, copy `systemd/nettest-iperf3@.service`
+from the controller to each agent, then:
+```bash
+sudo cp nettest-iperf3@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nettest-iperf3@5201
+# Let tests restart it if it stops answering
+echo 'nettest ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest-iperf3@5201.service' \
+  | sudo tee /etc/sudoers.d/nettest-iperf3
+```
+Each agent (and the controller) then keeps an iPerf3 server listening on
+5201. Tests check it is up and restart it if it is stuck "busy" or refusing
+connections. Agents without the service still work: each test starts a
+temporary server there. On the Config page those agents show a
+**NEEDS RE-ONBOARD** badge. Click the agent's **↻ Re-onboard** button and enter
+the agent's admin credentials. It re-runs onboarding and installs the service,
+using the agent's saved config entry and leaving that entry unchanged. If `iperf3_port` in `test_params` is
+changed, re-onboard the agents (and re-run `install.sh --upgrade` on the
+controller) so a service instance runs on the new port.
+
+The server takes no authentication — anyone who can reach port 5201 can run
+tests against it. Limit the port with the firewall to your agents' networks.
+
+#### 5. Open firewall ports on agents
 ```bash
 # iPerf3 (TCP + UDP)
 sudo ufw allow 5201/tcp
@@ -137,7 +161,7 @@ sudo ufw allow 5201/udp
 sudo ufw allow 22/tcp
 ```
 
-#### 5. Edit config/config.yaml
+#### 6. Edit config/config.yaml
 - Update agent IPs to match your environment
 - Define your actual test paths
 - Adjust schedule intervals as needed
@@ -295,6 +319,8 @@ nettest/
 │   ├── ssh_manager.py        # Netmiko SSH wrapper with retry logic
 │   ├── path_tester.py        # Orchestrates tests for one path
 │   ├── scheduler.py          # Drives periodic test execution
+│   ├── iperf_service.py      # Persistent iPerf3 server checks and restarts
+│   ├── host_locks.py         # Serializes iPerf3 tests per host
 │   ├── radius_auth.py        # RADIUS authentication for the web dashboard
 │   └── agent_packages.py     # Agent packages for air-gapped onboarding
 ├── runners/
@@ -305,7 +331,7 @@ nettest/
 ├── web/                       # Dashboard static pages (index, config,
 │   │                          # compare, speedtest, login)
 │   └── static/chart.umd.js    # Chart.js, bundled so graphs work offline
-├── systemd/                   # nettest.service + nettest-web.service units
+├── systemd/                   # nettest, nettest-web and nettest-iperf3@ units
 ├── vendor/                    # Release bundles only (built by make_release.sh)
 │   ├── wheels/                # Python wheels for requirements.lock
 │   └── debs/                  # System packages + dependencies

@@ -603,13 +603,26 @@ else
   info "(run with --show-key to display it)"
 fi
 
+# ── iPerf3 ports the tests use (one nettest-iperf3@ instance each) ─
+IPERF_PORTS=$(cd "${APP_DIR}" && "${APP_DIR}/venv/bin/python3" -c '
+from core.config_loader import load_config
+tp = load_config("config/config.yaml").test_params
+print(" ".join(str(p) for p in sorted({tp.throughput.iperf3_port, tp.jitter.iperf3_port})))
+' 2>/dev/null) || true
+IPERF_PORTS="${IPERF_PORTS:-5201}"
+# sudo(-rs) allows no wildcards in arguments — list each instance
+IPERF_SUDO=""
+for p in ${IPERF_PORTS}; do
+  IPERF_SUDO+=", /usr/bin/systemctl restart nettest-iperf3@${p}.service"
+done
+
 # ── Allow nettest user to restart scheduler without password ─
 SUDOERS_FILE="/etc/sudoers.d/nettest-restart"
 cat > "${SUDOERS_FILE}" << SUDOERS
 # Allow nettest service user to restart the scheduler
 # (triggered automatically when config is saved from the web UI)
 # dpkg is needed for air-gapped agent package installation
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/systemctl restart nettest-web, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm
+${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/systemctl restart nettest-web, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm${IPERF_SUDO}
 SUDOERS
 chmod 440 "${SUDOERS_FILE}"
 visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \
@@ -688,9 +701,23 @@ install -m 0644 "${APP_DIR}/systemd/nettest.service" \
   /etc/systemd/system/nettest.service
 install -m 0644 "${APP_DIR}/systemd/nettest-web.service" \
   /etc/systemd/system/nettest-web.service
+install -m 0644 "${APP_DIR}/systemd/nettest-iperf3@.service" \
+  /etc/systemd/system/nettest-iperf3@.service
 systemctl daemon-reload
 systemctl enable nettest.service nettest-web.service
 ok "Services installed and enabled"
+
+# Persistent iPerf3 server(s), so this controller can also be a test
+# endpoint. A pre-service temporary server would hold the port — stop it.
+pkill -u "${APP_USER}" -x iperf3 2>/dev/null || true
+for p in ${IPERF_PORTS}; do
+  systemctl enable "nettest-iperf3@${p}.service" >/dev/null 2>&1
+  if systemctl restart "nettest-iperf3@${p}.service"; then
+    ok "iPerf3 service listening on port ${p} (nettest-iperf3@${p})"
+  else
+    warn "nettest-iperf3@${p} failed to start — check: journalctl -u nettest-iperf3@${p}"
+  fi
+done
 
 if [[ "$UPGRADE" == "true" ]]; then
   info "Restarting services..."

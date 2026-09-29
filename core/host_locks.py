@@ -2,12 +2,11 @@
 host_locks.py
 Serializes iPerf3 tests per host, across threads and processes.
 
-Every iPerf3 test starts by running `pkill -9 -f iperf3` on its destination,
-which kills every iPerf3 on that box — including another path's server, or
-another path's client when the box is that path's source. Two paths sharing
-a host (e.g. A→B and B→C) must therefore never run iPerf3 tests at the same
-time; even without the pkill they would share port 5201 and each other's
-link capacity.
+Each host runs one iPerf3 server (the nettest-iperf3@ service, see
+core/iperf_service.py), which takes one test at a time, and every test's
+cleanup kills the nettest user's iPerf3 clients on its endpoints. Two paths
+sharing a host (e.g. A→B and B→C) must therefore never run iPerf3 tests at
+the same time; they would also share each other's link capacity.
 
 The scheduler (main.py) and the dashboard (gunicorn) are separate processes,
 so an in-process threading.Lock isn't enough. flock() on a per-host file

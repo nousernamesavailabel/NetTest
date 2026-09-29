@@ -5,7 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [1.3.0] - 2026-09-29
+
+### Changed
+- iPerf3 now runs as a persistent service (`nettest-iperf3@<port>`) on every agent and on the controller, instead of being killed and restarted on the destination before every test. Onboarding installs and enables it; `install.sh` does the same on the controller, and `uninstall.sh` removes it. Tests check that the server is listening, and if it is stuck "busy" or refusing connections they restart it once and retry. This saves the few seconds each test spent killing and restarting the server. The service runs as its own throwaway user, so the tests' cleanup can't kill it.
+- Agents onboarded before this change keep working: each test still starts a temporary server there. Re-onboard them to install the service. On the Config page, installed agents without the service show a **NEEDS RE-ONBOARD** badge (or **IPERF3 DOWN** if the service isn't listening), and the agent test reports the service state.
+- The agent sudoers entry now allows restarting the iPerf3 service for each configured iPerf3 port.
+
+### Added
+- **RX Mbps** column in the Path Overview table (All paths). It shows the average download throughput over the selected window, next to TX Mbps.
+- **↻ Re-onboard** button on each installed agent (Config → Agents). It re-runs onboarding with only the admin credentials to enter. The agent's IP, label, ID and type are taken from the saved config and can't be changed, and its config entry is left as it is. Use it to install the iPerf3 service on existing agents, or to repair an agent's packages, SSH key or sudoers.
+
+### Security
+- 17 dashboard routes that didn't check the login now require it: results, summaries and exports, clearing results, starting test runs, job status/logs/live streams (which include onboarding output), the agent SSH test and the `/live` page. Previously anyone who could reach the dashboard could use them without logging in, even with RADIUS or local login turned on. Only `/login`, `/logout` and static files stay public.
+- The dashboard session cookie is now `SameSite=Lax`, so another website can't use a logged-in browser to start test runs, clear results or change config. Chrome already did this by default; Firefox and Safari did not.
+
+### Fixed
+- Latency under load now fails (and is retried later) when its load stream hits a busy iPerf3 server. It previously went on to measure "loaded" latency on an idle link.
 
 ## [1.2.6] - 2026-09-28
 
@@ -167,7 +183,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Local login
 - Uninstaller
 
-## [1.1.2] - 2026-09-21
+## [1.1.2] - 1016-09-21
 
 ## Added
 - Debug mode
