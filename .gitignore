@@ -1,4 +1,4 @@
-# Keep this repo scoped to the NetTest project even though it currently lives
+# Keep this repo scoped to the LinkState project even though it currently lives
 # in a home directory.
 .*
 !.gitignore

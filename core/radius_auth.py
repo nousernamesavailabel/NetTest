@@ -36,7 +36,7 @@ def authenticate_radius(username: str, password: str, auth_config) -> bool:
     req = client.CreateAuthPacket(
         code=1,
         User_Name=username,
-        NAS_Identifier="nettest-webui",
+        NAS_Identifier="linkstate-webui",
     )
     req["User-Password"] = req.PwCrypt(password)
 

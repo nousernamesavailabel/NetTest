@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NetTest — Compare Runs</title>
+<title>LinkState — Compare Runs</title>
 <script src="/static/chart.umd.js"></script>
 <style>
 :root {
@@ -355,6 +355,12 @@ table.metrics tr:last-child td{border-bottom:none}
 </div>
 
 <script>
+// "host (resolved ip)" for a run's destination — the address actually tested.
+// Records from before hostname support have no destination_addr.
+function destDisplay(r) {
+  const tgt = r.destination_test_host || r.destination_host || '';
+  return r.destination_addr && r.destination_addr !== tgt ? `${tgt} (${r.destination_addr})` : tgt;
+}
 let recordA = null, recordB = null;
 const charts = {};
 
@@ -534,7 +540,7 @@ function applyColor(side, value) {
 function onColorChange(side) {
   const value = document.getElementById(`color-${side}`).value;
   applyColor(side, value);
-  try { localStorage.setItem(`nettest.compare.color${side}`, value); } catch (e) {}
+  try { localStorage.setItem(`linkstate.compare.color${side}`, value); } catch (e) {}
   // Chart colors are baked into the canvas at draw time, so only the chart
   // needs an explicit re-render — CSS-based elements update automatically.
   if (recordA && recordB) { renderHopChart('forward'); renderHopChart('reverse'); renderMtrChart(); }
@@ -543,7 +549,7 @@ function onColorChange(side) {
 function loadStoredColors() {
   ['a', 'b'].forEach(side => {
     let value;
-    try { value = localStorage.getItem(`nettest.compare.color${side}`); } catch (e) { value = null; }
+    try { value = localStorage.getItem(`linkstate.compare.color${side}`); } catch (e) { value = null; }
     if (value) {
       document.getElementById(`color-${side}`).value = value;
       applyColor(side, value);
@@ -587,7 +593,7 @@ function renderMeta(side, record) {
     : '';
   el.innerHTML = `
     <span class="rm-path">${escapeHtml(record.path_label)}</span>
-    <span class="rm-hosts">${escapeHtml(record.source_host)} → ${escapeHtml(record.destination_host)}</span>
+    <span class="rm-hosts">${escapeHtml(record.source_host)} → ${escapeHtml(destDisplay(record))}</span>
     <span class="rm-ts">${(record.timestamp_utc||'').replace('T',' ').slice(0,19)} UTC ·
       ${!record.success ? '<span class="badge-fail">✗ failed</span>'
         : record.error ? '<span class="c-yw">⚠ completed with errors</span>'

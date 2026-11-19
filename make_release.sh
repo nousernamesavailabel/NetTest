@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================
-# NetTest — Release Bundle Builder
+# LinkState — Release Bundle Builder
 #
 # Usage:
-#   ./make_release.sh              # builds nettest-vX.Y.Z.tar.gz
+#   ./make_release.sh              # builds linkstate-vX.Y.Z.tar.gz
 #   ./make_release.sh --version    # prints current version
 #   ./make_release.sh --lock       # re-resolve requirements.txt into
 #                                  # requirements.lock (needs internet)
 #
-# Output: nettest-vX.Y.Z.tar.gz in current directory
+# Output: linkstate-vX.Y.Z.tar.gz in current directory
 #
 # The bundle is self-contained: vendor/debs holds every system package
 # (plus dependencies) and vendor/wheels every Python wheel pinned in
@@ -19,9 +19,9 @@
 # wheels are chosen for this machine's Python version and glibc.
 #
 # Environment overrides:
-#   NETTEST_TARGET_PY      Target Python version  (default: this python3)
-#   NETTEST_TARGET_GLIBC   Target glibc version   (default: this glibc)
-#   NETTEST_TARGET_MANIFEST  Package list from a target controller
+#   LINKSTATE_TARGET_PY      Target Python version  (default: this python3)
+#   LINKSTATE_TARGET_GLIBC   Target glibc version   (default: this glibc)
+#   LINKSTATE_TARGET_MANIFEST  Package list from a target controller
 #                          (dpkg-query -W -f='${Package}\n'), used to pick
 #                          extra .debs to bundle (default: this machine)
 # =============================================================
@@ -96,7 +96,7 @@ if [[ "${1:-}" == "--lock" ]]; then
   python3 -m venv "${LOCK_VENV}"
   "${LOCK_VENV}/bin/pip" install -q -r "${SRC_DIR}/requirements.txt"
   {
-    echo "# NetTest — pinned Python dependencies (generated — do not edit by hand)"
+    echo "# LinkState — pinned Python dependencies (generated — do not edit by hand)"
     echo "#"
     echo "# Exact versions of every package, including transitive dependencies."
     echo "# make_release.sh bundles wheels for exactly these into vendor/wheels, and"
@@ -109,16 +109,16 @@ if [[ "${1:-}" == "--lock" ]]; then
   exit 0
 fi
 
-BUNDLE_NAME="nettest-v${VERSION}.tar.gz"
+BUNDLE_NAME="linkstate-v${VERSION}.tar.gz"
 BUNDLE_PATH="${SRC_DIR}/${BUNDLE_NAME}"
-STAGING_DIR="/tmp/nettest-release-${VERSION}"
+STAGING_DIR="/tmp/linkstate-release-${VERSION}"
 
-TARGET_PY="${NETTEST_TARGET_PY:-$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')}"
-TARGET_GLIBC="${NETTEST_TARGET_GLIBC:-$(getconf GNU_LIBC_VERSION | awk '{print $2}')}"
+TARGET_PY="${LINKSTATE_TARGET_PY:-$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')}"
+TARGET_GLIBC="${LINKSTATE_TARGET_GLIBC:-$(getconf GNU_LIBC_VERSION | awk '{print $2}')}"
 OS_DESC="$(. /etc/os-release; echo "${PRETTY_NAME:-unknown}")"
 
 sep
-echo -e "  ${CYAN}NetTest Release Builder${NC}"
+echo -e "  ${CYAN}LinkState Release Builder${NC}"
 echo "  Version : ${VERSION}"
 echo "  Output  : ${BUNDLE_NAME}"
 echo "  Target  : ${OS_DESC} · Python ${TARGET_PY} · glibc ${TARGET_GLIBC} · $(dpkg --print-architecture)"
@@ -200,7 +200,7 @@ mapfile -t DEB_LIST < <(apt-cache depends --recurse --no-recommends --no-suggest
 # apt removes it along with everything depending on it. So bundle those too.
 # Only packages installed on a typical controller are added, not every
 # possible one (for gcc alone that runs to gigabytes): by default this
-# machine's installed set, or NETTEST_TARGET_MANIFEST — a file of package
+# machine's installed set, or LINKSTATE_TARGET_MANIFEST — a file of package
 # names from a real target (dpkg-query -W -f='${Package}\n').
 info "Adding exact-version companions of installed packages..."
 mapfile -t DEB_LIST < <(python3 - "${DEB_LIST[@]}" <<'PYEOF'
@@ -210,7 +210,7 @@ def run(*cmd):
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 arch = run("dpkg", "--print-architecture").strip()
-manifest = os.environ.get("NETTEST_TARGET_MANIFEST")
+manifest = os.environ.get("LINKSTATE_TARGET_MANIFEST")
 if manifest:
     with open(manifest) as f:
         installed = {l.split(":")[0].strip() for l in f if l.strip()}
@@ -291,7 +291,7 @@ ok "All Python files compile cleanly"
 # Build the tarball
 info "Building ${BUNDLE_NAME}..."
 rm -f "${BUNDLE_PATH}"
-tar -czf "${BUNDLE_PATH}" -C /tmp "nettest-release-${VERSION}"
+tar -czf "${BUNDLE_PATH}" -C /tmp "linkstate-release-${VERSION}"
 ok "Bundle created: ${BUNDLE_NAME} ($(du -sh "${BUNDLE_PATH}" | cut -f1))"
 
 echo ""

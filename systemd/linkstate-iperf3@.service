@@ -1,12 +1,12 @@
 [Unit]
-Description=NetTest iPerf3 server (port %i)
+Description=LinkState iPerf3 server (port %i)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 # A throwaway user nothing else runs as, so the test code's own
-# `pkill iperf3` / `fuser -k` cleanup (run as the nettest user) can't
+# `pkill iperf3` / `fuser -k` cleanup (run as the linkstate user) can't
 # kill the service's server.
 DynamicUser=yes
 # --idle-timeout (iperf3 3.10+) restarts a server stuck reporting

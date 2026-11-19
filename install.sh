@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# NetTest Controller — Install / Upgrade Script
+# LinkState Controller — Install / Upgrade Script
 #
 # Usage:
 #   sudo ./install.sh                    # Fresh install
@@ -9,28 +9,28 @@
 #   sudo ./install.sh --setup-local-user # Add/update a local dashboard login
 #
 # Environment overrides:
-#   NETTEST_APP_DIR        Install path  (default: /opt/nettest)
-#   NETTEST_USER           Service user  (default: nettest)
-#   NETTEST_ONLINE         "false" for an offline / air-gapped install
+#   LINKSTATE_APP_DIR        Install path  (default: /opt/linkstate)
+#   LINKSTATE_USER           Service user  (default: linkstate)
+#   LINKSTATE_ONLINE         "false" for an offline / air-gapped install
 #                          (skips the interactive prompt). Release bundles
 #                          ship their dependencies in vendor/ and install
 #                          offline automatically; set "true" to use apt
 #                          and PyPI instead.
-#   NETTEST_PACKAGES_DIR   Directory of .deb files for an offline install
+#   LINKSTATE_PACKAGES_DIR   Directory of .deb files for an offline install
 #                          (skips the interactive prompt)
-#   NETTEST_WHEELS_DIR     Directory of .whl files for an offline install
+#   LINKSTATE_WHEELS_DIR     Directory of .whl files for an offline install
 #                          (skips the interactive prompt)
-#   NETTEST_LOCAL_USER     Username for --setup-local-user (skips the prompt)
-#   NETTEST_LOCAL_PASSWORD Password for --setup-local-user (skips the prompt)
+#   LINKSTATE_LOCAL_USER     Username for --setup-local-user (skips the prompt)
+#   LINKSTATE_LOCAL_PASSWORD Password for --setup-local-user (skips the prompt)
 # =============================================================
 
 set -euo pipefail
 
-APP_DIR="${NETTEST_APP_DIR:-/opt/nettest}"
-APP_USER="${NETTEST_USER:-nettest}"
+APP_DIR="${LINKSTATE_APP_DIR:-/opt/linkstate}"
+APP_USER="${LINKSTATE_USER:-linkstate}"
 APP_GROUP="${APP_USER}"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KEY_FILE="${APP_DIR}/.ssh/nettest_key"
+KEY_FILE="${APP_DIR}/.ssh/linkstate_key"
 
 # ── Colour helpers ─────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -58,7 +58,7 @@ if [[ "$SHOW_KEY" == "true" ]]; then
   if [[ -f "${KEY_FILE}.pub" ]]; then
     sep
     echo ""
-    echo "  NetTest Controller Public Key"
+    echo "  LinkState Controller Public Key"
     echo "  (add this to agents during onboarding)"
     echo ""
     sep
@@ -94,11 +94,11 @@ if [[ "$SETUP_LOCAL_USER" == "true" ]]; then
   fi
 
   sep
-  echo -e "  ${CYAN}NetTest — Local Dashboard Login${NC}"
+  echo -e "  ${CYAN}LinkState — Local Dashboard Login${NC}"
   sep
   echo ""
 
-  LOCAL_USERNAME="${NETTEST_LOCAL_USER:-}"
+  LOCAL_USERNAME="${LINKSTATE_LOCAL_USER:-}"
   if [[ -z "$LOCAL_USERNAME" ]]; then
     read -r -p "  Username: " LOCAL_USERNAME || true
   fi
@@ -107,7 +107,7 @@ if [[ "$SETUP_LOCAL_USER" == "true" ]]; then
     exit 1
   fi
 
-  LOCAL_PASSWORD="${NETTEST_LOCAL_PASSWORD:-}"
+  LOCAL_PASSWORD="${LINKSTATE_LOCAL_PASSWORD:-}"
   if [[ -z "$LOCAL_PASSWORD" ]]; then
     read -r -s -p "  Password: " LOCAL_PASSWORD || true; echo ""
     read -r -s -p "  Confirm password: " LOCAL_PASSWORD_CONFIRM || true; echo ""
@@ -127,15 +127,15 @@ if [[ "$SETUP_LOCAL_USER" == "true" ]]; then
 
   echo ""
   info "Hashing password and updating config..."
-  NETTEST_LU_USER="$LOCAL_USERNAME" NETTEST_LU_PASS="$LOCAL_PASSWORD" \
+  LINKSTATE_LU_USER="$LOCAL_USERNAME" LINKSTATE_LU_PASS="$LOCAL_PASSWORD" \
     "${APP_DIR}/venv/bin/python3" - "$CONFIG_FILE" << 'PYEOF'
 import os, sys
 import yaml
 from werkzeug.security import generate_password_hash
 
 config_path = sys.argv[1]
-username = os.environ["NETTEST_LU_USER"]
-password = os.environ["NETTEST_LU_PASS"]
+username = os.environ["LINKSTATE_LU_USER"]
+password = os.environ["LINKSTATE_LU_PASS"]
 
 with open(config_path) as f:
     raw = yaml.safe_load(f)
@@ -168,13 +168,13 @@ PYEOF
   ok "Local user '${LOCAL_USERNAME}' saved"
   echo ""
 
-  if systemctl is-active --quiet nettest-web 2>/dev/null; then
-    info "Restarting nettest-web to apply..."
-    systemctl restart nettest-web
-    ok "nettest-web restarted"
+  if systemctl is-active --quiet linkstate-web 2>/dev/null; then
+    info "Restarting linkstate-web to apply..."
+    systemctl restart linkstate-web
+    ok "linkstate-web restarted"
   else
-    warn "nettest-web isn't running — start it to apply this change:"
-    echo "     sudo systemctl start nettest-web"
+    warn "linkstate-web isn't running — start it to apply this change:"
+    echo "     sudo systemctl start linkstate-web"
   fi
   echo ""
   exit 0
@@ -184,6 +184,140 @@ fi
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo ./install.sh"
   exit 1
+fi
+
+# ── Migrate a NetTest install to LinkState ─────────────────
+# LinkState was formerly called NetTest. If this host has a NetTest
+# install and no LinkState one, move it over: app directory, service user
+# and group (same UID/GID), systemd units, sudoers entry, nginx site, SSH key
+# and certificate file names, and paths in config.yaml. Config, results,
+# logs, snapshots and the key itself are kept, so onboarded agents keep
+# working. Agents onboarded under NetTest log in as 'nettest', which is
+# pinned on each of them in config.yaml. Re-onboarding moves an agent to the
+# new default user.
+LEGACY_APP_DIR="${NETTEST_APP_DIR:-/opt/nettest}"
+LEGACY_USER="nettest"
+MIGRATED_FROM_LEGACY=false
+if [[ ! -e "${APP_DIR}" && -f "${LEGACY_APP_DIR}/version.txt" ]]; then
+  sep
+  echo -e "  ${CYAN}Migrating NetTest → LinkState${NC}"
+  echo "  ${LEGACY_APP_DIR} → ${APP_DIR}  |  user ${LEGACY_USER} → ${APP_USER}"
+  sep
+  echo ""
+
+  info "Stopping and removing NetTest services..."
+  systemctl stop nettest.service nettest-web.service 2>/dev/null || true
+  systemctl stop 'nettest-iperf3@*.service' 2>/dev/null || true
+  systemctl disable nettest.service nettest-web.service 2>/dev/null || true
+  rm -f /etc/systemd/system/multi-user.target.wants/nettest-iperf3@*.service
+  rm -f /etc/systemd/system/nettest.service /etc/systemd/system/nettest-web.service \
+        /etc/systemd/system/nettest-iperf3@.service
+  systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+  rm -f /etc/sudoers.d/nettest-restart
+  rm -f /etc/nginx/sites-enabled/nettest /etc/nginx/sites-available/nettest
+  ok "NetTest units, sudoers entry and nginx site removed"
+
+  mv "${LEGACY_APP_DIR}" "${APP_DIR}"
+  ok "Moved ${LEGACY_APP_DIR} → ${APP_DIR}"
+  # Installing from inside the old directory (e.g. a dev copy): follow the move
+  if [[ "${SRC_DIR}" == "${LEGACY_APP_DIR}" || "${SRC_DIR}" == "${LEGACY_APP_DIR}/"* ]]; then
+    SRC_DIR="${APP_DIR}${SRC_DIR#"${LEGACY_APP_DIR}"}"
+  fi
+
+  # venv console scripts (gunicorn, pip, ...) have the venv path in their
+  # shebang lines, and the activate scripts set it too
+  if [[ -d "${APP_DIR}/venv/bin" ]]; then
+    grep -rlI --null -F "${LEGACY_APP_DIR}/venv" "${APP_DIR}/venv/bin" "${APP_DIR}/venv/pyvenv.cfg" 2>/dev/null |
+      xargs -0 -r sed -i "s|${LEGACY_APP_DIR}/venv|${APP_DIR}/venv|g" || true
+    ok "Python environment paths updated"
+  fi
+
+  if id -u "${LEGACY_USER}" >/dev/null 2>&1 && ! id -u "${APP_USER}" >/dev/null 2>&1; then
+    # usermod refuses while the user has processes (e.g. a stray iperf3)
+    pkill -u "${LEGACY_USER}" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -u "${LEGACY_USER}" 2>/dev/null || true
+    usermod -l "${APP_USER}" "${LEGACY_USER}"
+    if [[ "$(getent passwd "${APP_USER}" | cut -d: -f6)" == "/home/${LEGACY_USER}" ]]; then
+      if [[ -d "/home/${LEGACY_USER}" && ! -e "/home/${APP_USER}" ]]; then
+        usermod -d "/home/${APP_USER}" -m "${APP_USER}"
+      else
+        usermod -d "/home/${APP_USER}" "${APP_USER}"
+      fi
+    fi
+    ok "Renamed user '${LEGACY_USER}' → '${APP_USER}' (UID $(id -u "${APP_USER}"))"
+  fi
+  if getent group "${LEGACY_USER}" >/dev/null && ! getent group "${APP_GROUP}" >/dev/null; then
+    groupmod -n "${APP_GROUP}" "${LEGACY_USER}"
+    ok "Renamed group '${LEGACY_USER}' → '${APP_GROUP}' (members kept)"
+  fi
+
+  for ext in "" ".pub"; do
+    if [[ -f "${APP_DIR}/.ssh/nettest_key${ext}" && ! -e "${APP_DIR}/.ssh/linkstate_key${ext}" ]]; then
+      mv "${APP_DIR}/.ssh/nettest_key${ext}" "${APP_DIR}/.ssh/linkstate_key${ext}"
+    fi
+  done
+  for ext in crt key; do
+    if [[ -f "${APP_DIR}/ssl/nettest.${ext}" && ! -e "${APP_DIR}/ssl/linkstate.${ext}" ]]; then
+      mv "${APP_DIR}/ssl/nettest.${ext}" "${APP_DIR}/ssl/linkstate.${ext}"
+    fi
+  done
+  ok "SSH key and certificate renamed (contents unchanged)"
+
+  MIG_CONFIG="${APP_DIR}/config/config.yaml"
+  if [[ -f "${MIG_CONFIG}" ]]; then
+    cp -p "${MIG_CONFIG}" "${MIG_CONFIG}.pre-linkstate"
+    "${APP_DIR}/venv/bin/python3" - "${MIG_CONFIG}" "${LEGACY_APP_DIR}" "${APP_DIR}" "${APP_USER}" << 'PYEOF'
+import sys
+import yaml
+
+path, old_dir, new_dir, new_user = sys.argv[1:]
+with open(path) as f:
+    raw = yaml.safe_load(f) or {}
+
+old_key = f"{old_dir}/.ssh/nettest_key"
+new_key = f"{new_dir}/.ssh/linkstate_key"
+
+def fix(v):
+    if isinstance(v, dict):
+        return {k: fix(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [fix(x) for x in v]
+    if isinstance(v, str):
+        if v == old_key or v.startswith(old_key + "."):
+            return new_key + v[len(old_key):]
+        if v == old_dir or v.startswith(old_dir + "/"):
+            return new_dir + v[len(old_dir):]
+    return v
+
+raw = fix(raw)
+
+ctl = raw.get("controller") or {}
+if ctl.get("name") == "NetTest Controller":
+    ctl["name"] = "LinkState Controller"
+
+# Agents onboarded so far log in as 'nettest'. Pin that on each of them,
+# then make the new default user apply to agents onboarded from now on.
+sd = raw.setdefault("ssh_defaults", {})
+if (sd.get("username") or "nettest") == "nettest":
+    for a in raw.get("agents") or []:
+        if not a.get("username"):
+            a["username"] = "nettest"
+    sd["username"] = new_user
+
+with open(path, "w") as f:
+    yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+PYEOF
+    ok "config.yaml updated (previous copy: config/config.yaml.pre-linkstate)"
+  fi
+
+  MIGRATED_FROM_LEGACY=true
+  if [[ "$UPGRADE" != "true" ]]; then
+    UPGRADE=true
+    info "Existing install found — continuing as an upgrade"
+  fi
+  echo ""
 fi
 
 sep
@@ -197,10 +331,10 @@ if [[ -f "${SRC_DIR}/version.txt" ]]; then
 fi
 
 if [[ "$UPGRADE" == "true" ]]; then
-  echo -e "  ${CYAN}NetTest Controller — Upgrade${NC}"
+  echo -e "  ${CYAN}LinkState Controller — Upgrade${NC}"
   echo "  ${CURRENT_VERSION} → ${INCOMING_VERSION}"
 else
-  echo -e "  ${CYAN}NetTest Controller — Fresh Install${NC}"
+  echo -e "  ${CYAN}LinkState Controller — Fresh Install${NC}"
   echo "  Version : ${INCOMING_VERSION}"
 fi
 echo "  Target: ${APP_DIR}  |  User: ${APP_USER}"
@@ -217,8 +351,8 @@ HAS_BUNDLED_DEBS=false; HAS_BUNDLED_WHEELS=false
 compgen -G "${BUNDLED_DEBS}/*.deb"   > /dev/null && HAS_BUNDLED_DEBS=true
 compgen -G "${BUNDLED_WHEELS}/*.whl" > /dev/null && HAS_BUNDLED_WHEELS=true
 
-ONLINE="${NETTEST_ONLINE:-}"
-if [[ -z "$ONLINE" && ( -n "${NETTEST_PACKAGES_DIR:-}" || -n "${NETTEST_WHEELS_DIR:-}" ) ]]; then
+ONLINE="${LINKSTATE_ONLINE:-}"
+if [[ -z "$ONLINE" && ( -n "${LINKSTATE_PACKAGES_DIR:-}" || -n "${LINKSTATE_WHEELS_DIR:-}" ) ]]; then
   ONLINE=false
 fi
 if [[ -z "$ONLINE" && "$HAS_BUNDLED_DEBS" == "true" && "$HAS_BUNDLED_WHEELS" == "true" ]]; then
@@ -266,7 +400,7 @@ elif [[ "$ONLINE" != "false" ]]; then
   ok "System packages ready"
 else
   # ── Offline: install from a local directory of .deb files ──
-  PKG_DIR="${NETTEST_PACKAGES_DIR:-}"
+  PKG_DIR="${LINKSTATE_PACKAGES_DIR:-}"
   if [[ -z "$PKG_DIR" && "$HAS_BUNDLED_DEBS" == "true" ]]; then
     PKG_DIR="${BUNDLED_DEBS}"
   fi
@@ -312,7 +446,7 @@ else
       break
     fi
     warn "No .deb files found in: ${PKG_DIR:-<none entered>}"
-    [[ -n "${NETTEST_PACKAGES_DIR:-}" ]] && exit 1
+    [[ -n "${LINKSTATE_PACKAGES_DIR:-}" ]] && exit 1
     PKG_DIR=""
   done
   PKG_DIR="$(cd "$PKG_DIR" && pwd)"
@@ -325,7 +459,7 @@ else
   # server is missing, never downgrades anything already installed, and
   # skips alternatives it doesn't need. Only this repo is consulted, so
   # nothing reaches for the network.
-  LOCAL_REPO="$(mktemp -d /tmp/nettest-apt-XXXXXX)"
+  LOCAL_REPO="$(mktemp -d /tmp/linkstate-apt-XXXXXX)"
   mkdir -p "${LOCAL_REPO}/repo" "${LOCAL_REPO}/lists/partial"
   for _deb in "${PKG_DIR}"/*.deb; do
     ln -s "$_deb" "${LOCAL_REPO}/repo/"
@@ -362,7 +496,7 @@ else
     warn "    their matching upgrade."
     warn "Add the .deb files for the packages apt named (same versions as the"
     warn "bundle, from an online machine on the same OS release) to ${PKG_DIR},"
-    warn "or rebuild the bundle with NETTEST_TARGET_MANIFEST set to this"
+    warn "or rebuild the bundle with LINKSTATE_TARGET_MANIFEST set to this"
     warn "server's package list:  dpkg-query -W -f='\${Package}\\n' > manifest.txt"
     warn "then run this installer again."
     exit 1
@@ -414,10 +548,10 @@ fi
 # Back up SSH key before sync in case it lives outside .ssh/
 if [[ "$UPGRADE" == "true" ]]; then
   KEY_FILE_CONF=$(grep "key_file:" "${APP_DIR}/config/config.yaml" 2>/dev/null |                   awk '{print $2}' | tr -d '"' | sed "s|~|$HOME|g" | head -1)
-  KEY_FILE_CONF="${KEY_FILE_CONF:-${APP_DIR}/.ssh/nettest_key}"
+  KEY_FILE_CONF="${KEY_FILE_CONF:-${APP_DIR}/.ssh/linkstate_key}"
   # Private (0700) and unpredictable, and removed however the script exits —
   # a failed step before the restore below must not leave a key copy in /tmp.
-  KEY_BACKUP_DIR="$(mktemp -d /tmp/nettest-key-backup-XXXXXX)"
+  KEY_BACKUP_DIR="$(mktemp -d /tmp/linkstate-key-backup-XXXXXX)"
   trap 'rm -rf "${KEY_BACKUP_DIR}"' EXIT
   for kf in "${KEY_FILE_CONF}" "${KEY_FILE_CONF}.pub"; do
     [[ -f "$kf" ]] && cp "$kf" "${KEY_BACKUP_DIR}/" && info "Backed up: $kf"
@@ -468,7 +602,7 @@ install -d -o "${APP_USER}" -g "${APP_GROUP}" \
   "${APP_DIR}/results" \
   "${APP_DIR}/packages" \
   "${APP_DIR}/snapshots"
-install -d -m 755 /opt/nettest/ssl
+install -d -m 755 /opt/linkstate/ssl
 ok "Runtime directories ready"
 
 # ── Agent packages for air-gapped onboarding ───────────────
@@ -510,7 +644,7 @@ install_python_deps() {
     return
   fi
 
-  WHEELS_DIR="${NETTEST_WHEELS_DIR:-}"
+  WHEELS_DIR="${LINKSTATE_WHEELS_DIR:-}"
   if [[ -z "$WHEELS_DIR" && "$HAS_BUNDLED_WHEELS" == "true" ]]; then
     WHEELS_DIR="${BUNDLED_WHEELS}"
   fi
@@ -537,7 +671,7 @@ install_python_deps() {
       break
     fi
     warn "No .whl files found in: ${WHEELS_DIR:-<none entered>}"
-    [[ -n "${NETTEST_WHEELS_DIR:-}" ]] && exit 1
+    [[ -n "${LINKSTATE_WHEELS_DIR:-}" ]] && exit 1
     WHEELS_DIR=""
   done
 
@@ -563,7 +697,7 @@ if [[ "$UPGRADE" == "true" ]]; then
     ok "Python environment synced to ${REQ_FILE##*/}"
   else
     # No bundled wheels — skip pip; run manually if dependencies changed:
-    #   sudo /opt/nettest/venv/bin/pip install -r /opt/nettest/requirements.txt
+    #   sudo /opt/linkstate/venv/bin/pip install -r /opt/linkstate/requirements.txt
     ok "Python environment unchanged (upgrade mode — skipping pip)"
   fi
 else
@@ -578,8 +712,8 @@ chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
 # Keep .ssh permissions strict
 if [[ -d "${APP_DIR}/.ssh" ]]; then
   chmod 700 "${APP_DIR}/.ssh"
-  chmod 600 "${APP_DIR}/.ssh/nettest_key" 2>/dev/null || true
-  chmod 644 "${APP_DIR}/.ssh/nettest_key.pub" 2>/dev/null || true
+  chmod 600 "${APP_DIR}/.ssh/linkstate_key" 2>/dev/null || true
+  chmod 644 "${APP_DIR}/.ssh/linkstate_key.pub" 2>/dev/null || true
 fi
 ok "Ownership and permissions set"
 
@@ -593,7 +727,7 @@ if [[ ! -f "${KEY_FILE}" ]]; then
   sudo -u "${APP_USER}" ssh-keygen \
     -t ed25519 \
     -f "${KEY_FILE}" \
-    -C "nettest-controller" \
+    -C "linkstate-controller" \
     -N ""
   chmod 600 "${KEY_FILE}"
   chmod 644 "${KEY_FILE}.pub"
@@ -603,7 +737,7 @@ else
   info "(run with --show-key to display it)"
 fi
 
-# ── iPerf3 ports the tests use (one nettest-iperf3@ instance each) ─
+# ── iPerf3 ports the tests use (one linkstate-iperf3@ instance each) ─
 IPERF_PORTS=$(cd "${APP_DIR}" && "${APP_DIR}/venv/bin/python3" -c '
 from core.config_loader import load_config
 tp = load_config("config/config.yaml").test_params
@@ -613,16 +747,16 @@ IPERF_PORTS="${IPERF_PORTS:-5201}"
 # sudo(-rs) allows no wildcards in arguments — list each instance
 IPERF_SUDO=""
 for p in ${IPERF_PORTS}; do
-  IPERF_SUDO+=", /usr/bin/systemctl restart nettest-iperf3@${p}.service"
+  IPERF_SUDO+=", /usr/bin/systemctl restart linkstate-iperf3@${p}.service"
 done
 
-# ── Allow nettest user to restart scheduler without password ─
-SUDOERS_FILE="/etc/sudoers.d/nettest-restart"
+# ── Allow linkstate user to restart scheduler without password ─
+SUDOERS_FILE="/etc/sudoers.d/linkstate-restart"
 cat > "${SUDOERS_FILE}" << SUDOERS
-# Allow nettest service user to restart the scheduler
+# Allow linkstate service user to restart the scheduler
 # (triggered automatically when config is saved from the web UI)
 # dpkg is needed for air-gapped agent package installation
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest, /usr/bin/systemctl restart nettest-web, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm${IPERF_SUDO}
+${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart linkstate, /usr/bin/systemctl restart linkstate-web, /usr/bin/dpkg, /usr/bin/systemctl restart nginx, /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload-or-restart nginx, /usr/bin/systemctl stop nginx, /usr/bin/systemctl enable nginx, /usr/bin/systemctl start nginx, /usr/bin/tee, /usr/bin/ln, /usr/bin/rm${IPERF_SUDO}
 SUDOERS
 chmod 440 "${SUDOERS_FILE}"
 visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \
@@ -631,7 +765,7 @@ visudo -c -f "${SUDOERS_FILE}" > /dev/null 2>&1 && \
 
 # ── nginx reverse proxy setup ──────────────────────────────
 info "Configuring nginx reverse proxy..."
-NGINX_CONF="/etc/nginx/sites-available/nettest"
+NGINX_CONF="/etc/nginx/sites-available/linkstate"
 cat > "${NGINX_CONF}" << 'NGINXCONF'
 server {
     listen 80;
@@ -643,8 +777,8 @@ server {
     listen 443 ssl;
     server_name _;
 
-    ssl_certificate     /opt/nettest/ssl/nettest.crt;
-    ssl_certificate_key /opt/nettest/ssl/nettest.key;
+    ssl_certificate     /opt/linkstate/ssl/linkstate.crt;
+    ssl_certificate_key /opt/linkstate/ssl/linkstate.key;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     ssl_session_cache   shared:SSL:10m;
@@ -667,22 +801,31 @@ server {
     }
 }
 NGINXCONF
-ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/nettest
+ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/linkstate
 rm -f /etc/nginx/sites-enabled/default
 
 # Generate self-signed cert if none exists
-if [[ ! -f /opt/nettest/ssl/nettest.crt ]]; then
+if [[ ! -f /opt/linkstate/ssl/linkstate.crt ]]; then
   SERVER_IP=$(hostname -I | awk '{print $1}')
+  # Also cover the controller's hostname and FQDN, so the dashboard can be
+  # reached by name without a certificate name mismatch.
+  SAN="IP:${SERVER_IP}"
+  for _n in "$(hostname -s 2>/dev/null)" "$(hostname -f 2>/dev/null)"; do
+    if [[ "$_n" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$_n" != "localhost" \
+          && ",${SAN}," != *",DNS:${_n},"* ]]; then
+      SAN="${SAN},DNS:${_n}"
+    fi
+  done
   openssl req -x509 -nodes -newkey rsa:4096 \
-    -keyout /opt/nettest/ssl/nettest.key \
-    -out    /opt/nettest/ssl/nettest.crt \
+    -keyout /opt/linkstate/ssl/linkstate.key \
+    -out    /opt/linkstate/ssl/linkstate.crt \
     -days 3650 \
-    -subj "/CN=${SERVER_IP}/O=NetTest" \
-    -addext "subjectAltName=IP:${SERVER_IP}" \
+    -subj "/CN=${SERVER_IP}/O=LinkState" \
+    -addext "subjectAltName=${SAN}" \
     2>/dev/null
-  chmod 600 /opt/nettest/ssl/nettest.key
-  chmod 644 /opt/nettest/ssl/nettest.crt
-  ok "Self-signed certificate generated for ${SERVER_IP}"
+  chmod 600 /opt/linkstate/ssl/linkstate.key
+  chmod 644 /opt/linkstate/ssl/linkstate.crt
+  ok "Self-signed certificate generated for ${SAN}"
 else
   info "SSL certificate already exists — keeping existing cert"
 fi
@@ -692,37 +835,37 @@ if nginx -t 2>/dev/null; then
   systemctl restart nginx
   ok "nginx configured and started"
 else
-  warn "nginx config test failed — check /etc/nginx/sites-available/nettest"
+  warn "nginx config test failed — check /etc/nginx/sites-available/linkstate"
 fi
 
 # ── Systemd service files ──────────────────────────────────
 info "Installing systemd services..."
-install -m 0644 "${APP_DIR}/systemd/nettest.service" \
-  /etc/systemd/system/nettest.service
-install -m 0644 "${APP_DIR}/systemd/nettest-web.service" \
-  /etc/systemd/system/nettest-web.service
-install -m 0644 "${APP_DIR}/systemd/nettest-iperf3@.service" \
-  /etc/systemd/system/nettest-iperf3@.service
+install -m 0644 "${APP_DIR}/systemd/linkstate.service" \
+  /etc/systemd/system/linkstate.service
+install -m 0644 "${APP_DIR}/systemd/linkstate-web.service" \
+  /etc/systemd/system/linkstate-web.service
+install -m 0644 "${APP_DIR}/systemd/linkstate-iperf3@.service" \
+  /etc/systemd/system/linkstate-iperf3@.service
 systemctl daemon-reload
-systemctl enable nettest.service nettest-web.service
+systemctl enable linkstate.service linkstate-web.service
 ok "Services installed and enabled"
 
 # Persistent iPerf3 server(s), so this controller can also be a test
 # endpoint. A pre-service temporary server would hold the port — stop it.
 pkill -u "${APP_USER}" -x iperf3 2>/dev/null || true
 for p in ${IPERF_PORTS}; do
-  systemctl enable "nettest-iperf3@${p}.service" >/dev/null 2>&1
-  if systemctl restart "nettest-iperf3@${p}.service"; then
-    ok "iPerf3 service listening on port ${p} (nettest-iperf3@${p})"
+  systemctl enable "linkstate-iperf3@${p}.service" >/dev/null 2>&1
+  if systemctl restart "linkstate-iperf3@${p}.service"; then
+    ok "iPerf3 service listening on port ${p} (linkstate-iperf3@${p})"
   else
-    warn "nettest-iperf3@${p} failed to start — check: journalctl -u nettest-iperf3@${p}"
+    warn "linkstate-iperf3@${p} failed to start — check: journalctl -u linkstate-iperf3@${p}"
   fi
 done
 
 if [[ "$UPGRADE" == "true" ]]; then
   info "Restarting services..."
-  systemctl restart nettest.service
-  systemctl restart nettest-web.service
+  systemctl restart linkstate.service
+  systemctl restart linkstate-web.service
   ok "Services restarted"
 fi
 
@@ -744,11 +887,11 @@ if [[ "$UPGRADE" == "false" ]]; then
   echo "     sudo nano ${APP_DIR}/config/config.yaml"
   echo ""
   echo "  2. Start the services:"
-  echo "     sudo systemctl start nettest"
-  echo "     sudo systemctl start nettest-web"
+  echo "     sudo systemctl start linkstate"
+  echo "     sudo systemctl start linkstate-web"
   echo ""
   echo "  3. Check service status:"
-  echo "     sudo systemctl status nettest nettest-web"
+  echo "     sudo systemctl status linkstate linkstate-web"
   echo ""
   echo "  4. Open the dashboard:"
   echo "     http://<this-server-ip>:8080    (direct, always available)"
@@ -772,6 +915,19 @@ if [[ "$UPGRADE" == "false" ]]; then
   echo "     fallback login if RADIUS is unreachable), add a local account:"
   echo "     sudo ./install.sh --setup-local-user"
   echo "     (local users can also be managed later from Config → Auth)"
+  echo ""
+fi
+
+if [[ "$MIGRATED_FROM_LEGACY" == "true" ]]; then
+  echo "  Migrated from NetTest:"
+  echo ""
+  echo "  - The app now lives in ${APP_DIR} and runs as '${APP_USER}'"
+  echo "    (services: linkstate, linkstate-web, linkstate-iperf3@<port>)."
+  echo "  - The SSH key is unchanged, so onboarded agents keep working. They"
+  echo "    still log in as 'nettest' and run the nettest-iperf3@ service."
+  echo "    Re-onboard an agent to move it to the '${APP_USER}' user and the"
+  echo "    linkstate-iperf3@ service (the old 'nettest' user stays on it)."
+  echo "  - NetTest snapshots taken before this upgrade can't be rolled back to."
   echo ""
 fi
 

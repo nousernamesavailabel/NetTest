@@ -67,7 +67,7 @@ def iperf3_error_text(error: str, limit_sec: int = None) -> str:
 
 class SSHManager:
 
-    BG_LOG_PATH = "/tmp/nettest_bg.log"
+    BG_LOG_PATH = "/tmp/linkstate_bg.log"
     DEBUG_OUTPUT_CHARS = 20000   # cap on raw command output written to the debug log
 
     def __init__(self, host: str, username: str, port: int = 22,

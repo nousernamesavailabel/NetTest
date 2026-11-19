@@ -1,6 +1,7 @@
-# Network Test Controller
+# LinkState
 
 Automated network measurement controller for multi-site, multi-VLAN environments.
+(LinkState was formerly called NetTest.)
 Tests throughput, latency, jitter, and MTU across defined paths between agents.
 
 <img width="1917" height="862" alt="image" src="https://github.com/user-attachments/assets/597dbb9e-b3b2-441d-ac4a-307f987e1570" />
@@ -28,7 +29,7 @@ No persistent daemon is required on agents beyond sshd.
 
 ## Quick Install (Recommended)
 
-`install.sh` sets up the venv, dependencies, `nettest` service user, SSH
+`install.sh` sets up the venv, dependencies, `linkstate` service user, SSH
 key, systemd services, and (optionally) an nginx HTTPS reverse proxy in
 one pass. Run it from the extracted release bundle or a clone of this repo:
 
@@ -43,7 +44,7 @@ sudo ./install.sh --setup-local-user  # add a local dashboard login account
 Release bundles install with no internet connection. `make_release.sh`
 ships every system package (with dependencies) in `vendor/debs` and every
 Python wheel pinned in `requirements.lock` in `vendor/wheels`, and
-`install.sh` uses them automatically (set `NETTEST_ONLINE=true` to use apt
+`install.sh` uses them automatically (set `LINKSTATE_ONLINE=true` to use apt
 and PyPI instead). Build releases on an online machine running the same
 OS release as the controllers (currently Ubuntu 26.04, Python 3.14).
 
@@ -59,11 +60,11 @@ In that case, rebuild with that target's package list:
 # on the target
 dpkg-query -W -f='${Package}\n' > manifest.txt
 # on the build machine
-NETTEST_TARGET_MANIFEST=manifest.txt ./make_release.sh
+LINKSTATE_TARGET_MANIFEST=manifest.txt ./make_release.sh
 ```
 
 To install from your own package directories instead, set
-`NETTEST_PACKAGES_DIR` / `NETTEST_WHEELS_DIR` to local `.deb` / `.whl`
+`LINKSTATE_PACKAGES_DIR` / `LINKSTATE_WHEELS_DIR` to local `.deb` / `.whl`
 directories.
 
 Python dependencies: edit `requirements.txt`, then run
@@ -73,11 +74,36 @@ Then edit `config/config.yaml` (Steps 2–5 below still apply) and start the
 service:
 
 ```bash
-sudo systemctl start nettest nettest-web
+sudo systemctl start linkstate linkstate-web
 ```
 
 To roll back a bad upgrade, run `sudo ./rollback.sh` to list snapshots
 taken automatically by `install.sh --upgrade`, then `sudo ./rollback.sh <snapshot>`.
+
+### Upgrading from NetTest
+
+Run `sudo ./install.sh --upgrade` from the extracted LinkState bundle. It
+finds the NetTest install and migrates it:
+
+- `/opt/nettest` moves to `/opt/linkstate`.
+- The `nettest` user and group are renamed to `linkstate`, keeping the same UID and GID.
+- The units become `linkstate`, `linkstate-web` and `linkstate-iperf3@`.
+- The sudoers entry and nginx site are renamed.
+- `.ssh/nettest_key` and `ssl/nettest.*` are renamed. Their contents don't change.
+- Paths in `config.yaml` are updated. The old file is kept as `config.yaml.pre-linkstate`.
+
+The SSH key doesn't change, so agents keep working. Agents onboarded under
+NetTest keep logging in as `nettest`, because that username is pinned on each
+of them in `config.yaml`. Re-onboarding an agent moves it to the `linkstate`
+user and the `linkstate-iperf3@` service. NetTest snapshots can't be rolled
+back to once the install is migrated.
+
+An update through the web UI can't do this migration, because the dashboard
+doesn't run as root. A controller updated that way keeps running under its
+NetTest names, and Config → Updates shows how to finish the migration.
+
+`LINKSTATE_*` replaces the `NETTEST_*` environment variables of
+`install.sh`, `uninstall.sh`, `rollback.sh` and `make_release.sh`.
 
 ### Manual Setup
 
@@ -85,7 +111,7 @@ If you'd rather not use `install.sh`, or you're setting up a dev environment:
 
 #### 1. Clone and install dependencies
 ```bash
-cd nettest/
+cd NetTest/          # the repository keeps its original name
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -101,42 +127,42 @@ cp config/config.example.yaml config/config.yaml
 #### 2. Configure SSH key access
 ```bash
 # Generate key if needed
-ssh-keygen -t ed25519 -f ~/.ssh/nettest_key
+ssh-keygen -t ed25519 -f ~/.ssh/linkstate_key
 
 # Copy to each agent
-ssh-copy-id -i ~/.ssh/nettest_key nettest@10.1.1.10
-ssh-copy-id -i ~/.ssh/nettest_key nettest@10.2.1.10
+ssh-copy-id -i ~/.ssh/linkstate_key linkstate@10.1.1.10
+ssh-copy-id -i ~/.ssh/linkstate_key linkstate@10.2.1.10
 # ... repeat for all agents
 ```
 
 Update `config/config.yaml`:
 ```yaml
 ssh_defaults:
-  username: "nettest"
-  key_file: "~/.ssh/nettest_key"
+  username: "linkstate"
+  key_file: "~/.ssh/linkstate_key"
 ```
 
-#### 3. Create the nettest user on each agent
+#### 3. Create the linkstate user on each agent
 ```bash
 # Run on each agent host
-sudo useradd -m -s /bin/bash nettest
-sudo mkdir -p /home/nettest/.ssh
-# Paste controller's public key into /home/nettest/.ssh/authorized_keys
-sudo chown -R nettest:nettest /home/nettest/.ssh
-sudo chmod 700 /home/nettest/.ssh
-sudo chmod 600 /home/nettest/.ssh/authorized_keys
+sudo useradd -m -s /bin/bash linkstate
+sudo mkdir -p /home/linkstate/.ssh
+# Paste controller's public key into /home/linkstate/.ssh/authorized_keys
+sudo chown -R linkstate:linkstate /home/linkstate/.ssh
+sudo chmod 700 /home/linkstate/.ssh
+sudo chmod 600 /home/linkstate/.ssh/authorized_keys
 ```
 
 #### 4. Install the iPerf3 service on agents
-Onboarding does this for you. By hand, copy `systemd/nettest-iperf3@.service`
+Onboarding does this for you. By hand, copy `systemd/linkstate-iperf3@.service`
 from the controller to each agent, then:
 ```bash
-sudo cp nettest-iperf3@.service /etc/systemd/system/
+sudo cp linkstate-iperf3@.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now nettest-iperf3@5201
+sudo systemctl enable --now linkstate-iperf3@5201
 # Let tests restart it if it stops answering
-echo 'nettest ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nettest-iperf3@5201.service' \
-  | sudo tee /etc/sudoers.d/nettest-iperf3
+echo 'linkstate ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart linkstate-iperf3@5201.service' \
+  | sudo tee /etc/sudoers.d/linkstate-iperf3
 ```
 Each agent (and the controller) then keeps an iPerf3 server listening on
 5201. Tests check it is up and restart it if it is stuck "busy" or refusing
@@ -162,7 +188,7 @@ sudo ufw allow 22/tcp
 ```
 
 #### 6. Edit config/config.yaml
-- Update agent IPs to match your environment
+- Update agent addresses (IP or hostname) to match your environment
 - Define your actual test paths
 - Adjust schedule intervals as needed
 - Set `auth.session_secret` to a long random string (it signs dashboard
@@ -198,7 +224,7 @@ python main.py --results 2024-11-15
 python main.py
 
 # Run with alternate config
-python main.py --config /etc/nettest/config.yaml
+python main.py --config /etc/linkstate/config.yaml
 ```
 
 ### Terminal UI
@@ -299,7 +325,7 @@ apt-get download $(apt-cache depends --recurse --no-recommends --no-suggests \
 ## Project Structure
 
 ```
-nettest/
+linkstate/
 ├── main.py                   # Entry point and CLI (scheduler/one-shot runs)
 ├── tui.py                    # Terminal UI — live dashboard
 ├── web_dashboard.py          # Flask web dashboard + REST API
@@ -331,7 +357,7 @@ nettest/
 ├── web/                       # Dashboard static pages (index, config,
 │   │                          # compare, speedtest, login)
 │   └── static/chart.umd.js    # Chart.js, bundled so graphs work offline
-├── systemd/                   # nettest, nettest-web and nettest-iperf3@ units
+├── systemd/                   # linkstate, linkstate-web and linkstate-iperf3@ units
 ├── vendor/                    # Release bundles only (built by make_release.sh)
 │   ├── wheels/                # Python wheels for requirements.lock
 │   └── debs/                  # System packages + dependencies
@@ -377,15 +403,15 @@ changes needed.
 
 `install.sh` installs and enables both units from `systemd/` automatically:
 
-- **`nettest.service`** — the scheduler (`main.py`)
-- **`nettest-web.service`** — the web dashboard, served via gunicorn (gevent workers) on port 8080
+- **`linkstate.service`** — the scheduler (`main.py`)
+- **`linkstate-web.service`** — the web dashboard, served via gunicorn (gevent workers) on port 8080
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now nettest nettest-web
-sudo journalctl -u nettest -f        # Follow scheduler logs
-sudo journalctl -u nettest-web -f    # Follow web dashboard logs
+sudo systemctl enable --now linkstate linkstate-web
+sudo journalctl -u linkstate -f        # Follow scheduler logs
+sudo journalctl -u linkstate-web -f    # Follow web dashboard logs
 ```
 
 Run `sudo ./install.sh --setup-https` to put nginx in front of
-`nettest-web` with a self-signed certificate.
+`linkstate-web` with a self-signed certificate.

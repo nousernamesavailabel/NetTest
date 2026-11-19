@@ -1,4 +1,4 @@
-# NetTest — pinned Python dependencies (generated — do not edit by hand)
+# LinkState — pinned Python dependencies (generated — do not edit by hand)
 #
 # Exact versions of every package, including transitive dependencies.
 # make_release.sh bundles wheels for exactly these into vendor/wheels, and

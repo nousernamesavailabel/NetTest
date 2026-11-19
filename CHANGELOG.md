@@ -1,9 +1,53 @@
-# NetTest Changelog
+# LinkState Changelog
 
-All notable changes to NetTest are documented here.
+All notable changes to LinkState (formerly NetTest) are documented here.
+Entries for releases before the rename keep the NetTest name.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+
+## [Unreleased]
+
+### Added
+- Agents, the onboarding wizard, the RADIUS server and self-signed certificates now accept a hostname or FQDN anywhere an IP address was used, as well as IPv6 addresses. The config fields keep their names (`host_mgmt_ip`, `host_test_ip`), so existing configs work unchanged.
+- Hostnames are resolved on the controller at the start of each path run, and every test in that run targets the resulting IP, so agents don't need working DNS. The resolved IP is saved with each result (`destination_addr`, alongside the configured `destination_test_host`) and shown as `name (ip)` on the dashboard and Compare page, so history still makes sense if the name later points somewhere else. A name that won't resolve fails the run straight away with a clear error, before any SSH session or iPerf3 lock is taken.
+- Two optional per-agent settings (Config → Agents): **Address family** (`address_family: ipv4 | ipv6 | auto`, default `ipv4`) chooses which address a name resolves to, and **Resolve names on** (`resolve_on: controller | agent`, default `controller`) lets the source agent resolve the test host itself, for split-horizon DNS. In agent mode ping, iPerf3, mtr and traceroute are pinned to the chosen family with `-4`/`-6`.
+- **Resolve** button on each agent (Config → Agents) shows what its hosts resolve to from the controller.
+- `install.sh` adds the controller's hostname and FQDN to the self-signed certificate alongside its IP.
+- Green/amber/red health thresholds (latency, packet loss, jitter, throughput, bufferbloat) are now configurable in a new `thresholds:` section of `config.yaml` or under **Config → Thresholds**. They used to be hard-coded. Configs without the section keep the previous dashboard values. The thresholds are exported and imported with test parameters.
+
+### Changed
+- **NetTest is now LinkState.** The product name, dashboard, TUI, scripts and docs use the new name, and so does everything on the host. The app directory is now `/opt/linkstate`. The service user and group are `linkstate`. The systemd units are `linkstate`, `linkstate-web` and `linkstate-iperf3@`. The sudoers entry is `linkstate-restart` and the nginx site is `linkstate`. The SSH key is `.ssh/linkstate_key` and the certificate is `ssl/linkstate.*`. Release bundles are `linkstate-vX.Y.Z.tar.gz`, and installer environment variables use `LINKSTATE_*` instead of `NETTEST_*`.
+- `sudo ./install.sh --upgrade` migrates an existing NetTest install in place:
+  - The directory moves, and the user and group are renamed with the same UID and GID.
+  - The old units, sudoers entry and nginx site are replaced.
+  - The key and certificate file names change. Their contents don't.
+  - Paths in `config.yaml` are updated. The previous file is kept as `config.yaml.pre-linkstate`.
+
+  The web-UI updater can't migrate because it doesn't run as root. A controller updated that way keeps working under its NetTest names, and Config → Updates shows how to finish the migration.
+- New agents are onboarded with the `linkstate` user. Agents onboarded under NetTest keep logging in as `nettest` (pinned per agent during migration) and keep their `nettest-iperf3@` service, which tests still detect and use. Re-onboarding an agent replaces both and moves it to the `linkstate` user. The old `nettest` user is left on the agent.
+- Config export bundles name the key `linkstate_key`. Bundles exported by NetTest still import.
+- Host fields are validated (IPv4, IPv6 or RFC 1123 hostname) when the config is saved, on onboarding and on bundle import. Invalid values in an existing `config.yaml` are logged as warnings rather than stopping the controller, so they can still be fixed from the dashboard.
+- iPerf3 test locks (`run/locks/`) are now keyed by agent ID instead of host string, so one agent always gets one lock however its host is written. Lock files are named `iperf-agent-<id>.lock`; the old per-host files are no longer used and can be deleted.
+- Hosts are shell-quoted in every test command sent to agents.
+- The TUI now uses the same thresholds as the dashboard. Its old built-in latency cut-offs (20/80 ms) are replaced by the configured values (default 15/50 ms).
+
+### Fixed
+- Traceroute reported "did not reach destination" for a destination given as a hostname, because it only matched the hop list against the configured string. It now matches the resolved IP (or the address traceroute itself reports). Traceroute output with IPv6 hops is now parsed too.
+- Generating a certificate with a hostname in **Additional IPs** failed, because every entry was written as an `IP:` SAN. Entries are now `IP:` or `DNS:` as appropriate, and the Common Name is always included in the SAN list (browsers only check the SAN list).
+- MTU discovery to an IPv6 destination now subtracts the 40-byte IPv6 header instead of the 20-byte IPv4 one.
+- Pushing packages to an agent from Config → Packages used the default SSH user even when the agent had its own `username` set.
+
+## [1.3.1] - 2026-11-03
+
+### Changed
+- Speed Test download and upload results now leave out the first 25% of each test, while TCP connections are still speeding up, so they report the steady-state speed. Each direction runs 12 s instead of 8 s. The live readout and **peak** are now the speed over the last second; before, they were the average since the test started.
+- Speed Test ping is now the median of 20 samples, after one warm-up request that isn't counted. Before, it was the minimum of 10. Where the browser supports it, each sample is timed from when the request is sent to when the response starts, so time spent queued in the browser isn't counted.
+- Bufferbloat now compares median ping under load (taken after the ramp-up) with median idle ping, and is never negative. Before, it compared average loaded ping with the idle minimum, which could give impossible negative results.
+- Speed Test uploads now send 16 MB bodies instead of 800 KB and count bytes as they are sent, so the link doesn't sit idle between requests. The server's per-request upload cap went from 2 MB to 32 MB.
+
+### Fixed
+- Speed Test download and upload timing now stops at the test deadline. Before, it also waited for the background ping loop to finish, which made results read about 5% low.
 
 ## [1.3.0] - 2026-09-29
 

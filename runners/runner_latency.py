@@ -6,6 +6,7 @@ Latency, jitter, latency-under-load, and MTU test runners.
 import re
 import json
 import logging
+import shlex
 import time
 
 from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
@@ -14,6 +15,11 @@ from core.results import LatencyResult, JitterResult, LatencyUnderLoadResult
 from core.config_loader import LatencyParams, JitterParams, LatencyUnderLoadParams
 
 logger = logging.getLogger(__name__)
+
+
+def _target(af: str, host: str) -> str:
+    """Family flag (if any) plus the shell-quoted host, for a command line."""
+    return f"{af} {shlex.quote(host)}" if af else shlex.quote(host)
 
 
 def _strip_escapes(text: str) -> str:
@@ -37,8 +43,9 @@ def _strip_escapes(text: str) -> str:
 
 class LatencyRunner:
 
-    def __init__(self, params: LatencyParams):
+    def __init__(self, params: LatencyParams, af: str = ""):
         self.params = params
+        self.af = af
 
     def run(self, src_ssh: SSHManager, dst_host: str) -> LatencyResult:
         p = self.params
@@ -48,7 +55,7 @@ class LatencyRunner:
             f"-i {interval_sec:.3f} "
             f"-s {p.packet_size_bytes} "
             f"-W 2 "
-            f"{dst_host}"
+            f"{_target(self.af, dst_host)}"
         )
         timeout_sec = int(p.packet_count * interval_sec) + 30
         output = src_ssh.run(cmd, timeout=timeout_sec)
@@ -110,8 +117,9 @@ class LatencyRunner:
 
 class JitterRunner:
 
-    def __init__(self, params: JitterParams):
+    def __init__(self, params: JitterParams, af: str = ""):
         self.params = params
+        self.af = af
 
     def run(self, src_ssh: SSHManager, dst_ssh,
             dst_host: str,
@@ -131,7 +139,7 @@ class JitterRunner:
                     f"at {p.bandwidth_kbps} Kbps...")
 
         cmd = (
-            f"iperf3 -c {dst_host} -p {port} "
+            f"iperf3 -c {_target(self.af, dst_host)} -p {port} "
             f"-u "
             f"-b {p.bandwidth_kbps}K "
             f"-l {p.packet_size_bytes} "
@@ -211,8 +219,10 @@ class JitterRunner:
 class LatencyUnderLoadRunner:
 
     def __init__(self, params: LatencyUnderLoadParams, iperf3_port: int = 5201,
-                 iperf3_streams: int = 8, iperf3_duration: int = 60):
+                 iperf3_streams: int = 8, iperf3_duration: int = 60,
+                 af: str = ""):
         self.params = params
+        self.af = af
         self.iperf3_port    = iperf3_port
         self.iperf3_streams = iperf3_streams
         self.iperf3_duration = iperf3_duration
@@ -229,7 +239,7 @@ class LatencyUnderLoadRunner:
         idle_ping_cmd = (
             f"ping -c {p.ping_count} "
             f"-i {p.ping_interval_ms / 1000:.3f} "
-            f"{dst_host}"
+            f"{_target(self.af, dst_host)}"
         )
         idle_output = src_ssh.run(idle_ping_cmd, timeout=p.ping_count * 2 + 15)
         for line in _strip_escapes(idle_output).splitlines():
@@ -262,7 +272,7 @@ class LatencyUnderLoadRunner:
             while time.time() < probe_deadline:
                 probe_attempt += 1
                 probe = src_ssh.run(
-                    f"iperf3 -c {dst_host} -p {port} -t 1 -J 2>&1 | head -5",
+                    f"iperf3 -c {_target(self.af, dst_host)} -p {port} -t 1 -J 2>&1 | head -5",
                     timeout=10
                 )
                 if "server is busy" not in probe.lower():
@@ -271,7 +281,7 @@ class LatencyUnderLoadRunner:
                             f"(attempt {probe_attempt}, "
                             f"{int(probe_deadline - time.time())}s remaining)...")
                 time.sleep(1)
-        load_cmd = (f"iperf3 -c {dst_host} -p {port} "
+        load_cmd = (f"iperf3 -c {_target(self.af, dst_host)} -p {port} "
                     f"-P {self.iperf3_streams} -t {self.iperf3_duration}")
         src_ssh.run_background(load_cmd)
         time.sleep(2)
@@ -298,7 +308,7 @@ class LatencyUnderLoadRunner:
         loaded_ping_cmd = (
             f"ping -c {p.ping_count} "
             f"-i {p.ping_interval_ms / 1000:.3f} "
-            f"{dst_host}"
+            f"{_target(self.af, dst_host)}"
         )
         loaded_output = src_ssh.run(loaded_ping_cmd, timeout=p.ping_count * 2 + 15)
         for line in _strip_escapes(loaded_output).splitlines():
@@ -317,7 +327,7 @@ class LatencyUnderLoadRunner:
         if loaded_replied:
             logger.info(f"  Phase 4/4: Running MTR hop trace ({p.mtr_cycles} cycles)...")
             mtr_output = src_ssh.run(
-                f"mtr --report --report-cycles {p.mtr_cycles} --json {dst_host}",
+                f"mtr --report --report-cycles {p.mtr_cycles} --json {_target(self.af, dst_host)}",
                 timeout=p.mtr_cycles * 3 + 30
             )
             mtr_hops = _parse_mtr(mtr_output)
@@ -363,7 +373,9 @@ class LatencyUnderLoadRunner:
 
 class MTURunner:
 
-    def __init__(self, max_size: int = 9000, min_size: int = 576, step: int = 10):
+    def __init__(self, max_size: int = 9000, min_size: int = 576, step: int = 10,
+                 af: str = ""):
+        self.af = af
         self.max_size = max_size
         self.min_size = min_size
         self.step     = step
@@ -392,13 +404,16 @@ class MTURunner:
         )
 
     def _probe(self, src_ssh: SSHManager, dst_host: str, size: int) -> bool:
-        payload = size - 28
+        # size is the whole IP packet: subtract IP + ICMP headers
+        # (20 + 8 for IPv4, 40 + 8 for IPv6).
+        v6 = self.af == "-6" or ":" in dst_host
+        payload = size - (48 if v6 else 28)
         if payload < 0:
             return False
         cmd = (
-            f"ping -c 3 -M do -s {payload} -W 1 {dst_host} "
-            "&& printf '\\n__NETTEST_PING_OK__\\n' "
-            "|| printf '\\n__NETTEST_PING_FAIL__\\n'"
+            f"ping -c 3 -M do -s {payload} -W 1 {_target(self.af, dst_host)} "
+            "&& printf '\\n__LINKSTATE_PING_OK__\\n' "
+            "|| printf '\\n__LINKSTATE_PING_FAIL__\\n'"
         )
         try:
             output = src_ssh.run(cmd, timeout=15)
@@ -408,7 +423,7 @@ class MTURunner:
                 line = line.strip()
                 if line and ('rtt' in line or 'packet loss' in line):
                     logger.info(f"      {line}")
-            return "__NETTEST_PING_OK__" in output and "0% packet loss" in output
+            return "__LINKSTATE_PING_OK__" in output and "0% packet loss" in output
         except Exception:
             return False
 

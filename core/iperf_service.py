@@ -3,18 +3,22 @@ iperf_service.py
 Persistent iPerf3 servers on agents and the controller.
 
 Onboarding (and install.sh on the controller) installs the templated unit
-systemd/nettest-iperf3@.service and enables it for the configured iPerf3
+systemd/linkstate-iperf3@.service and enables it for the configured iPerf3
 port(s), so every agent always has a server listening. Tests only check that
 it is listening and restart it if it has stopped answering — they no longer
 kill and relaunch iPerf3 on the destination for every test.
 
-The service runs as a systemd DynamicUser, so the nettest user's own
+The service runs as a systemd DynamicUser, so the linkstate user's own
 `pkill iperf3` / `fuser -k` cleanup of test clients can't touch it.
 
 Agents onboarded before the service existed have no unit (and no sudoers
 entry to restart one). For those the old behaviour is kept: kill any
-iPerf3 the nettest user owns and start a temporary `iperf3 -s -D`.
+iPerf3 the linkstate user owns and start a temporary `iperf3 -s -D`.
 Re-onboarding an agent installs the service.
+
+Agents onboarded before the rename to LinkState have the same unit under
+its old name, nettest-iperf3@.service, with sudoers entries for that name.
+It is detected and used until the agent is re-onboarded, which replaces it.
 """
 
 import logging
@@ -24,17 +28,27 @@ import time
 logger = logging.getLogger(__name__)
 
 _APP_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UNIT_NAME    = "nettest-iperf3@.service"
+UNIT_PREFIX  = "linkstate-iperf3"
+UNIT_NAME    = f"{UNIT_PREFIX}@.service"
 UNIT_SOURCE  = os.path.join(_APP_DIR, "systemd", UNIT_NAME)
 UNIT_PATH    = f"/etc/systemd/system/{UNIT_NAME}"
+
+# Same unit as installed by NetTest, before the rename to LinkState
+LEGACY_UNIT_PREFIX = "nettest-iperf3"
+LEGACY_UNIT_PATH   = f"/etc/systemd/system/{LEGACY_UNIT_PREFIX}@.service"
 
 # iperf3 client output meaning the server isn't taking tests: stuck "busy"
 # after an aborted client, or not running at all.
 _UNAVAILABLE_MARKERS = ("server is busy", "connection refused", "unable to connect")
 
 
-def unit_for_port(port: int) -> str:
-    return f"nettest-iperf3@{int(port)}.service"
+def unit_for_port(port: int, prefix: str = UNIT_PREFIX) -> str:
+    return f"{prefix}@{int(port)}.service"
+
+
+def _host_unit(ssh, port: int) -> str:
+    """The unit instance this host actually has (new name, or pre-rename)."""
+    return unit_for_port(port, _service_prefix(ssh) or UNIT_PREFIX)
 
 
 def server_unavailable(client_output: str) -> bool:
@@ -52,21 +66,36 @@ def is_listening(ssh, port: int) -> bool:
     return "__IPERF_UP__" in out and "__IPERF_DOWN__" not in out
 
 
-def has_service(ssh) -> bool:
-    """True if the host has the nettest-iperf3 unit installed (cached per session)."""
-    cached = getattr(ssh, "_nettest_iperf_service", None)
+def _service_prefix(ssh):
+    """Unit prefix installed on the host, or None if it has no iPerf3 service.
+
+    Cached per session ("" caches "none installed").
+    """
+    cached = getattr(ssh, "_linkstate_iperf_prefix", None)
     if cached is not None:
-        return cached
+        return cached or None
     out = ssh.run(
-        f"test -f {UNIT_PATH} && echo __UNIT_YES__ || echo __UNIT_NO__",
+        f"if test -f {UNIT_PATH}; then echo __UNIT_NEW__; "
+        f"elif test -f {LEGACY_UNIT_PATH}; then echo __UNIT_LEGACY__; "
+        f"else echo __UNIT_NONE__; fi",
         timeout=5,
     )
-    found = "__UNIT_YES__" in out and "__UNIT_NO__" not in out
+    if "__UNIT_NEW__" in out:
+        found = UNIT_PREFIX
+    elif "__UNIT_LEGACY__" in out:
+        found = LEGACY_UNIT_PREFIX
+    else:
+        found = ""
     try:
-        ssh._nettest_iperf_service = found
+        ssh._linkstate_iperf_prefix = found
     except AttributeError:
         pass
-    return found
+    return found or None
+
+
+def has_service(ssh) -> bool:
+    """True if the host has the iPerf3 unit installed, under either name."""
+    return _service_prefix(ssh) is not None
 
 
 def _wait_listening(ssh, port: int, attempts: int = 10) -> bool:
@@ -78,20 +107,21 @@ def _wait_listening(ssh, port: int, attempts: int = 10) -> bool:
 
 
 def _restart_service(ssh, port: int, label: str) -> bool:
+    unit = _host_unit(ssh, port)
     out = ssh.run(
-        f"sudo -n systemctl restart {unit_for_port(port)} 2>&1 "
+        f"sudo -n systemctl restart {unit} 2>&1 "
         f"&& echo __RESTART_OK__ || echo __RESTART_FAIL__",
         timeout=30,
     )
     if "__RESTART_OK__" not in out or "__RESTART_FAIL__" in out:
         detail = out.replace("__RESTART_FAIL__", "").strip()
-        logger.warning(f"  Could not restart {unit_for_port(port)} on {label}: "
+        logger.warning(f"  Could not restart {unit} on {label}: "
                        f"{detail[:200] or 'no output'}")
         return False
     if _wait_listening(ssh, port):
         logger.info(f"  iPerf3 service on {label}:{port} restarted and listening")
         return True
-    logger.warning(f"  {unit_for_port(port)} on {label} restarted but is not "
+    logger.warning(f"  {unit} on {label} restarted but is not "
                    f"listening on port {port}")
     return False
 

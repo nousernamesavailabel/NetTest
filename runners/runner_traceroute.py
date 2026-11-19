@@ -5,14 +5,24 @@ Supports forward-only (when destination is svi_adjacent or unreachable via SSH)
 and bidirectional (endpoint-to-endpoint).
 """
 
+import ipaddress
 import re
 import logging
+import shlex
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 from core.ssh_manager import SSHManager
 
 logger = logging.getLogger(__name__)
+
+
+def _is_ip(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -50,7 +60,8 @@ class TracerouteResult:
 class TracerouteRunner:
 
     def __init__(self, max_hops: int = 30, probes: int = 2,
-                 wait_sec: int = 1, resolve_dns: bool = True):
+                 wait_sec: int = 1, resolve_dns: bool = True, af: str = ""):
+        self.af         = af
         self.max_hops   = max_hops
         self.probes     = probes
         self.wait_sec   = wait_sec
@@ -64,11 +75,12 @@ class TracerouteRunner:
                     f"{self.wait_sec}s wait)...")
 
         dns_flag = '' if self.resolve_dns else '-n '
-        cmd = (f"traceroute {dns_flag}"
+        af_flag  = f"{self.af} " if self.af else ''
+        cmd = (f"traceroute {af_flag}{dns_flag}"
                f"-m {self.max_hops} "
                f"-q {self.probes} "
                f"-w {self.wait_sec} "
-               f"{dst_host} 2>&1")
+               f"{shlex.quote(dst_host)} 2>&1")
 
         timeout = self.max_hops * self.probes * self.wait_sec + 30
         try:
@@ -94,11 +106,12 @@ class TracerouteRunner:
         logger.info(f"  Running reverse traceroute from {dst_ssh.host} → {src_host}...")
 
         dns_flag = '' if self.resolve_dns else '-n '
-        cmd = (f"traceroute {dns_flag}"
+        af_flag  = f"{self.af} " if self.af else ''
+        cmd = (f"traceroute {af_flag}{dns_flag}"
                f"-m {self.max_hops} "
                f"-q {self.probes} "
                f"-w {self.wait_sec} "
-               f"{src_host} 2>&1")
+               f"{shlex.quote(src_host)} 2>&1")
 
         timeout = self.max_hops * self.probes * self.wait_sec + 30
         try:
@@ -131,7 +144,7 @@ class TracerouteRunner:
             hop = self._parse_line(line, dest_host)
             if hop:
                 hops.append(hop)
-                if hop.ip == dest_host or hop.hostname == dest_host:
+                if self._is_dest(hop, dest_host, output):
                     completed = True
 
         return TracerouteResult(
@@ -141,6 +154,19 @@ class TracerouteRunner:
             hops=hops,
             completed=completed,
         )
+
+    @staticmethod
+    def _is_dest(hop: TracerouteHop, dest_host: str, output: str) -> bool:
+        """True if hop is the destination. dest_host is usually the IP the
+        controller resolved, but may be a name the agent resolved itself —
+        then match the address traceroute's header line says it used."""
+        dest = (dest_host or "").rstrip(".").lower()
+        if hop.ip and hop.ip == dest:
+            return True
+        if hop.hostname and hop.hostname.rstrip(".").lower() == dest:
+            return True
+        m = re.search(r'^traceroute to \S+ \(([0-9A-Fa-f:.]+)\)', output, re.M)
+        return bool(hop.ip and m and hop.ip == m.group(1))
 
     def _parse_line(self, line: str, dest_host: str) -> Optional[TracerouteHop]:
         """
@@ -172,17 +198,18 @@ class TracerouteRunner:
         rtts = [float(r) for r in rtt_vals]
 
         # Extract IP and hostname
-        # Pattern: hostname (ip) or just ip
+        # Pattern: hostname (ip) or just ip — IPv4 or IPv6
         host_match = re.search(
-            r'([a-zA-Z0-9._-]+)\s+\((\d+\.\d+\.\d+\.\d+)\)', rest
+            r'([a-zA-Z0-9._:-]+)\s+\((\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*)\)', rest
         )
-        ip_only_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', rest)
+        ip_only_match = (re.search(r'(\d+\.\d+\.\d+\.\d+)', rest)
+                         or re.search(r'(?<![\w.])([0-9A-Fa-f]{0,4}:[0-9A-Fa-f:.]*:[0-9A-Fa-f.]*)', rest))
 
         if host_match:
             hostname = host_match.group(1)
             ip       = host_match.group(2)
             # If hostname looks like an IP, treat it as no hostname
-            if re.match(r'^\d+\.\d+\.\d+\.\d+$', hostname):
+            if _is_ip(hostname):
                 hostname = None
         elif ip_only_match:
             ip       = ip_only_match.group(1)

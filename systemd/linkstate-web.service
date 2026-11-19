@@ -1,24 +1,24 @@
 [Unit]
-Description=NetTest Web Dashboard
+Description=LinkState Web Dashboard
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=nettest
-Group=nettest
-WorkingDirectory=/opt/nettest
-ExecStart=/opt/nettest/venv/bin/gunicorn \
+User=linkstate
+Group=linkstate
+WorkingDirectory=/opt/linkstate
+ExecStart=/opt/linkstate/venv/bin/gunicorn \
     --worker-class gevent \
     --workers 1 \
     --bind 0.0.0.0:8080 \
     --timeout 300 \
-    --chdir /opt/nettest \
+    --chdir /opt/linkstate \
     web_dashboard:app
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=/opt/nettest
+Environment=PYTHONPATH=/opt/linkstate
 
 [Install]
 WantedBy=multi-user.target

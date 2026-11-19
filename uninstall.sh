@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
 # =============================================================
-# NetTest Controller — Uninstall Script
+# LinkState Controller — Uninstall Script
 #
 # Usage:
 #   sudo ./uninstall.sh              # Stop/disable services, remove
 #                                     # nginx/sudoers/systemd integration.
-#                                     # Leaves /opt/nettest (code, config,
+#                                     # Leaves /opt/linkstate (code, config,
 #                                     # logs, results, keys) in place.
 #   sudo ./uninstall.sh --purge      # Also delete the app directory
 #                                     # entirely (config, keys, data — gone).
-#   sudo ./uninstall.sh --remove-user  # Also delete the nettest system
+#   sudo ./uninstall.sh --remove-user  # Also delete the linkstate system
 #                                       # user and group.
 #   sudo ./uninstall.sh --yes        # Don't prompt for confirmation.
 #
 # Environment overrides:
-#   NETTEST_APP_DIR       Install path  (default: /opt/nettest)
-#   NETTEST_USER          Service user  (default: nettest)
+#   LINKSTATE_APP_DIR       Install path  (default: /opt/linkstate)
+#   LINKSTATE_USER          Service user  (default: linkstate)
 # =============================================================
 
 set -euo pipefail
 
-APP_DIR="${NETTEST_APP_DIR:-/opt/nettest}"
-APP_USER="${NETTEST_USER:-nettest}"
+APP_DIR="${LINKSTATE_APP_DIR:-/opt/linkstate}"
+APP_USER="${LINKSTATE_USER:-linkstate}"
+# A NetTest install (from before the rename) that was never migrated
+if [[ -z "${LINKSTATE_APP_DIR:-}" && ! -d "${APP_DIR}" && -f /opt/nettest/version.txt ]]; then
+  APP_DIR=/opt/nettest
+  [[ -z "${LINKSTATE_USER:-}" ]] && APP_USER=nettest
+fi
 APP_GROUP="${APP_USER}"
 
 # ── Colour helpers ─────────────────────────────────────────
@@ -55,7 +60,7 @@ CURRENT_VERSION="unknown"
 [[ -f "${APP_DIR}/version.txt" ]] && CURRENT_VERSION=$(cat "${APP_DIR}/version.txt" | tr -d "[:space:]")
 
 sep
-echo -e "  ${CYAN}NetTest Controller — Uninstall${NC}"
+echo -e "  ${CYAN}LinkState Controller — Uninstall${NC}"
 echo "  Target: ${APP_DIR}  |  User: ${APP_USER}  |  Version: ${CURRENT_VERSION}"
 sep
 echo ""
@@ -83,23 +88,28 @@ fi
 
 # ── Stop and disable services ──────────────────────────────
 info "Stopping services..."
-systemctl stop nettest.service nettest-web.service 2>/dev/null || true
-systemctl disable nettest.service nettest-web.service 2>/dev/null || true
-systemctl stop 'nettest-iperf3@*.service' 2>/dev/null || true
-rm -f /etc/systemd/system/multi-user.target.wants/nettest-iperf3@*.service
+# Pre-rename (NetTest) names too, in case this install was never migrated
+for name in linkstate nettest; do
+  systemctl stop "${name}.service" "${name}-web.service" 2>/dev/null || true
+  systemctl disable "${name}.service" "${name}-web.service" 2>/dev/null || true
+  systemctl stop "${name}-iperf3@*.service" 2>/dev/null || true
+  rm -f /etc/systemd/system/multi-user.target.wants/${name}-iperf3@*.service
+done
 ok "Services stopped and disabled"
 
 info "Removing systemd unit files..."
-rm -f /etc/systemd/system/nettest.service /etc/systemd/system/nettest-web.service \
-  /etc/systemd/system/nettest-iperf3@.service
+for name in linkstate nettest; do
+  rm -f "/etc/systemd/system/${name}.service" "/etc/systemd/system/${name}-web.service" \
+    "/etc/systemd/system/${name}-iperf3@.service"
+done
 systemctl daemon-reload
 systemctl reset-failed 2>/dev/null || true
 ok "Systemd units removed"
 
 # ── nginx reverse proxy ────────────────────────────────────
 info "Removing nginx reverse proxy config..."
-rm -f /etc/nginx/sites-enabled/nettest
-rm -f /etc/nginx/sites-available/nettest
+rm -f /etc/nginx/sites-enabled/linkstate /etc/nginx/sites-enabled/nettest
+rm -f /etc/nginx/sites-available/linkstate /etc/nginx/sites-available/nettest
 # Restore the stock default site if it's still present but not enabled,
 # so the box doesn't lose nginx's default vhost as a side effect.
 if [[ -f /etc/nginx/sites-available/default ]] && [[ ! -e /etc/nginx/sites-enabled/default ]]; then
@@ -114,10 +124,12 @@ else
 fi
 
 # ── Sudoers entry ───────────────────────────────────────────
-if [[ -f /etc/sudoers.d/nettest-restart ]]; then
-  rm -f /etc/sudoers.d/nettest-restart
-  ok "Removed sudoers entry"
-fi
+for f in /etc/sudoers.d/linkstate-restart /etc/sudoers.d/nettest-restart; do
+  if [[ -f "$f" ]]; then
+    rm -f "$f"
+    ok "Removed sudoers entry ${f}"
+  fi
+done
 
 # ── App directory ───────────────────────────────────────────
 if [[ "$PURGE" == "true" ]]; then

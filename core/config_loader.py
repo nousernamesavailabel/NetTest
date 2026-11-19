@@ -4,11 +4,16 @@ Loads and validates config.yaml, exposes typed dataclasses
 for use throughout the controller.
 """
 
+import logging
 import yaml
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Dict
+
+from core.hostaddr import validate_host, ADDRESS_FAMILIES, RESOLVE_ON
+
+logger = logging.getLogger(__name__)
 
 # Day-of-week codes used as keys in TestPath.schedule, indexed by datetime.weekday()
 DAY_CODES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -50,10 +55,19 @@ AGENT_NOT_INSTALLED_TESTS = {"latency", "mtu", "traceroute", "throughput", "jitt
 class Agent:
     id: str
     label: str
-    host_mgmt_ip: str                  # SSH management IP — controller connects here
+    # Field names keep "_ip" for config compatibility, but both accept an
+    # IPv4/IPv6 address or a DNS hostname/FQDN (see core/hostaddr.py).
+    host_mgmt_ip: str                  # SSH management host — controller connects here
     type: str                          # agent_installed | switch_router | agent_not_installed
-    host_test_ip: Optional[str] = None # Test traffic IP — falls back to host_mgmt_ip
+    host_test_ip: Optional[str] = None # Test traffic host — falls back to host_mgmt_ip
     iperf3_port: Optional[int] = None  # For agent_not_installed — port iPerf3 listens on
+    # Which address family a hostname resolves to, and pins the test tools to
+    # when resolve_on is "agent": ipv4 | ipv6 | auto. Ignored for IP literals.
+    address_family: str = "ipv4"
+    # Where hostnames are resolved for test traffic: "controller" (default —
+    # agents get an IP, no DNS needed on them) or "agent" (the source agent's
+    # own resolver, for split-horizon DNS).
+    resolve_on: str = "controller"
     # Per-agent SSH overrides (fall back to SSHDefaults if None)
     username: Optional[str] = None
     password: Optional[str] = None
@@ -203,6 +217,70 @@ class Schedule:
     enabled: bool = True
 
 
+# Green/amber/red cut-offs used by the web dashboard and TUI. For most
+# metrics higher is worse: green below warn, amber from warn, red from crit.
+# Throughput is the other way round: amber at or below warn, red at or
+# below crit. Missing metrics in config.yaml fall back to these defaults.
+THRESHOLD_DEFAULTS: Dict[str, Dict[str, float]] = {
+    "latency_ms":      {"warn": 15, "crit": 50},
+    "packet_loss_pct": {"warn": 1,  "crit": 5},
+    "jitter_ms":       {"warn": 5,  "crit": 20},
+    "throughput_mbps": {"warn": 10, "crit": 2},
+    "bufferbloat_ms":  {"warn": 30, "crit": 100},
+}
+HIGHER_IS_BETTER = {"throughput_mbps"}
+
+
+def parse_thresholds(raw) -> "tuple[Dict[str, Dict[str, float]], List[str]]":
+    """Merge thresholds from config.yaml over THRESHOLD_DEFAULTS.
+
+    Returns (thresholds, errors). A metric with a bad value keeps its default
+    and adds an error, so a hand-edited typo can't take the dashboard down;
+    saves from the web UI reject on any error instead.
+    """
+    out = {k: dict(v) for k, v in THRESHOLD_DEFAULTS.items()}
+    errors: List[str] = []
+    if raw is None:
+        return out, errors
+    if not isinstance(raw, dict):
+        return out, ["thresholds must be a mapping"]
+    for metric, val in raw.items():
+        if metric not in THRESHOLD_DEFAULTS:
+            errors.append(f"thresholds: unknown metric '{metric}'")
+            continue
+        if not isinstance(val, dict):
+            errors.append(f"thresholds.{metric} must have warn and crit values")
+            continue
+        merged = dict(THRESHOLD_DEFAULTS[metric])
+        bad = False
+        for level in ("warn", "crit"):
+            if level not in val or val[level] in (None, ""):
+                continue
+            try:
+                num = float(val[level])
+            except (TypeError, ValueError):
+                errors.append(f"thresholds.{metric}.{level} must be a number")
+                bad = True
+                continue
+            if num < 0:
+                errors.append(f"thresholds.{metric}.{level} can't be negative")
+                bad = True
+                continue
+            merged[level] = int(num) if num.is_integer() else num
+        if bad:
+            continue
+        if metric in HIGHER_IS_BETTER:
+            if merged["crit"] >= merged["warn"]:
+                errors.append(f"thresholds.{metric}: crit must be lower than warn "
+                              f"(higher is better)")
+                continue
+        elif merged["crit"] <= merged["warn"]:
+            errors.append(f"thresholds.{metric}: crit must be higher than warn")
+            continue
+        out[metric] = merged
+    return out, errors
+
+
 @dataclass
 class LocalUser:
     username: str
@@ -241,6 +319,8 @@ class ControllerConfig:
     test_params: TestParams
     schedule: Schedule
     auth: AuthConfig = field(default_factory=AuthConfig)
+    thresholds: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {k: dict(v) for k, v in THRESHOLD_DEFAULTS.items()})
 
     def get_agent(self, agent_id: str) -> Optional[Agent]:
         return next((a for a in self.agents if a.id == agent_id), None)
@@ -255,6 +335,33 @@ class ControllerConfig:
             "port":     agent.port     or self.ssh_defaults.port,
             "timeout":  self.ssh_defaults.timeout,
         }
+
+
+# ── Validation ─────────────────────────────────────────────
+
+def agent_host_errors(a: dict) -> List[str]:
+    """Problems with an agent dict's host fields (empty list if none)."""
+    errs = []
+    name = a.get("id") or a.get("label") or "?"
+    mgmt = (a.get("host_mgmt_ip") or a.get("host") or "").strip()
+    if not mgmt:
+        errs.append(f"agent '{name}': management host is required")
+    else:
+        e = validate_host(mgmt)
+        if e:
+            errs.append(f"agent '{name}': management host {e}")
+    test = (a.get("host_test_ip") or "").strip()
+    if test:
+        e = validate_host(test)
+        if e:
+            errs.append(f"agent '{name}': test host {e}")
+    af = a.get("address_family")
+    if af not in (None, "") and af not in ADDRESS_FAMILIES:
+        errs.append(f"agent '{name}': address_family must be one of {', '.join(ADDRESS_FAMILIES)}")
+    ro = a.get("resolve_on")
+    if ro not in (None, "") and ro not in RESOLVE_ON:
+        errs.append(f"agent '{name}': resolve_on must be one of {', '.join(RESOLVE_ON)}")
+    return errs
 
 
 # ── Loader ─────────────────────────────────────────────────
@@ -276,7 +383,19 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
             agent_data["type"] = "agent_installed"
         elif agent_data.get("type") == "svi_adjacent":
             agent_data["type"] = "switch_router"
-        agents.append(Agent(**agent_data))
+        for k in ("host_mgmt_ip", "host_test_ip"):
+            if isinstance(agent_data.get(k), str):
+                agent_data[k] = agent_data[k].strip() or None
+        if agent_data.get("address_family") not in ADDRESS_FAMILIES:
+            agent_data["address_family"] = "ipv4"
+        if agent_data.get("resolve_on") not in RESOLVE_ON:
+            agent_data["resolve_on"] = "controller"
+        agent = Agent(**agent_data)
+        # Don't refuse to start over a bad host (the dashboard must stay up so
+        # it can be fixed) — the path run reports it, and saves reject it.
+        for err in agent_host_errors(agent_data):
+            logger.warning(f"config: {err}")
+        agents.append(agent)
 
     # Back-compat: a config saved before per-path direction existed only had
     # a single global bidirectional flag — use it as the default direction
@@ -352,6 +471,10 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
             method = "local"
     auth = AuthConfig(method=method, local_users=local_users, **raw_auth)
 
+    thresholds, threshold_errs = parse_thresholds(raw.get("thresholds"))
+    for err in threshold_errs:
+        logger.warning(f"config: {err} — using the default")
+
     ctrl = raw["controller"]
     return ControllerConfig(
         name=ctrl["name"],
@@ -364,4 +487,5 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
         test_params=test_params,
         schedule=schedule,
         auth=auth,
+        thresholds=thresholds,
     )

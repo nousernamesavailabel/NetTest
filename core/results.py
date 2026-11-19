@@ -112,6 +112,9 @@ class SegmentResult:
     latency_under_load: Optional[LatencyUnderLoadResult] = None
     jitter: Optional[JitterResult] = None
     error: Optional[str] = None
+    # IP the controller resolved destination_host to and tested (None when
+    # the source agent resolved it itself — resolve_on: agent).
+    destination_addr: Optional[str] = None
 
 
 # ── Top-level test run result ──────────────────────────────
@@ -129,6 +132,12 @@ class PathTestResult:
     duration_total_sec: float          # Wall time for entire path test
     success: bool
     error: Optional[str] = None        # Set if test failed
+    # The destination's test host as configured (IP or hostname) and the IP
+    # it resolved to on the controller for this run. destination_host above
+    # is the management host. destination_addr is None when the source agent
+    # resolved the name itself (resolve_on: agent). Older records lack both.
+    destination_test_host: Optional[str] = None
+    destination_addr: Optional[str] = None
 
     # Individual test results — None/empty if that test wasn't run for this path.
     # throughput is a list because a path can run multiple directions

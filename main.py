@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 main.py
-Network Test Controller — Entry Point
+LinkState Controller — Entry Point
 
 Usage:
   python main.py                        # Run scheduler (continuous)
@@ -157,7 +157,7 @@ def print_results_summary(store: ResultStore, date_str: str = "today"):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Network Test Controller",
+        description="LinkState Controller",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -175,8 +175,8 @@ def main():
                         help="Print results summary for DATE (YYYY-MM-DD or 'today')")
     parser.add_argument("--onboard", action="store_true",
                         help="Onboard a new agent interactively")
-    parser.add_argument("--agent-ip", metavar="IP",
-                        help="Agent IP address (used with --onboard)")
+    parser.add_argument("--agent-ip", metavar="HOST",
+                        help="Agent IP address or hostname (used with --onboard)")
     parser.add_argument("--agent-label", metavar="LABEL",
                         help="Agent label / display name (used with --onboard)")
     parser.add_argument("--agent-id", metavar="ID",

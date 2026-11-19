@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 tui.py
-Terminal UI for the Network Test Controller.
+Terminal UI for the LinkState Controller.
 Live-updating dashboard showing current path status, recent results,
 and per-metric health at a glance.
 
@@ -33,24 +33,33 @@ from rich.style import Style
 from rich import print as rprint
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core.config_loader import load_config
+from core.config_loader import load_config, THRESHOLD_DEFAULTS
 from core.results import ResultStore
 
 console = Console()
 
 # ── Thresholds for health colouring ───────────────────────
-THRESHOLDS = {
-    "latency_warn_ms":      20,
-    "latency_crit_ms":      80,
-    "loss_warn_pct":         1,
-    "loss_crit_pct":         5,
-    "jitter_warn_ms":        5,
-    "jitter_crit_ms":       20,
-    "throughput_warn_mbps": 10,
-    "throughput_crit_mbps":  2,
-    "bufferbloat_warn_ms":  30,
-    "bufferbloat_crit_ms": 100,
-}
+# Filled from config.yaml's thresholds section in main() (see
+# core.config_loader.THRESHOLD_DEFAULTS for the defaults).
+THRESHOLDS: dict = {}
+
+
+def apply_thresholds(t: dict) -> None:
+    THRESHOLDS.update({
+        "latency_warn_ms":      t["latency_ms"]["warn"],
+        "latency_crit_ms":      t["latency_ms"]["crit"],
+        "loss_warn_pct":        t["packet_loss_pct"]["warn"],
+        "loss_crit_pct":        t["packet_loss_pct"]["crit"],
+        "jitter_warn_ms":       t["jitter_ms"]["warn"],
+        "jitter_crit_ms":       t["jitter_ms"]["crit"],
+        "throughput_warn_mbps": t["throughput_mbps"]["warn"],
+        "throughput_crit_mbps": t["throughput_mbps"]["crit"],
+        "bufferbloat_warn_ms":  t["bufferbloat_ms"]["warn"],
+        "bufferbloat_crit_ms":  t["bufferbloat_ms"]["crit"],
+    })
+
+
+apply_thresholds(THRESHOLD_DEFAULTS)
 
 
 def health_colour(value: float, warn: float, crit: float,
@@ -297,7 +306,7 @@ def render_dashboard(records: List[dict],
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     header_text = Text(justify="center")
-    header_text.append("⬡  NetTest Controller", style="bold")
+    header_text.append("⬡  LinkState Controller", style="bold")
     header_text.append(f"   {now}", style="dim")
     if path_filter:
         header_text.append(f"   filter: {path_filter}", style="italic yellow")
@@ -325,7 +334,7 @@ def render_dashboard(records: List[dict],
 # ── Entry point ───────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="NetTest Terminal UI")
+    parser = argparse.ArgumentParser(description="LinkState Terminal UI")
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--once",   action="store_true",
                         help="Print once and exit")
@@ -341,6 +350,7 @@ def main():
         console.print(f"[red]Config error:[/red] {e}")
         sys.exit(1)
 
+    apply_thresholds(config.thresholds)
     store = ResultStore(config.results_dir)
 
     if args.once:

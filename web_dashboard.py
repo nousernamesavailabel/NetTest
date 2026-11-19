@@ -29,11 +29,13 @@ from typing import Dict, List, Optional
 from flask import Flask, jsonify, send_from_directory, request, Response, session, redirect, url_for, stream_with_context
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core.config_loader import load_config
+from core.config_loader import load_config, agent_host_errors, parse_thresholds, THRESHOLD_DEFAULTS
+from core.hostaddr import validate_host, resolve_all, is_ip, HostResolutionError
 from core.results import ResultStore
 from core.path_tester import PathTester
 from core.annotations import AnnotationStore
 from core import debug_mode
+from core import branding
 
 app = Flask(__name__, static_folder="web/static")
 # Browsers don't send the session cookie on cross-site POSTs, so another
@@ -78,18 +80,18 @@ _restart_lock  = threading.Lock()
 _restart_timer = None
 
 
-def _restart_nettest_scheduler():
-    subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+def _restart_linkstate_scheduler():
+    subprocess.run(["sudo", "systemctl", "restart", branding.SCHEDULER_SERVICE],
                    capture_output=True, timeout=15)
 
 
-def schedule_nettest_restart():
-    """Debounced restart of the nettest scheduler service."""
+def schedule_linkstate_restart():
+    """Debounced restart of the linkstate scheduler service."""
     global _restart_timer
     with _restart_lock:
         if _restart_timer is not None:
             _restart_timer.cancel()
-        _restart_timer = threading.Timer(RESTART_DEBOUNCE_SECONDS, _restart_nettest_scheduler)
+        _restart_timer = threading.Timer(RESTART_DEBOUNCE_SECONDS, _restart_linkstate_scheduler)
         _restart_timer.daemon = True
         _restart_timer.start()
 
@@ -120,12 +122,36 @@ def _record_attempt(ip: str):
         _login_attempts[ip].append(time.time())
 
 
+def _session_lifetime() -> timedelta:
+    minutes = _config.auth.session_lifetime_minutes if _config else 480
+    return timedelta(minutes=max(1, int(minutes or 480)))
+
+
+@app.before_request
+def _apply_session_lifetime():
+    # Read per request so a config save/import takes effect without a restart.
+    # Without this Flask falls back to its 31-day default for permanent sessions.
+    app.permanent_session_lifetime = _session_lifetime()
+
+
+def _session_expired() -> bool:
+    """Absolute expiry measured from login. The cookie's own expiry slides
+    forward on every request, so a dashboard left open (polling) would
+    otherwise stay logged in forever."""
+    login_at = session.get("login_at")
+    if not isinstance(login_at, (int, float)):
+        return True   # pre-fix session with no login time — make it log in again
+    return time.time() - login_at > _session_lifetime().total_seconds()
+
+
 def login_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
         if not _config or not _config.auth.method:
             return f(*args, **kwargs)
+        if session.get("authenticated") and _session_expired():
+            session.clear()
         if not session.get("authenticated"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Authentication required"}), 401
@@ -568,6 +594,8 @@ def _lightweight_record(r: dict) -> dict:
         "success":                r.get("success"),
         "source_host":            r.get("source_host"),
         "destination_host":       r.get("destination_host"),
+        "destination_test_host":  r.get("destination_test_host"),
+        "destination_addr":       r.get("destination_addr"),
         # Per-test presence flags — let the compare picker filter to only
         # runs that actually exercised a given test (a path's config can
         # change over time, or an individual test can be run on demand).
@@ -779,9 +807,9 @@ def api_tags():
 
 _SPEEDTEST_DOWNLOAD_CHUNK = 262144       # bytes yielded per stream write
 _SPEEDTEST_MAX_DOWNLOAD   = 200_000_000  # cap per request, regardless of ?size=
-_SPEEDTEST_MAX_UPLOAD     = 2_000_000    # cap per request body (nginx's default
-                                          # client_max_body_size is 1MB, so the
-                                          # client uploads in small chunks anyway)
+_SPEEDTEST_MAX_UPLOAD     = 32_000_000   # cap per request body (the client posts
+                                          # 16MB; install.sh sets nginx's
+                                          # client_max_body_size to 100M)
 
 
 @app.route("/api/speedtest/ping")
@@ -834,22 +862,24 @@ def api_speedtest_download():
 def api_speedtest_upload():
     """Discard an uploaded chunk for a browser upload speed test.
 
-    The client posts many small chunks rather than one large body —
-    nginx's default 1MB client_max_body_size would otherwise reject a
-    bigger upload before it ever reached this route.
+    The client posts large bodies and aborts the one still in flight
+    when its test time is up, so a cut-off body is normal, not an error.
     """
     content_length = request.content_length or 0
     if content_length > _SPEEDTEST_MAX_UPLOAD:
         return jsonify({"error": "Chunk too large"}), 413
 
     total = 0
-    while True:
-        chunk = request.stream.read(65536)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _SPEEDTEST_MAX_UPLOAD:
-            return jsonify({"error": "Chunk too large"}), 413
+    try:
+        while True:
+            chunk = request.stream.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _SPEEDTEST_MAX_UPLOAD:
+                return jsonify({"error": "Chunk too large"}), 413
+    except (OSError, IOError):
+        pass   # client aborted mid-body at the end of its test window
 
     return jsonify({"received": total})
 
@@ -1039,6 +1069,10 @@ def api_onboard():
         agent_type    = agent.type
 
     if not agent_ip:   return jsonify({"error": "agent_ip is required"}), 400
+    for _what, _h in (("Management host", agent_ip), ("Test host", agent_test_ip)):
+        _e = validate_host(_h) if _h else None
+        if _e:
+            return jsonify({"error": f"{_what} {_e}"}), 400
     if not admin_user: return jsonify({"error": "admin_user is required"}), 400
     if not admin_pass: return jsonify({"error": "admin_pass is required"}), 400
 
@@ -1151,7 +1185,7 @@ def api_ssh_pubkey_download():
     return Response(
         content,
         mimetype="application/octet-stream",
-        headers={"Content-Disposition": "attachment; filename=nettest_key.pub"}
+        headers={"Content-Disposition": "attachment; filename=linkstate_key.pub"}
     )
 
 
@@ -1168,7 +1202,7 @@ def api_ssh_privkey():
     return Response(
         content,
         mimetype="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename=nettest_key"}
+        headers={"Content-Disposition": f"attachment; filename=linkstate_key"}
     )
 
 
@@ -1248,7 +1282,7 @@ def api_ssh_push_key():
         return jsonify({"error": "Public key not found — import a key first"}), 400
     pub_key = open(pub_file).read().strip()
 
-    nettest_user = _config.ssh_defaults.username
+    linkstate_user = _config.ssh_defaults.username
 
     job_id  = "push-key-" + str(uuid.uuid4())[:8]
     handler = JobLogHandler(job_id)
@@ -1283,7 +1317,7 @@ def api_ssh_push_key():
         _log.info(f"── Push Public Key ──")
         _log.info(f"  Target  : {target_desc}")
         _log.info(f"  User    : {admin_user}:{admin_port}")
-        _log.info(f"  NetTest : {nettest_user}")
+        _log.info(f"  LinkState : {linkstate_user}")
         _log.info(f"  Key     : {pub_file}")
 
         all_ok = True
@@ -1310,20 +1344,20 @@ def api_ssh_push_key():
                 )
 
                 # Ensure .ssh directory exists with correct permissions
-                auth_keys = f"/home/{nettest_user}/.ssh/authorized_keys"
-                _log.info(f"  Creating .ssh directory for {nettest_user}...")
+                auth_keys = f"/home/{linkstate_user}/.ssh/authorized_keys"
+                _log.info(f"  Creating .ssh directory for {linkstate_user}...")
                 conn.send_command_timing(
                     f"echo '{admin_pass}' | sudo -S bash -c "
-                    f"'mkdir -p /home/{nettest_user}/.ssh && "
-                    f"chmod 700 /home/{nettest_user}/.ssh && "
-                    f"chown {nettest_user}:{nettest_user} /home/{nettest_user}/.ssh'",
+                    f"'mkdir -p /home/{linkstate_user}/.ssh && "
+                    f"chmod 700 /home/{linkstate_user}/.ssh && "
+                    f"chown {linkstate_user}:{linkstate_user} /home/{linkstate_user}/.ssh'",
                     read_timeout=15, last_read=2.0
                 )
 
                 # Write public key — use printf to avoid quoting issues
                 _log.info(f"  Writing public key to {auth_keys}...")
                 # Copy key to a temp file first, then move into place with sudo
-                tmp_key = "/tmp/nettest_pubkey_tmp"
+                tmp_key = "/tmp/linkstate_pubkey_tmp"
                 conn.send_command_timing(
                     f"printf '%s\n' {repr(pub_key)} > {tmp_key}",
                     read_timeout=10, last_read=2.0
@@ -1332,7 +1366,7 @@ def api_ssh_push_key():
                     f"echo '{admin_pass}' | sudo -S bash -c "
                     f"'cp {tmp_key} {auth_keys} && "
                     f"chmod 600 {auth_keys} && "
-                    f"chown {nettest_user}:{nettest_user} {auth_keys} && "
+                    f"chown {linkstate_user}:{linkstate_user} {auth_keys} && "
                     f"rm -f {tmp_key}'"
                 )
                 conn.send_command_timing(deploy_cmd, read_timeout=15, last_read=2.0)
@@ -1379,6 +1413,12 @@ def api_ssh_push_key():
 
 # ── Export / Import API ───────────────────────────────────
 
+# Key file names inside export bundles. Bundles exported before the rename
+# to LinkState carry nettest_key, and still import.
+_KEY_NAMES    = ("linkstate_key", "nettest_key")
+_PUBKEY_NAMES = ("linkstate_key.pub", "nettest_key.pub")
+
+
 @app.route("/api/export", methods=["POST"])
 @login_required
 def api_export():
@@ -1401,6 +1441,8 @@ def api_export():
             "host_mgmt_ip": a.host_mgmt_ip,
             "host_test_ip": a.host_test_ip,
             "type":         a.type,
+            **({"address_family": a.address_family} if a.address_family != "ipv4" else {}),
+            **({"resolve_on": a.resolve_on} if a.resolve_on != "controller" else {}),
             **({"username": a.username} if a.username else {}),
             **({"password": a.password} if a.password else {}),
             **({"key_file": a.key_file} if a.key_file else {}),
@@ -1447,6 +1489,7 @@ def api_export():
         tp = _config.test_params
         from dataclasses import asdict
         raw["test_params"] = asdict(tp)
+        raw["thresholds"] = _config.thresholds
 
     if include.get("ssh_credentials"):
         sd = _config.ssh_defaults
@@ -1483,7 +1526,7 @@ def api_export():
     import yaml as _yaml
     buf = io.BytesIO()
     ts  = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    prefix = f"nettest-export-{ts}"
+    prefix = f"linkstate-export-{ts}"
 
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         # config.yaml
@@ -1497,8 +1540,8 @@ def api_export():
         if include.get("ssh_keys"):
             key_file = os.path.expanduser(_config.ssh_defaults.key_file)
             for fpath, arcname in [
-                (key_file,          f"{prefix}/nettest_key"),
-                (key_file + ".pub", f"{prefix}/nettest_key.pub"),
+                (key_file,          f"{prefix}/linkstate_key"),
+                (key_file + ".pub", f"{prefix}/linkstate_key.pub"),
             ]:
                 if os.path.exists(fpath):
                     tar.add(fpath, arcname=arcname)
@@ -1508,12 +1551,12 @@ def api_export():
         if include.get("ssh_credentials"): sensitive.append("SSH credentials")
         if include.get("ssh_keys"):        sensitive.append("SSH private key")
         if include.get("auth"):            sensitive.append("RADIUS/auth config")
-        readme = f"""NetTest Configuration Export
+        readme = f"""LinkState Configuration Export
 Generated: {datetime.now(timezone.utc).isoformat()}
 
 Contents:
-- config.yaml  (agents, paths{", controller" if include.get("controller") else ""}{", schedule" if include.get("schedule") else ""}{", test params" if include.get("test_params") else ""}{", SSH credentials" if include.get("ssh_credentials") else ""}{", auth" if include.get("auth") else ""})
-{"- nettest_key / nettest_key.pub" if include.get("ssh_keys") else ""}
+- config.yaml  (agents, paths{", controller" if include.get("controller") else ""}{", schedule" if include.get("schedule") else ""}{", test params & thresholds" if include.get("test_params") else ""}{", SSH credentials" if include.get("ssh_credentials") else ""}{", auth" if include.get("auth") else ""})
+{"- linkstate_key / linkstate_key.pub" if include.get("ssh_keys") else ""}
 
 {"⚠ SENSITIVE: This bundle contains " + ", ".join(sensitive) + ". Keep it secure." if sensitive else ""}
 
@@ -1528,7 +1571,7 @@ To import: Config → Export/Import → Import Bundle
     return Response(
         buf.read(),
         mimetype="application/gzip",
-        headers={"Content-Disposition": f"attachment; filename=nettest-export-{ts}.tar.gz"}
+        headers={"Content-Disposition": f"attachment; filename=linkstate-export-{ts}.tar.gz"}
     )
 
 
@@ -1555,10 +1598,9 @@ def api_import_preview():
 
             # Check for SSH keys
             has_privkey = any(
-                m.name.endswith("nettest_key") and not m.name.endswith(".pub")
-                for m in tar.getmembers()
+                m.name.endswith(_KEY_NAMES) for m in tar.getmembers()
             )
-            has_pubkey = any(m.name.endswith("nettest_key.pub") for m in tar.getmembers())
+            has_pubkey = any(m.name.endswith(_PUBKEY_NAMES) for m in tar.getmembers())
 
     except Exception as e:
         return jsonify({"error": f"Failed to parse bundle: {e}"}), 400
@@ -1652,6 +1694,9 @@ def api_import_confirm():
 
     # Apply agents
     if include.get("agents") and "agents" in raw:
+        bad = [e for a in raw["agents"] for e in agent_host_errors(a)]
+        if bad:
+            return jsonify({"error": "Invalid agent host(s) in bundle: " + "; ".join(bad)}), 400
         if mode == "replace":
             current["agents"] = raw["agents"]
         else:  # merge
@@ -1680,6 +1725,11 @@ def api_import_confirm():
     ]:
         if include.get(section) and key in raw:
             current[key] = raw[key]
+    # Thresholds travel with test params (older bundles have none — keep ours).
+    if include.get("test_params") and "thresholds" in raw:
+        thresholds, errs = parse_thresholds(raw["thresholds"])
+        if not errs:
+            current["thresholds"] = thresholds
 
     # Write config
     with open(_config_path, "w") as fh:
@@ -1703,7 +1753,7 @@ def api_import_confirm():
         return jsonify({"error": f"Config saved but failed to reload: {e}"}), 500
 
     # Restart scheduler (debounced — collapses rapid repeated saves into one restart)
-    schedule_nettest_restart()
+    schedule_linkstate_restart()
 
     # Also signal web process to reload by touching a reload sentinel
     # (ensures dashboard reflects new config even if scheduler restart fails)
@@ -1733,11 +1783,11 @@ def api_import_keys():
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             key_file = os.path.expanduser(_config.ssh_defaults.key_file)
             for member in tar.getmembers():
-                if member.name.endswith("nettest_key.pub"):
+                if member.name.endswith(_PUBKEY_NAMES):
                     content = tar.extractfile(member).read()
                     with open(key_file + ".pub", "wb") as fh: fh.write(content)
                     os.chmod(key_file + ".pub", 0o644)
-                elif member.name.endswith("nettest_key"):
+                elif member.name.endswith(_KEY_NAMES):
                     content = tar.extractfile(member).read()
                     with open(key_file, "wb") as fh: fh.write(content)
                     os.chmod(key_file, 0o600)
@@ -1750,8 +1800,8 @@ def api_import_keys():
 
 _update_cache: dict = {}   # stores validated update bundle info
 _update_cache_lock = threading.Lock()
-_SNAPSHOTS_DIR = "/opt/nettest/snapshots"
-_APP_DIR       = "/opt/nettest"
+_APP_DIR       = branding.APP_DIR
+_SNAPSHOTS_DIR = os.path.join(_APP_DIR, "snapshots")
 
 
 def _pip_install_cmd() -> list:
@@ -1816,6 +1866,7 @@ def api_version():
         "version":   version,
         "changelog": _parse_changelog(changelog, version),
         "snapshots": snapshots,
+        "migrate_hint": branding.MIGRATE_HINT if branding.LEGACY_INSTALL else "",
     })
 
 
@@ -1865,7 +1916,7 @@ def api_update_preview():
     update_id = str(_uuid2.uuid4())
     # Save bundle to temp file
     buf.seek(0)
-    tmp_path = f"/tmp/nettest-update-{update_id}.tar.gz"
+    tmp_path = f"/tmp/linkstate-update-{update_id}.tar.gz"
     with open(tmp_path, "wb") as tf:
         tf.write(buf.read())
 
@@ -1928,9 +1979,9 @@ def api_update_apply():
         try:
             tmp_path = cache["tmp_path"]
             version  = cache["version"]
-            extract_dir = f"/tmp/nettest-update-apply-{update_id}"
+            extract_dir = f"/tmp/linkstate-update-apply-{update_id}"
 
-            _log.info(f"── NetTest Update ──")
+            _log.info(f"── LinkState Update ──")
             _log.info(f"  Installing v{version}...")
 
             # Step 1: Extract bundle
@@ -2052,11 +2103,14 @@ def api_update_apply():
 
             # Step 5: Restart services
             _log.info("  Restarting services...")
-            subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+            subprocess.run(["sudo", "systemctl", "restart", branding.SCHEDULER_SERVICE],
                            capture_output=True, timeout=15)
             _log.info("  ✓ Scheduler restarted")
             # Web service restart — do last since it kills this process
             _log.info(f"  ✓ Update to v{version} complete!")
+            if branding.LEGACY_INSTALL:
+                _log.info("")
+                _log.warning(f"  ⚠ {branding.MIGRATE_HINT}")
             _log.info("")
             _log.info("  Restarting web service — reconnect in a few seconds...")
 
@@ -2075,7 +2129,7 @@ def api_update_apply():
             # Delay web restart so SSE can finish
             import time as _time
             _time.sleep(2)
-            subprocess.run(["sudo", "systemctl", "restart", "nettest-web"],
+            subprocess.run(["sudo", "systemctl", "restart", branding.WEB_SERVICE],
                            capture_output=True, timeout=15)
 
         except Exception as e:
@@ -2087,6 +2141,12 @@ def api_update_apply():
 
     threading.Thread(target=run_update, daemon=True, name="update").start()
     return jsonify({"job_id": job_id, "status": "queued"})
+
+
+def _is_pre_rename_snapshot(snap_path: str) -> bool:
+    """True if a snapshot holds NetTest code from before the LinkState rename."""
+    return (os.path.exists(os.path.join(snap_path, "systemd", "nettest.service"))
+            and not os.path.exists(os.path.join(snap_path, "systemd", "linkstate.service")))
 
 
 @app.route("/api/update/rollback", methods=["POST"])
@@ -2103,6 +2163,13 @@ def api_update_rollback():
     snap_path = os.path.join(_SNAPSHOTS_DIR, snapshot)
     if not os.path.isdir(snap_path):
         return jsonify({"error": f"Snapshot not found: {snapshot}"}), 404
+
+    if _is_pre_rename_snapshot(snap_path) and not branding.LEGACY_INSTALL:
+        return jsonify({"error": (
+            f"{snapshot} is a NetTest snapshot from before the rename to LinkState. "
+            "Its code expects the old service names, user and paths, so it can't "
+            "be restored onto this LinkState install. Reinstall that release instead."
+        )}), 400
 
     job_id  = "rollback-" + str(uuid.uuid4())[:8]
     handler = JobLogHandler(job_id)
@@ -2127,7 +2194,7 @@ def api_update_rollback():
 
         try:
             snap_ver = _read_version(os.path.join(snap_path, "version.txt"))
-            _log.info(f"── NetTest Rollback ──")
+            _log.info(f"── LinkState Rollback ──")
             _log.info(f"  Restoring v{snap_ver} from {snapshot}...")
 
             result = subprocess.run([
@@ -2151,7 +2218,7 @@ def api_update_rollback():
                            capture_output=True, timeout=120)
             _log.info("  ✓ Dependencies synced")
 
-            subprocess.run(["sudo", "systemctl", "restart", "nettest"],
+            subprocess.run(["sudo", "systemctl", "restart", branding.SCHEDULER_SERVICE],
                            capture_output=True, timeout=15)
             _log.info(f"  ✓ Rollback to v{snap_ver} complete!")
             _log.info("  Restarting web service...")
@@ -2163,7 +2230,7 @@ def api_update_rollback():
 
             import time as _time
             _time.sleep(2)
-            subprocess.run(["sudo", "systemctl", "restart", "nettest-web"],
+            subprocess.run(["sudo", "systemctl", "restart", branding.WEB_SERVICE],
                            capture_output=True, timeout=15)
 
         except Exception as e:
@@ -2198,7 +2265,7 @@ def _render_live_page(job_id: str) -> str:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>NetTest — Live Output</title>
+  <title>LinkState — Live Output</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:#0a0c10;color:#c8cdd6;font-family:'Menlo','Consolas',monospace;
@@ -2284,7 +2351,7 @@ async function loadHistory(){
     const d=await r.json();
     if(d.job){
       lbl.textContent=d.job.label||JOB;
-      document.title='NetTest - '+(d.job.label||JOB);
+      document.title='LinkState - '+(d.job.label||JOB);
       if(d.job.started)start=new Date(d.job.started).getTime()||Date.now();
     }
     (d.lines||[]).forEach(addLine);
@@ -2363,10 +2430,10 @@ def api_job_abort(job_id: str):
 
 # ── HTTPS / nginx Management API ─────────────────────────
 
-SSL_DIR  = "/opt/nettest/ssl"
-SSL_CERT = "/opt/nettest/ssl/nettest.crt"
-SSL_KEY  = "/opt/nettest/ssl/nettest.key"
-NGINX_CONF = "/etc/nginx/sites-available/nettest"
+SSL_DIR  = branding.SSL_DIR
+SSL_CERT = branding.SSL_CERT
+SSL_KEY  = branding.SSL_KEY
+NGINX_CONF = f"/etc/nginx/sites-available/{branding.NGINX_SITE}"
 
 
 def _nginx_running() -> bool:
@@ -2422,18 +2489,23 @@ def api_https_generate():
     """Generate a new self-signed certificate."""
     import subprocess
     body       = request.get_json(silent=True) or {}
-    cn         = body.get("cn", "nettest").strip()
-    org        = body.get("org", "NetTest").strip()
+    cn         = body.get("cn", "linkstate").strip()
+    org        = body.get("org", "LinkState").strip()
     days       = int(body.get("days", 3650))
-    san_ips    = body.get("san_ips", [])   # list of IP strings
+    san_ips    = body.get("san_ips", [])   # list of IPs and/or hostnames
 
     # Ensure SSL dir exists and is writable
-    # Run: sudo chown nettest:nettest /opt/nettest/ssl  if this fails
+    # Run: sudo chown linkstate:linkstate <app dir>/ssl  if this fails
     os.makedirs(SSL_DIR, exist_ok=True)
 
-    san_str = ",".join(f"IP:{ip}" for ip in san_ips if ip)
-    if not san_str:
-        san_str = f"IP:{cn}" if cn.replace(".", "").isdigit() else f"DNS:{cn}"
+    sans = [str(x).strip() for x in san_ips if str(x).strip()] or [cn]
+    for name in sans:
+        err = validate_host(name[2:] if name.startswith("*.") else name)
+        if err:
+            return jsonify({"error": f"Certificate name {err}"}), 400
+    if any(c in cn for c in "/=\\"):
+        return jsonify({"error": "Common Name can't contain / = or \\"}), 400
+    san_str = ",".join(f"IP:{n}" if is_ip(n) else f"DNS:{n}" for n in sans)
 
     cmd = [
         "openssl", "req", "-x509", "-nodes", "-newkey", "rsa:4096",
@@ -2546,8 +2618,8 @@ server {
     listen 443 ssl;
     server_name _;
 
-    ssl_certificate     /opt/nettest/ssl/nettest.crt;
-    ssl_certificate_key /opt/nettest/ssl/nettest.key;
+    ssl_certificate     __SSL_CERT__;
+    ssl_certificate_key __SSL_KEY__;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     ssl_session_cache   shared:SSL:10m;
@@ -2569,7 +2641,7 @@ server {
         proxy_read_timeout 300s;
     }
 }
-"""
+""".replace("__SSL_CERT__", SSL_CERT).replace("__SSL_KEY__", SSL_KEY)
     import subprocess
     # Write via sudo tee since /etc/nginx is root-owned
     proc = subprocess.run(
@@ -2579,7 +2651,7 @@ server {
     if proc.returncode != 0:
         raise PermissionError(f"Could not write nginx config: {proc.stderr}")
 
-    link = "/etc/nginx/sites-enabled/nettest"
+    link = f"/etc/nginx/sites-enabled/{branding.NGINX_SITE}"
     if not os.path.exists(link):
         subprocess.run(["sudo", "ln", "-sf", NGINX_CONF, link], capture_output=True)
     subprocess.run(["sudo", "rm", "-f", "/etc/nginx/sites-enabled/default"],
@@ -2673,9 +2745,9 @@ def api_packages_push(agent_id: str):
             _jobs[job_id]["status"] = "running"
         try:
             key_file    = _config.ssh_defaults.key_file
-            nettest_usr = _config.ssh_defaults.username
+            linkstate_usr = agent.username or _config.ssh_defaults.username
             port        = agent.port or _config.ssh_defaults.port
-            remote_tmp  = "/tmp/nettest_packages"
+            remote_tmp  = "/tmp/linkstate_packages"
 
             _push_log = logging.getLogger("packages")
             _push_log.info(f"Pushing {len(deb_files)} package(s) to {agent.label} ({agent.host_mgmt_ip})...")
@@ -2684,7 +2756,7 @@ def api_packages_push(agent_id: str):
             subprocess.run([
                 "ssh", "-i", key_file, "-o", "StrictHostKeyChecking=no",
                 "-o", "BatchMode=yes", "-p", str(port),
-                f"{nettest_usr}@{agent.host_mgmt_ip}",
+                f"{linkstate_usr}@{agent.host_mgmt_ip}",
                 f"mkdir -p {remote_tmp}"
             ], capture_output=True, timeout=30)
 
@@ -2698,7 +2770,7 @@ def api_packages_push(agent_id: str):
                     "-o", "BatchMode=yes",
                     "-P", str(port),
                     local_path,
-                    f"{nettest_usr}@{agent.host_mgmt_ip}:{remote_tmp}/{deb}",
+                    f"{linkstate_usr}@{agent.host_mgmt_ip}:{remote_tmp}/{deb}",
                 ], capture_output=True, timeout=120)
                 if proc.returncode == 0:
                     _push_log.info(f"  ✓ {deb}")
@@ -2710,7 +2782,7 @@ def api_packages_push(agent_id: str):
             proc = subprocess.run([
                 "ssh", "-i", key_file, "-o", "StrictHostKeyChecking=no",
                 "-o", "BatchMode=yes", "-p", str(port),
-                f"{nettest_usr}@{agent.host_mgmt_ip}",
+                f"{linkstate_usr}@{agent.host_mgmt_ip}",
                 f"sudo dpkg -i {remote_tmp}/*.deb && rm -rf {remote_tmp}"
             ], capture_output=True, timeout=120)
             if proc.returncode == 0:
@@ -2762,6 +2834,8 @@ def api_agents():
             "host_mgmt_ip": a.host_mgmt_ip,
             "host_test_ip": a.host_test_ip,
             "type":         a.type,
+            "address_family": a.address_family,
+            "resolve_on":   a.resolve_on,
         }
         for a in _config.agents
     ])
@@ -2980,7 +3054,15 @@ def api_config_get():
     ssh = raw.get('ssh_defaults') or {}
     if 'password' in ssh:
         ssh['password_set'] = bool(ssh.pop('password'))
+    # Effective values (defaults filled in) so the Thresholds tab is never blank.
+    raw['thresholds'] = _config.thresholds if _config else parse_thresholds(raw.get('thresholds'))[0]
     return jsonify(raw)
+
+
+@app.route('/api/thresholds')
+@login_required
+def api_thresholds():
+    return jsonify(_config.thresholds if _config else THRESHOLD_DEFAULTS)
 
 
 @app.route('/api/config', methods=['POST'])
@@ -2996,7 +3078,28 @@ def api_config_save():
     with open(_config_path, 'r') as f:
         raw = yaml.safe_load(f)
 
-    if 'agents'      in body: raw['agents']      = body['agents']
+    if 'agents' in body:
+        agents_in = []
+        errs = []
+        for a in body['agents'] or []:
+            a = dict(a)
+            for k in ('host_mgmt_ip', 'host_test_ip'):
+                if isinstance(a.get(k), str):
+                    a[k] = a[k].strip()
+            if not a.get('host_test_ip'):
+                a.pop('host_test_ip', None)
+            # Leave defaults out of config.yaml so it stays as before for
+            # anyone not using them.
+            if a.get('address_family') in (None, '', 'ipv4'):
+                a.pop('address_family', None)
+            if a.get('resolve_on') in (None, '', 'controller'):
+                a.pop('resolve_on', None)
+            errs.extend(agent_host_errors(a))
+            agents_in.append(a)
+        if errs:
+            # 200, like the other save errors — the frontend reads {error}.
+            return jsonify({'error': 'Invalid agent host: ' + '; '.join(errs)})
+        raw['agents'] = agents_in
     if 'paths'       in body: raw['paths']        = body['paths']
     if 'test_params' in body: raw['test_params']  = body['test_params']
     if 'ssh_defaults'in body:
@@ -3006,6 +3109,11 @@ def api_config_save():
             incoming_ssh.pop('password', None)
         raw['ssh_defaults'].update(incoming_ssh)
     if 'schedule'    in body: raw['schedule'].update(body['schedule'])
+    if 'thresholds'  in body:
+        thresholds, errs = parse_thresholds(body['thresholds'])
+        if errs:
+            return jsonify({'error': 'Invalid thresholds: ' + '; '.join(errs)})
+        raw['thresholds'] = thresholds
 
     if 'auth' in body:
         raw.setdefault('auth', {})
@@ -3024,6 +3132,10 @@ def api_config_save():
             incoming_auth.pop('radius_secret', None)
         if 'radius_server' in incoming_auth:
             incoming_auth['radius_server'] = str(incoming_auth['radius_server'] or '').strip()
+            if incoming_auth['radius_server']:
+                err = validate_host(incoming_auth['radius_server'])
+                if err:
+                    return jsonify({'error': f'RADIUS server {err}'})
         for key, default, lo, hi in (('radius_port', 1812, 1, 65535),
                                      ('radius_timeout', 5, 1, 60)):
             if key not in incoming_auth:
@@ -3064,7 +3176,7 @@ def api_config_save():
         # Restart scheduler so it picks up path/agent changes — debounced so
         # saving several times in a row doesn't restart it (and abort
         # whatever it's mid-test on) once per save.
-        schedule_nettest_restart()
+        schedule_linkstate_restart()
         return jsonify({'ok': True, 'agents': len(_config.agents), 'paths': len(_config.paths)})
     except Exception as e:
         return jsonify({'error': f'Config saved but reload failed: {e}'}), 500
@@ -3195,6 +3307,25 @@ def api_iperf_service_status():
         return jsonify(dict(pool.map(check, installed)))
 
 
+@app.route('/api/config/resolve', methods=['POST'])
+@login_required
+def api_resolve_host():
+    """Validate a host and show what it resolves to from the controller."""
+    body   = request.get_json(silent=True) or {}
+    host   = str(body.get('host') or '').strip()
+    family = body.get('address_family') or 'ipv4'
+    err = validate_host(host)
+    if err:
+        return jsonify({'ok': False, 'error': f'Host {err}'})
+    if is_ip(host):
+        return jsonify({'ok': True, 'host': host, 'is_ip': True, 'addresses': [host]})
+    try:
+        addrs = resolve_all(host, family)
+    except HostResolutionError as e:
+        return jsonify({'ok': False, 'error': str(e)})
+    return jsonify({'ok': True, 'host': host, 'is_ip': False, 'addresses': addrs})
+
+
 @app.route('/api/config/test-agent', methods=['POST'])
 @login_required
 def api_test_agent():
@@ -3207,6 +3338,10 @@ def api_test_agent():
 
     if not host:
         return jsonify({'ok': False, 'error': 'No host provided'}), 400
+    host = str(host).strip()
+    err = validate_host(host)
+    if err:
+        return jsonify({'ok': False, 'error': f'Host {err}'})
 
     mgr = SSHManager(host=host, username=username, key_file=key_file,
                      port=port, timeout=8, retries=1)
@@ -3365,7 +3500,7 @@ def api_debug_download():
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     return Response(generate(), mimetype="text/plain",
                     headers={"Content-Disposition":
-                             f'attachment; filename="nettest-debug-{src}-{stamp}.log"'})
+                             f'attachment; filename="linkstate-debug-{src}-{stamp}.log"'})
 
 
 # ── Results utility API ────────────────────────────────────
@@ -3429,7 +3564,7 @@ def api_export_csv():
     return Response(
         buf.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=nettest_results.csv"},
+        headers={"Content-Disposition": "attachment; filename=linkstate_results.csv"},
     )
 
 
@@ -3505,6 +3640,7 @@ def login():
                     session.permanent = True
                     session["authenticated"] = True
                     session["username"] = username
+                    session["login_at"] = time.time()
                     with _login_lock:
                         _login_attempts[ip].clear()
                     return redirect(request.form.get("next") or "/")
@@ -3556,7 +3692,7 @@ def serve_speedtest_page():
 # ── Entry point (flask dev server only — use gunicorn in prod) ─
 
 def main():
-    parser = argparse.ArgumentParser(description="NetTest Web Dashboard")
+    parser = argparse.ArgumentParser(description="LinkState Web Dashboard")
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--host",   default="0.0.0.0")
     parser.add_argument("--port",   type=int, default=8080)
@@ -3564,7 +3700,7 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(STATIC_DIR, exist_ok=True)
-    print(f"NetTest dashboard → http://{args.host}:{args.port}")
+    print(f"LinkState dashboard → http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
 
 

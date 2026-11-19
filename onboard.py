@@ -1,7 +1,7 @@
 """
 onboard.py
 Agent onboarding module — SSHes into a new host using admin credentials,
-installs all required tools, creates the nettest user, deploys the SSH key,
+installs all required tools, creates the linkstate user, deploys the SSH key,
 configures sudoers, installs the persistent iPerf3 service, configures the
 firewall, verifies the setup, then optionally adds
 the agent to config.yaml automatically.
@@ -27,6 +27,7 @@ from dataclasses import asdict
 
 from core.agent_packages import REQUIRED_TOOLS, debs_for_agent, os_release_id
 from core import iperf_service
+from core import branding
 
 
 # ── Colour helpers for terminal output ────────────────────
@@ -117,7 +118,7 @@ def _sudo(conn, cmd: str, password: str = "", timeout: int = 120) -> str:
 
 # ── Air-gapped package install ─────────────────────────────
 
-_REMOTE_PKG_DIR = "/tmp/nettest_packages"
+_REMOTE_PKG_DIR = "/tmp/linkstate_packages"
 
 # Runs on the agent as root. Serves the staged .debs to apt as a temporary
 # local repository — the only source apt sees — and installs the requested
@@ -270,9 +271,9 @@ def _iperf_ports(config) -> list:
 
 
 def _install_iperf_service(conn, admin_pass: str, config) -> None:
-    """Install the nettest-iperf3@ unit and enable it for each test port.
+    """Install the linkstate-iperf3@ unit and enable it for each test port.
 
-    Any iPerf3 left running by the nettest user (the pre-service temporary
+    Any iPerf3 left running by the linkstate user (the pre-service temporary
     servers) is stopped first, or it would hold the port the service binds.
     """
     try:
@@ -282,11 +283,18 @@ def _install_iperf_service(conn, admin_pass: str, config) -> None:
         _warn(f"Could not read {iperf_service.UNIT_SOURCE}: {e} — skipping iPerf3 service")
         _warn("Tests will start a temporary iPerf3 server on this agent instead")
         return
-    nettest_user = config.ssh_defaults.username or "nettest"
+    linkstate_user = config.ssh_defaults.username or "linkstate"
+    # Replace the unit NetTest installed (pre-rename) — both would bind the
+    # same port. No-op on agents that never had it.
+    _sudo(conn, f"bash -c 'if [ -f {iperf_service.LEGACY_UNIT_PATH} ]; then "
+                f"systemctl stop \"{iperf_service.LEGACY_UNIT_PREFIX}@*.service\"; "
+                f"rm -f {iperf_service.LEGACY_UNIT_PATH} "
+                f"/etc/systemd/system/multi-user.target.wants/{iperf_service.LEGACY_UNIT_PREFIX}@*.service; fi'",
+          admin_pass)
     _sudo(conn, f"bash -c \"echo {unit_b64} | base64 -d > {iperf_service.UNIT_PATH}\"",
           admin_pass)
     _sudo(conn, f"chmod 644 {iperf_service.UNIT_PATH}", admin_pass)
-    _sudo(conn, f"pkill -u {nettest_user} -x iperf3", admin_pass)
+    _sudo(conn, f"pkill -u {linkstate_user} -x iperf3", admin_pass)
     _sudo(conn, "systemctl daemon-reload", admin_pass)
     for port in _iperf_ports(config):
         unit = iperf_service.unit_for_port(port)
@@ -302,6 +310,31 @@ def _install_iperf_service(conn, admin_pass: str, config) -> None:
 
 
 TOTAL_STEPS = 10
+
+
+def _drop_legacy_username(config_path: str, agent_id: str, new_user: str) -> None:
+    """After a re-onboard, move the agent off the pre-rename 'nettest' user.
+
+    Migrating a controller to LinkState pins username: nettest on agents
+    onboarded under NetTest, so they keep working. Re-onboarding has just
+    created the new default user on the agent, so the pin can go.
+    """
+    if new_user == branding.LEGACY_NAME:
+        return
+    try:
+        with open(config_path) as f:
+            raw = yaml.safe_load(f)
+        for a in raw.get("agents") or []:
+            if a.get("id") == agent_id and a.get("username") == branding.LEGACY_NAME:
+                del a["username"]
+                with open(config_path, "w") as f:
+                    yaml.dump(raw, f, default_flow_style=False,
+                              allow_unicode=True, sort_keys=False)
+                _ok(f"Agent now logs in as '{new_user}' "
+                    f"(the old '{branding.LEGACY_NAME}' user is left on the agent)")
+                break
+    except Exception as e:
+        _warn(f"Could not switch the agent to user '{new_user}' in config.yaml: {e}")
 
 
 def onboard_agent(config_path: str,
@@ -325,10 +358,10 @@ def onboard_agent(config_path: str,
     """
 
     _log.info(f"\n{'='*55}")
-    _log.info(f"  NetTest Agent {'Re-onboarding' if reonboard else 'Onboarding'}")
+    _log.info(f"  LinkState Agent {'Re-onboarding' if reonboard else 'Onboarding'}")
     _log.info(f"{'='*55}\n")
 
-    # ── Load config to get SSH key and nettest username ────
+    # ── Load config to get SSH key and linkstate username ────
     try:
         from core.config_loader import load_config
         config = load_config(config_path)
@@ -336,13 +369,13 @@ def onboard_agent(config_path: str,
         _err(f"Failed to load config: {e}")
         return False
 
-    nettest_user = config.ssh_defaults.username or "nettest"
+    linkstate_user = config.ssh_defaults.username or "linkstate"
     key_file     = os.path.expanduser(config.ssh_defaults.key_file)
     key_pub_file = key_file + ".pub"
 
     if not os.path.isfile(key_pub_file):
         _err(f"Public key not found: {key_pub_file}")
-        _err("Generate one with: ssh-keygen -t ed25519 -f ~/.ssh/nettest_key -C nettest-controller")
+        _err(f"Generate one with: ssh-keygen -t ed25519 -f {key_file} -C linkstate-controller")
         return False
 
     with open(key_pub_file) as f:
@@ -357,10 +390,16 @@ def onboard_agent(config_path: str,
         if not interactive:
             _err("agent_ip is required")
             return False
-        agent_ip = input("  Agent IP address: ").strip()
+        agent_ip = input("  Agent IP address or hostname: ").strip()
     if not agent_ip:
-        _err("IP address is required.")
+        _err("IP address or hostname is required.")
         return False
+    from core.hostaddr import validate_host
+    for _what, _h in (("Management host", agent_ip), ("Test host", agent_test_ip)):
+        _e = validate_host(_h) if _h else None
+        if _e:
+            _err(f"{_what} {_e}")
+            return False
 
     if not agent_label:
         agent_label = (input(f"  Agent label (human name) [{agent_ip}]: ").strip()
@@ -407,7 +446,7 @@ def onboard_agent(config_path: str,
     _log.info(f"  ID      : {agent_id}")
     _log.info(f"  Type    : {agent_type}")
     _log.info(f"  Admin   : {admin_user}@{agent_ip}:{admin_port}")
-    _log.info(f"  NetTest : {nettest_user}")
+    _log.info(f"  SSH user: {linkstate_user}")
     _log.info(f"  Key     : {key_pub_file}")
     _log.info(f"{dim('─'*55)}\n")
 
@@ -457,10 +496,10 @@ def onboard_agent(config_path: str,
                     f"apt-get install -y -o Dpkg::Options::='--force-confdef' "
                     f"-o Dpkg::Options::='--force-confold' "
                     f"{pkgs_str} "
-                    f"> /tmp/nettest_apt.log 2>&1 && echo __APT_OK__ || echo __APT_FAIL__"
+                    f"> /tmp/linkstate_apt.log 2>&1 && echo __APT_OK__ || echo __APT_FAIL__"
                 )
                 result = _run(conn, install_cmd, timeout=180)
-                log_content = _run(conn, "cat /tmp/nettest_apt.log 2>/dev/null | tail -8")
+                log_content = _run(conn, "cat /tmp/linkstate_apt.log 2>/dev/null | tail -8")
                 log_clean = _strip_ansi(log_content.strip())
                 if "__APT_OK__" in result or "__APT_OK__" in log_clean:
                     _ok("Package installation completed")
@@ -479,20 +518,20 @@ def onboard_agent(config_path: str,
             else:
                 _ok("All required tools already present")
 
-        # ── Step 3: Create nettest user ────────────────────
-        _step(3, TOTAL_STEPS, f"Creating user '{nettest_user}'...")
-        existing = _run(conn, f"id {nettest_user} 2>&1")
+        # ── Step 3: Create linkstate user ────────────────────
+        _step(3, TOTAL_STEPS, f"Creating user '{linkstate_user}'...")
+        existing = _run(conn, f"id {linkstate_user} 2>&1")
         if "uid=" in existing:
-            _ok(f"User '{nettest_user}' already exists")
+            _ok(f"User '{linkstate_user}' already exists")
         else:
-            _sudo(conn, f"useradd -m -s /bin/bash {nettest_user}", admin_pass)
-            _ok(f"User '{nettest_user}' created")
+            _sudo(conn, f"useradd -m -s /bin/bash {linkstate_user}", admin_pass)
+            _ok(f"User '{linkstate_user}' created")
 
         # ── Step 4: Create .ssh directory ─────────────────
         _step(4, TOTAL_STEPS, "Configuring SSH directory...")
-        _sudo(conn, f"mkdir -p /home/{nettest_user}/.ssh", admin_pass)
-        _sudo(conn, f"chown {nettest_user}:{nettest_user} /home/{nettest_user}/.ssh", admin_pass)
-        _sudo(conn, f"chmod 700 /home/{nettest_user}/.ssh", admin_pass)
+        _sudo(conn, f"mkdir -p /home/{linkstate_user}/.ssh", admin_pass)
+        _sudo(conn, f"chown {linkstate_user}:{linkstate_user} /home/{linkstate_user}/.ssh", admin_pass)
+        _sudo(conn, f"chmod 700 /home/{linkstate_user}/.ssh", admin_pass)
         _ok("SSH directory created with correct permissions")
 
         # ── Step 5: Deploy public key ──────────────────────
@@ -500,15 +539,15 @@ def onboard_agent(config_path: str,
         # Write key safely — escape single quotes in the key
         safe_key = public_key.replace("'", "'\\''")
         _sudo(conn,
-              f"bash -c \"echo '{safe_key}' > /home/{nettest_user}/.ssh/authorized_keys\"",
+              f"bash -c \"echo '{safe_key}' > /home/{linkstate_user}/.ssh/authorized_keys\"",
               admin_pass)
         _sudo(conn,
-              f"chown {nettest_user}:{nettest_user} /home/{nettest_user}/.ssh/authorized_keys",
+              f"chown {linkstate_user}:{linkstate_user} /home/{linkstate_user}/.ssh/authorized_keys",
               admin_pass)
-        _sudo(conn, f"chmod 600 /home/{nettest_user}/.ssh/authorized_keys", admin_pass)
+        _sudo(conn, f"chmod 600 /home/{linkstate_user}/.ssh/authorized_keys", admin_pass)
 
         # Verify key landed correctly
-        installed = _run(conn, f"sudo cat /home/{nettest_user}/.ssh/authorized_keys 2>&1")
+        installed = _run(conn, f"sudo cat /home/{linkstate_user}/.ssh/authorized_keys 2>&1")
         if "ssh-ed25519" in installed or "ssh-rsa" in installed:
             _ok("Public key installed")
         else:
@@ -519,7 +558,7 @@ def onboard_agent(config_path: str,
         # ── Step 6: Sudoers ────────────────────────────────
         _step(6, TOTAL_STEPS, "Configuring sudoers...")
         sudoers_line = (
-            f"{nettest_user} ALL=(ALL) NOPASSWD: "
+            f"{linkstate_user} ALL=(ALL) NOPASSWD: "
             f"/usr/bin/iperf3, /usr/bin/mtr, /usr/bin/pkill, /usr/bin/ping, "
             f"/usr/bin/traceroute, /usr/bin/fuser, /usr/bin/dpkg"
         )
@@ -528,14 +567,16 @@ def onboard_agent(config_path: str,
             sudoers_line += (f", /usr/bin/systemctl restart "
                              f"{iperf_service.unit_for_port(port)}")
         _sudo(conn,
-              f"bash -c \"echo '{sudoers_line}' > /etc/sudoers.d/nettest\"",
+              f"bash -c \"echo '{sudoers_line}' > /etc/sudoers.d/linkstate\"",
               admin_pass)
-        _sudo(conn, "chmod 440 /etc/sudoers.d/nettest", admin_pass)
+        _sudo(conn, "chmod 440 /etc/sudoers.d/linkstate", admin_pass)
 
         # Validate
-        valid = _run(conn, "sudo visudo -c -f /etc/sudoers.d/nettest 2>&1")
+        valid = _run(conn, "sudo visudo -c -f /etc/sudoers.d/linkstate 2>&1")
         if "parsed OK" in valid or "OK" in valid:
             _ok("Sudoers entry valid")
+            # The entry NetTest wrote before the rename is superseded
+            _sudo(conn, f"rm -f /etc/sudoers.d/{branding.LEGACY_NAME}", admin_pass)
         else:
             _warn(f"Sudoers validation returned: {valid.strip()[:80]}")
 
@@ -559,13 +600,13 @@ def onboard_agent(config_path: str,
         conn.disconnect()
         time.sleep(1)
 
-        # Try to connect with the nettest key
+        # Try to connect with the linkstate key
         from netmiko import ConnectHandler
         try:
             test_conn = ConnectHandler(
                 device_type="linux",
                 host=agent_ip,
-                username=nettest_user,
+                username=linkstate_user,
                 use_keys=True,
                 key_file=key_file,
                 port=admin_port,
@@ -582,7 +623,7 @@ def onboard_agent(config_path: str,
         except Exception as e:
             _err(f"Key-based login failed: {e}")
             _err("The agent was configured but key auth is not working.")
-            _err("Check /home/nettest/.ssh/ ownership and permissions manually.")
+            _err(f"Check /home/{linkstate_user}/.ssh/ ownership and permissions manually.")
             return False
 
         success = True
@@ -605,6 +646,7 @@ def onboard_agent(config_path: str,
     existing_ids = [a.id for a in config.agents]
     if reonboard and agent_id in existing_ids:
         _ok(f"Agent '{agent_id}' already in config.yaml — kept as is")
+        _drop_legacy_username(config_path, agent_id, linkstate_user)
     elif agent_id in existing_ids:
         _warn(f"Agent ID '{agent_id}' already exists in config — skipping config update")
         _warn("Edit config.yaml or the web config editor to update it manually")
@@ -629,7 +671,7 @@ def onboard_agent(config_path: str,
 
             _ok(f"Agent '{agent_label}' added to config.yaml")
             _info("Restart the scheduler to pick up the new agent:")
-            _info("  sudo systemctl restart nettest")
+            _info(f"  sudo systemctl restart {branding.SCHEDULER_SERVICE}")
         except Exception as e:
             _warn(f"Could not update config.yaml: {e}")
             _warn("Add the agent manually in the web config editor")

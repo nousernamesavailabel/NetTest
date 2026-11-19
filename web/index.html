@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NetTest — Network Monitor</title>
+<title>LinkState — Network Monitor</title>
 <script src="/static/chart.umd.js"></script>
 <style>
   :root {
@@ -696,7 +696,7 @@ function saveLogOutput() {
   const text = _getLogText();
   const ts   = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const job  = currentJobId || 'output';
-  const name = `nettest-${job}-${ts}.txt`;
+  const name = `linkstate-${job}-${ts}.txt`;
   const blob = new Blob([text], { type: 'text/plain' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -739,6 +739,8 @@ const REFRESH_MS  = 15000;
 const JOB_POLL_MS = 2000;
 
 // ── Thresholds ─────────────────────────────────────────────
+// Defaults only — replaced at boot from config.yaml (Config → Thresholds)
+// via /api/thresholds.
 const T = {
   latWarn:15, latCrit:50,
   lossWarn:1, lossCrit:5,
@@ -746,6 +748,22 @@ const T = {
   tputWarn:10,tputCrit:2,
   bbWarn:30,  bbCrit:100,
 };
+
+async function loadThresholds() {
+  try {
+    const t = await api('/api/thresholds');
+    const map = { latency_ms:'lat', packet_loss_pct:'loss', jitter_ms:'jit',
+                  throughput_mbps:'tput', bufferbloat_ms:'bb' };
+    for (const [metric, key] of Object.entries(map)) {
+      if (t && t[metric]) {
+        if (t[metric].warn != null) T[key + 'Warn'] = Number(t[metric].warn);
+        if (t[metric].crit != null) T[key + 'Crit'] = Number(t[metric].crit);
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load thresholds — using defaults', e);
+  }
+}
 
 // A record's throughput field can hold multiple entries (one per direction
 // run: upload/download/bidir) or, for older records, a single object.
@@ -857,7 +875,12 @@ function updatePathFlowBanner(pathId) {
     // Override src/dst IPs from actual result
     if (r) {
       if (idx === 0)                   ip = r.source_host || ip;
-      if (idx === agentIds.length - 1) ip = r.destination_host || ip;
+      if (idx === agentIds.length - 1) {
+        // The test host and the IP it resolved to for this run (newer records)
+        const tgt = r.destination_test_host || r.destination_host || ip;
+        ip = r.destination_addr && r.destination_addr !== tgt
+          ? `${tgt} (${r.destination_addr})` : tgt;
+      }
     }
 
     const nodeType = idx === 0 ? 'source'
@@ -1116,7 +1139,7 @@ let _activeStream = null;
 function openLogStream(jobId, label) {
   // Close any existing stream
   if (_activeStream) { _activeStream.close(); _activeStream = null; }
-  localStorage.setItem('nettest.activeLogJob', jobId);
+  localStorage.setItem('linkstate.activeLogJob', jobId);
 
   const body   = document.getElementById('log-body');
   const status = document.getElementById('log-status');
@@ -1124,10 +1147,10 @@ function openLogStream(jobId, label) {
   body.innerHTML = `<div class="log-line log-dim">── ${label} ──</div>`;
   status.textContent = '⟳ running';
   status.className = 'log-badge log-badge-running';
-  sessionStorage.removeItem('nettest.log.' + jobId);
-  sessionStorage.setItem('nettest.activeLogJob', jobId);
-  sessionStorage.setItem('nettest.activeLogLabel', label);
-  localStorage.setItem('nettest.activeLogLabel', label);
+  sessionStorage.removeItem('linkstate.log.' + jobId);
+  sessionStorage.setItem('linkstate.activeLogJob', jobId);
+  sessionStorage.setItem('linkstate.activeLogLabel', label);
+  localStorage.setItem('linkstate.activeLogLabel', label);
 
   // Scroll log to bottom helper
   const scrollBottom = () => { body.scrollTop = body.scrollHeight; };
@@ -1146,11 +1169,11 @@ function openLogStream(jobId, label) {
         if (job && job.status === 'done') {
           status.textContent = '✓ done';
           status.className = 'log-badge log-badge-done';
-          sessionStorage.setItem('nettest.logStatus.' + jobId, 'done');
+          sessionStorage.setItem('linkstate.logStatus.' + jobId, 'done');
         } else if (job && job.status === 'error') {
           status.textContent = '✗ error';
           status.className = 'log-badge log-badge-error';
-          sessionStorage.setItem('nettest.logStatus.' + jobId, 'error');
+          sessionStorage.setItem('linkstate.logStatus.' + jobId, 'error');
         } else {
           status.textContent = 'idle';
           status.className = 'log-badge log-badge-idle';
@@ -1203,7 +1226,7 @@ async function with_job_status(jobId, cb) {
 
 function persistLogLine(jobId, text, cls) {
   try {
-    const key  = 'nettest.log.' + jobId;
+    const key  = 'linkstate.log.' + jobId;
     const data = JSON.parse(sessionStorage.getItem(key) || '[]');
     data.push({text, cls});
     if (data.length > 500) data.shift();
@@ -1213,26 +1236,26 @@ function persistLogLine(jobId, text, cls) {
 
 async function restoreLog() {
   // Check sessionStorage first, fall back to localStorage (set by openLogStream)
-  const jobId = sessionStorage.getItem('nettest.activeLogJob')
-             || localStorage.getItem('nettest.activeLogJob');
+  const jobId = sessionStorage.getItem('linkstate.activeLogJob')
+             || localStorage.getItem('linkstate.activeLogJob');
   if (!jobId) return;
-  const label = sessionStorage.getItem('nettest.activeLogLabel')
-             || localStorage.getItem('nettest.activeLogLabel')
+  const label = sessionStorage.getItem('linkstate.activeLogLabel')
+             || localStorage.getItem('linkstate.activeLogLabel')
              || jobId;
   // Sync to sessionStorage so subsequent checks find it
-  sessionStorage.setItem('nettest.activeLogJob', jobId);
+  sessionStorage.setItem('linkstate.activeLogJob', jobId);
   const status = document.getElementById('log-status');
   const body   = document.getElementById('log-body');
 
   // Fast path: restore from sessionStorage
   try {
-    const key  = 'nettest.log.' + jobId;
+    const key  = 'linkstate.log.' + jobId;
     const data = JSON.parse(sessionStorage.getItem(key) || '[]');
     if (data.length > 0) {
       body.innerHTML = '';
       data.forEach(({text, cls}) => appendLog(text, cls));
       body.scrollTop = body.scrollHeight;
-      const saved = sessionStorage.getItem('nettest.logStatus.' + jobId);
+      const saved = sessionStorage.getItem('linkstate.logStatus.' + jobId);
       if (saved === 'done') {
         status.textContent = '✓ done'; status.className = 'log-badge log-badge-done';
       } else if (saved === 'error') {
@@ -1262,10 +1285,10 @@ async function restoreLog() {
       const s = data.job?.status;
       if (s === 'done') {
         status.textContent = '✓ done'; status.className = 'log-badge log-badge-done';
-        sessionStorage.setItem('nettest.logStatus.' + jobId, 'done');
+        sessionStorage.setItem('linkstate.logStatus.' + jobId, 'done');
       } else if (s === 'error') {
         status.textContent = '✗ error'; status.className = 'log-badge log-badge-error';
-        sessionStorage.setItem('nettest.logStatus.' + jobId, 'error');
+        sessionStorage.setItem('linkstate.logStatus.' + jobId, 'error');
       } else if (s === 'running') {
         openLogStream(jobId, label);
       }
@@ -1285,15 +1308,15 @@ function appendLog(text, cls) {
 
 function clearLog() {
   if (_activeStream) { _activeStream.close(); _activeStream = null; }
-  localStorage.removeItem('nettest.activeLogJob');
-  localStorage.removeItem('nettest.activeLogLabel');
-  const jobId = sessionStorage.getItem('nettest.activeLogJob');
+  localStorage.removeItem('linkstate.activeLogJob');
+  localStorage.removeItem('linkstate.activeLogLabel');
+  const jobId = sessionStorage.getItem('linkstate.activeLogJob');
   if (jobId) {
-    sessionStorage.removeItem('nettest.log.' + jobId);
-    sessionStorage.removeItem('nettest.logStatus.' + jobId);
+    sessionStorage.removeItem('linkstate.log.' + jobId);
+    sessionStorage.removeItem('linkstate.logStatus.' + jobId);
   }
-  sessionStorage.removeItem('nettest.activeLogJob');
-  sessionStorage.removeItem('nettest.activeLogLabel');
+  sessionStorage.removeItem('linkstate.activeLogJob');
+  sessionStorage.removeItem('linkstate.activeLogLabel');
   document.getElementById('log-body').innerHTML =
     '<div class="log-line log-dim">Cleared. Trigger a test to see live output...</div>';
   document.getElementById('log-status').textContent = 'idle';
@@ -1373,6 +1396,7 @@ async function updateNextRun() {
 
 // ── Boot ───────────────────────────────────────────────────
 async function boot() {
+  await loadThresholds();
   paths = await api('/api/paths');
   renderNav();
   initCharts();
@@ -1461,7 +1485,7 @@ async function restoreJobs() {
     updateJobsSidebar();
     updateNavRunBtns();
 
-    const savedJobId = localStorage.getItem('nettest.activeLogJob');
+    const savedJobId = localStorage.getItem('linkstate.activeLogJob');
     const savedJob = savedJobId ? jobs.find(j => j.job_id === savedJobId) : null;
     const runningJob = jobs.find(j => j.status === 'running' || j.status === 'queued');
     const jobToOpen = savedJob || runningJob;
@@ -1574,11 +1598,11 @@ function updateNavRunBtns() {
 // tucked away), not shared data — localStorage, not the API, is the right
 // place for it. Keyed by group name so it survives path reordering/edits.
 function loadCollapsedNavGroups() {
-  try { return new Set(JSON.parse(localStorage.getItem('nettest.collapsedNavGroups') || '[]')); }
+  try { return new Set(JSON.parse(localStorage.getItem('linkstate.collapsedNavGroups') || '[]')); }
   catch(e) { return new Set(); }
 }
 function saveCollapsedNavGroups() {
-  try { localStorage.setItem('nettest.collapsedNavGroups', JSON.stringify([...collapsedNavGroups])); }
+  try { localStorage.setItem('linkstate.collapsedNavGroups', JSON.stringify([...collapsedNavGroups])); }
   catch(e) {}
 }
 let collapsedNavGroups = loadCollapsedNavGroups();

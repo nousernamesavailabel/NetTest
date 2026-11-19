@@ -14,6 +14,9 @@ from core.results import PathTestResult, SegmentResult, make_result_id, utc_now_
 from runners.runner_traceroute import TracerouteRunner
 from core.ssh_manager import ssh_connection, SSHConnectionError
 from core.host_locks import iperf_hosts_locked
+from core.hostaddr import (
+    resolve_host, is_ip, af_flag, display as host_display, HostResolutionError,
+)
 from runners.runner_throughput import ThroughputRunner
 from runners.runner_latency import (
     LatencyRunner, JitterRunner, LatencyUnderLoadRunner, MTURunner
@@ -35,6 +38,30 @@ TEST_LABELS = {
 
 # Tests that start/kill iPerf3 on their endpoints — serialized per host
 IPERF_TESTS = ("throughput", "jitter", "latency_under_load")
+
+
+def resolve_target(agent, host: str = None):
+    """Where the source agent's test tools should point for this agent.
+
+    Returns (target, addr, af):
+      target — what goes on the ping/iperf3/mtr/traceroute command line
+      addr   — the IP the controller resolved (None if the agent resolves)
+      af     — family flag for the tools ("" when target is an IP literal,
+               since the tools infer the family from it)
+    Raises HostResolutionError if the controller can't resolve the name.
+    """
+    host = host or agent.test_host
+    family = getattr(agent, "address_family", "ipv4") or "ipv4"
+    if getattr(agent, "resolve_on", "controller") == "agent" and not is_ip(host):
+        return host, None, af_flag(family)
+    addr = resolve_host(host, family)
+    return addr, addr, ""
+
+
+def _lock_key(agent) -> str:
+    # One lock per agent, however its host is written, so a box listed by IP
+    # in one place and by name in another can't run two iPerf3 tests at once.
+    return f"agent-{agent.id}"
 
 class PathTester:
 
@@ -95,6 +122,7 @@ class PathTester:
             destination_agent_id=dst_agent.id,
             source_host=src_agent.host_mgmt_ip,
             destination_host=dst_agent.host_mgmt_ip,
+            destination_test_host=dst_agent.test_host,
             timestamp_utc=utc_now_iso(),
             duration_total_sec=0,
             success=False,
@@ -116,6 +144,25 @@ class PathTester:
         logger.info(f"     Tests       : {', '.join(test_labels)}")
 
         start = time.monotonic()
+
+        # Resolve the destination's test host up front (on the controller,
+        # unless the agent is set to resolve_on: agent) so every test in this
+        # run targets the same address, and a bad name fails fast before any
+        # SSH session or iPerf3 lock is taken.
+        try:
+            dst_target, dst_addr, dst_af = resolve_target(dst_agent)
+        except HostResolutionError as e:
+            logger.error(f"Cannot run '{path.label}' — destination {dst_agent.label}: {e}")
+            result.error = f"Destination host resolution failed: {e}"
+            result.duration_total_sec = round(time.monotonic() - start, 2)
+            return result
+        result.destination_addr = dst_addr
+        if dst_addr and dst_addr != dst_agent.test_host:
+            logger.info(f"     Resolved    : {dst_agent.test_host} → {dst_addr}")
+        elif dst_addr is None:
+            logger.info(f"     Resolved    : {dst_agent.test_host} — by the source agent"
+                        + (f" ({dst_af})" if dst_af else ""))
+        lock_keys = [_lock_key(src_agent), _lock_key(dst_agent)]
 
         try:
             logger.info(f"Connecting to {src_agent.label} ({src_agent.host_mgmt_ip})...")
@@ -141,6 +188,14 @@ class PathTester:
                         source_host=src_agent.host_mgmt_ip,
                         destination_host=hop_agent.test_host,
                     )
+                    try:
+                        hop_target, hop_addr, hop_af = resolve_target(hop_agent)
+                    except HostResolutionError as e:
+                        logger.error(f"  {hop_agent.label}: {e} — skipping this segment")
+                        seg_result.error = f"Host resolution failed: {e}"
+                        result.segments.append(seg_result)
+                        continue
+                    seg_result.destination_addr = hop_addr
 
                     for i, test_type in enumerate(seg_tests, 1):
                         label = TEST_LABELS.get(test_type, test_type)
@@ -150,7 +205,8 @@ class PathTester:
                             result=seg_result,
                             src_ssh=src_ssh,
                             dst_ssh=None,
-                            dst_host=hop_agent.test_host,
+                            dst_host=hop_target,
+                            af=hop_af,
                             server_managed=False,
                             port_override=None,
                         )
@@ -193,7 +249,9 @@ class PathTester:
                             result=result,
                             src_ssh=src_ssh,
                             dst_ssh=None,
-                            dst_host=dst_agent.test_host,
+                            dst_host=dst_target,
+                                af=dst_af,
+                                lock_keys=lock_keys,
                             server_managed=server_managed,
                             port_override=dst_iperf3_port,
                             directions=path.directions,
@@ -223,7 +281,9 @@ class PathTester:
                                 result=result,
                                 src_ssh=src_ssh,
                                 dst_ssh=None,
-                                dst_host=dst_agent.test_host,
+                                dst_host=dst_target,
+                                af=dst_af,
+                                lock_keys=lock_keys,
                                 server_managed=server_managed,
                                 port_override=dst_iperf3_port,
                                 directions=path.directions,
@@ -250,7 +310,9 @@ class PathTester:
                                 result=result,
                                 src_ssh=src_ssh,
                                 dst_ssh=dst_ssh,
-                                dst_host=dst_agent.test_host,
+                                dst_host=dst_target,
+                                af=dst_af,
+                                lock_keys=lock_keys,
                                 server_managed=True,
                                 port_override=None,
                                 directions=path.directions,
@@ -281,7 +343,9 @@ class PathTester:
                                     result=result,
                                     src_ssh=src_ssh,
                                     dst_ssh=dst_ssh,
-                                    dst_host=dst_agent.test_host,
+                                    dst_host=dst_target,
+                                af=dst_af,
+                                lock_keys=lock_keys,
                                     server_managed=True,
                                     port_override=None,
                                     directions=path.directions,
@@ -296,7 +360,7 @@ class PathTester:
             logger.error(f"")
             logger.error(f"SSH connection failed for '{path.label}'")
             logger.error(f"  Detail  : {e}")
-            logger.error(f"  Check   : agent is reachable, nettest user exists, key is deployed")
+            logger.error(f"  Check   : agent is reachable, linkstate user exists, key is deployed")
             result.error = f"SSH connection error: {e}"
 
         except Exception as e:
@@ -349,6 +413,8 @@ class PathTester:
 
     def _run_test(self, test_type: str, result,
                   src_ssh, dst_ssh, dst_host: str,
+                  af: str = "",
+                  lock_keys: List[str] = None,
                   server_managed: bool = True,
                   port_override: int = None,
                   directions: List[str] = None,
@@ -361,8 +427,10 @@ class PathTester:
         upload | download | bidir, run as separate iPerf3 invocations.
         parallel_streams (throughput and latency_under_load) is per-path —
         the right count depends on the path's own bandwidth/shaping.
-        iPerf3 tests first take the per-host lock on both endpoints (see
-        core/host_locks.py), waiting out any other path using either host.
+        iPerf3 tests first take the per-agent lock on both endpoints (see
+        core/host_locks.py), waiting out any other path using either agent.
+        dst_host is already resolved (see resolve_target); af is the family
+        flag ("-4"/"-6") to add when it is still a name the agent resolves.
         """
         p = self.config.test_params
         directions = directions or ["upload"]
@@ -372,7 +440,7 @@ class PathTester:
         try:
             if test_type in IPERF_TESTS:
                 held.enter_context(iperf_hosts_locked(
-                    [src_ssh.host, dst_ssh.host if dst_ssh is not None else dst_host],
+                    lock_keys or [src_ssh.host, dst_ssh.host if dst_ssh is not None else dst_host],
                     abort_event=abort_event,
                 ))
 
@@ -386,7 +454,7 @@ class PathTester:
                 logger.info(f"  Running {parallel_streams}-stream TCP throughput "
                             f"for {p.throughput.duration_sec}s each "
                             f"({', '.join(DIR_LABELS.get(d, d) for d in directions)})")
-                runner = ThroughputRunner(p.throughput)
+                runner = ThroughputRunner(p.throughput, af=af)
                 throughput_results = []
                 direction_errors = []
                 for i, direction in enumerate(directions):
@@ -421,7 +489,7 @@ class PathTester:
                 logger.info(f"  Pinging {dst_host} — "
                             f"{p.latency.packet_count} packets at "
                             f"{p.latency.interval_ms}ms intervals...")
-                runner = LatencyRunner(p.latency)
+                runner = LatencyRunner(p.latency, af=af)
                 result.latency = runner.run(src_ssh, dst_host)
 
             elif test_type == "latency_under_load":
@@ -430,6 +498,7 @@ class PathTester:
                     params=p.latency_under_load,
                     iperf3_port=p.throughput.iperf3_port,
                     iperf3_streams=parallel_streams,
+                    af=af,
                 )
                 result.latency_under_load = runner.run(
                     src_ssh, dst_ssh, dst_host,
@@ -448,7 +517,7 @@ class PathTester:
                 logger.info(f"  Sending {p.jitter.packet_count} UDP packets "
                             f"at {p.jitter.bandwidth_kbps} Kbps "
                             f"({p.jitter.packet_size_bytes}B each) to {dst_host}...")
-                runner = JitterRunner(p.jitter)
+                runner = JitterRunner(p.jitter, af=af)
                 result.jitter = runner.run(
                     src_ssh, dst_ssh, dst_host,
                     server_managed=server_managed,
@@ -463,6 +532,7 @@ class PathTester:
                     max_size=p.mtu.max_size,
                     min_size=p.mtu.min_size,
                     step=p.mtu.step,
+                    af=af,
                 )
                 result.mtu = runner.run(src_ssh, dst_host)
 
@@ -474,10 +544,26 @@ class PathTester:
                     probes=tr_cfg.probes,
                     wait_sec=tr_cfg.wait_sec,
                     resolve_dns=tr_cfg.resolve_dns,
+                    af=af,
                 )
                 result.traceroute_forward = tr_runner.run_forward(src_ssh, dst_host)
                 if dst_ssh is not None:
-                    result.traceroute_reverse = tr_runner.run_reverse(dst_ssh, src_ssh.host)
+                    # Reverse targets the source's management host, as before,
+                    # resolved by the controller (whose view SSH already used).
+                    src_agent = self.config.get_agent(result.source_agent_id)
+                    try:
+                        rev_target = (resolve_target(src_agent, src_ssh.host)[0]
+                                      if src_agent else src_ssh.host)
+                    except HostResolutionError as e:
+                        logger.warning(f"  Reverse traceroute skipped: {e}")
+                        rev_target = None
+                    if rev_target:
+                        result.traceroute_reverse = TracerouteRunner(
+                            max_hops=tr_cfg.max_hops, probes=tr_cfg.probes,
+                            wait_sec=tr_cfg.wait_sec, resolve_dns=tr_cfg.resolve_dns,
+                            af=af_flag(getattr(src_agent, "address_family", "ipv4"))
+                               if src_agent and not is_ip(rev_target) else "",
+                        ).run_reverse(dst_ssh, rev_target)
 
             else:
                 logger.warning(f"  Unknown test type '{test_type}' — skipping")

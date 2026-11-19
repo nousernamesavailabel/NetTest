@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# NetTest — Rollback to Previous Version
+# LinkState — Rollback to Previous Version
 #
 # Usage:
 #   sudo ./rollback.sh             # list available snapshots
@@ -10,8 +10,18 @@
 
 set -euo pipefail
 
-APP_DIR="${NETTEST_APP_DIR:-/opt/nettest}"
+APP_DIR="${LINKSTATE_APP_DIR:-/opt/linkstate}"
+if [[ -z "${LINKSTATE_APP_DIR:-}" && ! -d "${APP_DIR}" && -d /opt/nettest/snapshots ]]; then
+  APP_DIR=/opt/nettest   # NetTest install not yet migrated
+fi
 SNAPSHOTS_DIR="${APP_DIR}/snapshots"
+
+# Service names on this host: LinkState's, or NetTest's on an install
+# upgraded through the web UI that hasn't been migrated yet
+SVC=linkstate
+if [[ ! -f /etc/systemd/system/linkstate.service && -f /etc/systemd/system/nettest.service ]]; then
+  SVC=nettest
+fi
 
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}  ✓${NC}  $*"; }
@@ -46,7 +56,7 @@ list_snapshots() {
 }
 
 sep
-echo -e "  ${CYAN}NetTest Rollback${NC}"
+echo -e "  ${CYAN}LinkState Rollback${NC}"
 sep
 echo ""
 
@@ -66,6 +76,15 @@ if [[ ! -d "${SNAP_PATH}" ]]; then
   err "Snapshot not found: ${SNAPSHOT}"
   echo ""
   list_snapshots
+  exit 1
+fi
+
+# A NetTest snapshot from before the rename expects the old service names,
+# user and paths, so it can't run on a migrated LinkState install
+if [[ "$SVC" == "linkstate" && -f "${SNAP_PATH}/systemd/nettest.service" \
+      && ! -f "${SNAP_PATH}/systemd/linkstate.service" ]]; then
+  err "${SNAPSHOT} is a NetTest snapshot from before the rename to LinkState."
+  err "It can't be restored onto this install. Reinstall that release instead."
   exit 1
 fi
 
@@ -90,7 +109,7 @@ fi
 
 echo ""
 info "Stopping services..."
-systemctl stop nettest nettest-web
+systemctl stop "${SVC}" "${SVC}-web"
 
 info "Restoring code files from snapshot..."
 rsync -a \
@@ -117,7 +136,7 @@ fi
 ok "Dependencies synced"
 
 info "Starting services..."
-systemctl start nettest nettest-web
+systemctl start "${SVC}" "${SVC}-web"
 ok "Services started"
 
 echo ""
@@ -126,5 +145,5 @@ echo -e "  ${GREEN}Rollback complete!${NC}"
 sep
 echo ""
 echo "  Restored to: v${SNAP_VERSION}"
-echo "  Check status: sudo systemctl status nettest nettest-web"
+echo "  Check status: sudo systemctl status ${SVC} ${SVC}-web"
 echo ""

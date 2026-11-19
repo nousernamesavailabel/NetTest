@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NetTest — Config Editor</title>
+<title>LinkState — Config Editor</title>
 <style>
 :root {
   --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
@@ -252,6 +252,9 @@ select option{background:var(--bg)}
     <div class="tab" onclick="showSection('tests',this)">
       <span class="tab-icon">⚙</span> Tests
     </div>
+    <div class="tab" onclick="showSection('thresholds',this)">
+      <span class="tab-icon">◐</span> Thresholds
+    </div>
     <div class="tab" onclick="showSection('packages',this)">
       <span class="tab-icon">📦</span> Packages
     </div>
@@ -393,11 +396,11 @@ select option{background:var(--bg)}
         <div class="panel-body">
           <div class="form-row">
             <label>Username</label>
-            <input type="text" id="ssh-user" placeholder="nettest">
+            <input type="text" id="ssh-user" placeholder="linkstate">
           </div>
           <div class="form-row">
             <label>Key file</label>
-            <input type="text" id="ssh-key" placeholder="~/.ssh/nettest_key">
+            <input type="text" id="ssh-key" placeholder="~/.ssh/linkstate_key">
           </div>
           <div class="form-row">
             <label>Port</label>
@@ -658,6 +661,86 @@ select option{background:var(--bg)}
     </div>
 
 
+    <!-- ── Thresholds ── -->
+    <div class="section" id="section-thresholds">
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Health Thresholds</span>
+          <button class="btn btn-ghost" style="font-size:10px;padding:3px 8px" onclick="resetThresholds()">↺ Defaults</button>
+        </div>
+        <div class="panel-body">
+          <div style="font-size:11px;color:var(--mt)">
+            Sets when the dashboard and TUI colour a result <span style="color:var(--gn)">green</span>,
+            <span style="color:var(--yw)">amber</span> or <span style="color:var(--rd)">red</span>.
+            Doesn't affect how tests run. Reload open dashboards after saving.
+          </div>
+          <div class="form-row">
+            <label>Latency (avg RTT)
+              <div style="font-size:10px;color:var(--mt);font-weight:400;margin-top:2px">amber at or above warn, red at or above crit</div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="color:var(--yw);font-size:11px">warn</span>
+              <input type="number" id="th-latency_ms-warn" min="0" step="any" style="width:80px">
+              <span style="color:var(--rd);font-size:11px;margin-left:6px">crit</span>
+              <input type="number" id="th-latency_ms-crit" min="0" step="any" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">ms</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Packet loss
+              <div style="font-size:10px;color:var(--mt);font-weight:400;margin-top:2px">amber at or above warn, red at or above crit</div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="color:var(--yw);font-size:11px">warn</span>
+              <input type="number" id="th-packet_loss_pct-warn" min="0" step="any" style="width:80px">
+              <span style="color:var(--rd);font-size:11px;margin-left:6px">crit</span>
+              <input type="number" id="th-packet_loss_pct-crit" min="0" step="any" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">%</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Jitter
+              <div style="font-size:10px;color:var(--mt);font-weight:400;margin-top:2px">amber at or above warn, red at or above crit</div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="color:var(--yw);font-size:11px">warn</span>
+              <input type="number" id="th-jitter_ms-warn" min="0" step="any" style="width:80px">
+              <span style="color:var(--rd);font-size:11px;margin-left:6px">crit</span>
+              <input type="number" id="th-jitter_ms-crit" min="0" step="any" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">ms</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Throughput
+              <div style="font-size:10px;color:var(--mt);font-weight:400;margin-top:2px">amber at or below warn, red at or below crit</div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="color:var(--yw);font-size:11px">warn</span>
+              <input type="number" id="th-throughput_mbps-warn" min="0" step="any" style="width:80px">
+              <span style="color:var(--rd);font-size:11px;margin-left:6px">crit</span>
+              <input type="number" id="th-throughput_mbps-crit" min="0" step="any" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">Mbps</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Bufferbloat (added latency under load)
+              <div style="font-size:10px;color:var(--mt);font-weight:400;margin-top:2px">amber at or above warn, red at or above crit</div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="color:var(--yw);font-size:11px">warn</span>
+              <input type="number" id="th-bufferbloat_ms-warn" min="0" step="any" style="width:80px">
+              <span style="color:var(--rd);font-size:11px;margin-left:6px">crit</span>
+              <input type="number" id="th-bufferbloat_ms-crit" min="0" step="any" style="width:80px">
+              <span style="color:var(--mt);font-size:11px">ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+
     <!-- ── Packages ── -->
     <div class="section" id="section-packages">
 
@@ -743,20 +826,20 @@ select option{background:var(--bg)}
         </div>
         <div class="panel-body">
           <div class="form-row">
-            <label>Common Name / IP</label>
-            <input type="text" id="https-cn" placeholder="192.168.5.26">
+            <label>Common Name (IP or hostname)</label>
+            <input type="text" id="https-cn" placeholder="192.168.5.26 or linkstate.example.com">
           </div>
           <div class="form-row">
             <label>Organisation</label>
-            <input type="text" id="https-org" placeholder="NetTest" value="NetTest">
+            <input type="text" id="https-org" placeholder="LinkState" value="LinkState">
           </div>
           <div class="form-row">
             <label>Valid for (days)</label>
             <input type="number" id="https-days" value="3650" style="width:100px">
           </div>
           <div class="form-row">
-            <label>Additional IPs</label>
-            <input type="text" id="https-san" placeholder="192.168.5.26, 10.0.0.1">
+            <label>Additional IPs / hostnames</label>
+            <input type="text" id="https-san" placeholder="192.168.5.26, linkstate.example.com, linkstate">
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
             <button class="btn btn-primary" onclick="generateCert()">Generate Certificate</button>
@@ -917,7 +1000,7 @@ select option{background:var(--bg)}
             </label>
             <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
               <input type="checkbox" id="exp-test-params" checked style="accent-color:var(--cy)">
-              Test parameters
+              Test parameters &amp; thresholds
             </label>
             <label style="display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer">
               <input type="checkbox" id="exp-ssh-creds" style="accent-color:var(--cy)">
@@ -1030,6 +1113,8 @@ select option{background:var(--bg)}
                     font-family:monospace;max-height:200px;overflow-y:auto">
           Loading changelog...
         </div>
+        <div class="panel-body" id="upd-migrate-hint"
+             style="display:none;font-size:11px;color:var(--yw);border-top:1px solid var(--bdr)"></div>
       </div>
 
       <!-- Upload update bundle -->
@@ -1039,7 +1124,7 @@ select option{background:var(--bg)}
         </div>
         <div class="panel-body">
           <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
-            Upload a NetTest release bundle (<code style="color:var(--cy)">nettest-vX.Y.Z.tar.gz</code>).
+            Upload a LinkState release bundle (<code style="color:var(--cy)">linkstate-vX.Y.Z.tar.gz</code>).
             The current version will be snapshotted automatically before applying.
           </p>
           <div class="form-row">
@@ -1203,6 +1288,14 @@ let paths      = [];
 let schedule   = {};
 let sshDefs    = {};
 let testParams = {};
+let thresholds = {};
+const THRESHOLD_DEFAULTS = {
+  latency_ms:      { warn: 15, crit: 50 },
+  packet_loss_pct: { warn: 1,  crit: 5 },
+  jitter_ms:       { warn: 5,  crit: 20 },
+  throughput_mbps: { warn: 10, crit: 2 },
+  bufferbloat_ms:  { warn: 30, crit: 100 },
+};
 let authConfig     = {};
 let authLocalUsers = [];
 
@@ -1236,6 +1329,7 @@ async function loadConfig() {
     schedule   = raw.schedule    || {};
     sshDefs    = raw.ssh_defaults|| {};
     testParams = raw.test_params || {};
+    thresholds = raw.thresholds  || {};
     authConfig     = raw.auth || {};
     authLocalUsers = (authConfig.local_users || []).map(u => ({ username: u.username }));
     renderAll();
@@ -1267,6 +1361,7 @@ function renderAll() {
   renderSchedule();
   renderSSH();
   renderTests();
+  renderThresholds();
   renderAuth();
 }
 
@@ -1315,16 +1410,35 @@ function renderAgents() {
             oninput="agents[${i}].label=this.value;updateAgentHeader(${i});updatePathsForAgent(${i});markDirty()">
         </div>
         <div class="form-row">
-          <label>Management IP <span style="color:var(--rd)">*</span></label>
-          <input type="text" value="${escHtml(a.host_mgmt_ip||a.host||'')}" placeholder="10.0.1.10"
-            oninput="agents[${i}].host_mgmt_ip=this.value;updateAgentHeader(${i});markDirty()"
-            id="agent-host-${i}" title="Controller SSHes to this IP for control">
+          <label>Management host <span style="color:var(--rd)">*</span></label>
+          <input type="text" value="${escHtml(a.host_mgmt_ip||a.host||'')}" placeholder="10.0.1.10 or hub.example.com"
+            oninput="agents[${i}].host_mgmt_ip=this.value;updateAgentHeader(${i});markDirty();flagHostInput(this)"
+            id="agent-host-${i}" title="IP address or hostname/FQDN the controller SSHes to for control">
         </div>
         <div class="form-row">
-          <label>Test IP</label>
-          <input type="text" value="${escHtml(a.host_test_ip||'')}" placeholder="10.1.1.10 (leave blank to use Management IP)"
-            oninput="agents[${i}].host_test_ip=this.value;markDirty()"
-            title="iPerf3 and ping target this IP — use client network IP. Leave blank to use Management IP.">
+          <label>Test host</label>
+          <input type="text" value="${escHtml(a.host_test_ip||'')}" placeholder="10.1.1.10 or hub-test.example.com (blank = Management host)"
+            oninput="agents[${i}].host_test_ip=this.value;markDirty();flagHostInput(this,true)"
+            title="IP address or hostname that iPerf3 and ping target — use the client network address. Leave blank to use the Management host.">
+        </div>
+        <div class="form-row">
+          <label>Address family</label>
+          <select onchange="agents[${i}].address_family=this.value;markDirty()"
+            title="Which address a hostname resolves to. Has no effect on IP addresses.">
+            <option value="ipv4" ${(a.address_family||'ipv4')==='ipv4'?'selected':''}>IPv4</option>
+            <option value="ipv6" ${a.address_family==='ipv6'?'selected':''}>IPv6</option>
+            <option value="auto" ${a.address_family==='auto'?'selected':''}>Auto (first address returned)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Resolve names on</label>
+          <select onchange="agents[${i}].resolve_on=this.value;markDirty()"
+            title="Controller: the controller looks the name up and tests go to that IP (agents need no DNS). Source agent: each source agent looks it up itself — use for split-horizon DNS.">
+            <option value="controller" ${(a.resolve_on||'controller')==='controller'?'selected':''}>Controller</option>
+            <option value="agent" ${a.resolve_on==='agent'?'selected':''}>Source agent</option>
+          </select>
+          <button class="btn" style="font-size:10px;padding:3px 8px;margin-left:8px"
+            onclick="resolveAgent(${i})" title="Show what the host names resolve to from the controller">Resolve</button>
         </div>
         ${a.type === 'agent_not_installed' ? `
         <div class="form-row">
@@ -1346,6 +1460,55 @@ function renderAgents() {
       </div>
     </div>
   `).join('');
+}
+
+// Same rules as core/hostaddr.validate_host: an IPv4/IPv6 address or an
+// RFC 1123 hostname. Returns an error message, or '' if valid.
+function hostError(v) {
+  v = (v || '').trim();
+  if (!v) return 'is empty';
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v))
+    return v.split('.').every(o => +o <= 255) ? '' : `'${v}' is not a valid IP address`;
+  if (v.includes(':'))
+    return /^[0-9A-Fa-f:.]+$/.test(v) && (v.match(/::/g) || []).length <= 1 ? '' : `'${v}' is not a valid IPv6 address`;
+  const h = v.endsWith('.') ? v.slice(0, -1) : v;
+  const labels = h.split('.');
+  if (h.length > 253 || !labels.every(l => /^(?!-)[A-Za-z0-9_-]{1,63}(?<!-)$/.test(l))
+      || labels.every(l => /^\d+$/.test(l)))
+    return `'${v}' is not a valid IP address or hostname`;
+  return '';
+}
+
+function flagHostInput(el, optional) {
+  if (el.dataset.tip === undefined) el.dataset.tip = el.title;
+  const bad = el.value.trim() ? hostError(el.value) : (optional ? '' : 'is empty');
+  el.style.borderColor = bad ? 'var(--rd)' : '';
+  el.title = bad || el.dataset.tip;
+}
+
+async function resolveAgent(i) {
+  const a   = agents[i];
+  const div = document.getElementById('agent-ping-' + i);
+  const hosts = [['Management', a.host_mgmt_ip || a.host], ['Test', a.host_test_ip]]
+    .filter(([, h]) => h && h.trim());
+  if (!hosts.length) { div.innerHTML = '<div class="ping-result ping-err">No host set</div>'; return; }
+  div.innerHTML = '<div class="ping-result ping-pending">⟳ Resolving...</div>';
+  const lines = [];
+  let allOk = true;
+  for (const [what, h] of hosts) {
+    try {
+      const res = await apiFetch('/api/config/resolve', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ host: h.trim(), address_family: a.address_family || 'ipv4' })
+      });
+      if (res.ok) {
+        lines.push(`${what}: ${escHtml(h.trim())} → ${res.is_ip ? 'IP address' : escHtml(res.addresses.join(', '))}`);
+      } else { allOk = false; lines.push(`${what}: ✗ ${escHtml(res.error)}`); }
+    } catch (e) { allOk = false; lines.push(`${what}: ✗ ${escHtml(e.message)}`); }
+  }
+  if ((a.resolve_on || 'controller') === 'agent')
+    lines.push('Tests resolve the test host on the source agent, which may give a different answer.');
+  div.innerHTML = `<div class="ping-result ${allOk ? 'ping-ok' : 'ping-err'}">${lines.join('<br>')}</div>`;
 }
 
 function addAgent() {
@@ -1381,7 +1544,7 @@ function iperfSvcBadge(a) {
   if (st === 'missing')
     return '<span class="badge badge-reonboard" title="Onboarded before the iPerf3 service existed — tests start a temporary server each time. Re-onboard to install the service.">NEEDS RE-ONBOARD</span>';
   if (st === 'down')
-    return '<span class="badge badge-reonboard" title="The iPerf3 service is installed but not listening — tests will try to restart it. Check: journalctl -u nettest-iperf3@5201">IPERF3 DOWN</span>';
+    return '<span class="badge badge-reonboard" title="The iPerf3 service is installed but not listening — tests will try to restart it. Check: journalctl -u linkstate-iperf3@5201">IPERF3 DOWN</span>';
   return '';
 }
 
@@ -1408,7 +1571,7 @@ async function testAgent(i) {
   const a   = agents[i];
   const div = document.getElementById('agent-ping-' + i);
   const mgmtIp = a.host_mgmt_ip || a.host;
-  if (!mgmtIp) { div.innerHTML = '<div class="ping-result ping-err">No Management IP set</div>'; return; }
+  if (!mgmtIp) { div.innerHTML = '<div class="ping-result ping-err">No Management host set</div>'; return; }
   div.innerHTML = '<div class="ping-result ping-pending">⟳ Testing SSH connectivity to ' + escHtml(mgmtIp) + '...</div>';
   try {
     const res = await apiFetch('/api/config/test-agent', {
@@ -2010,8 +2173,8 @@ function sgCopyToWeek(pathIdx) {
 function renderSSH() {
   loadSSHKeyInfo();
   loadPushKeyAgents();
-  setVal('ssh-user',    sshDefs.username || 'nettest');
-  setVal('ssh-key',     sshDefs.key_file || '~/.ssh/nettest_key');
+  setVal('ssh-user',    sshDefs.username || 'linkstate');
+  setVal('ssh-key',     sshDefs.key_file || '~/.ssh/linkstate_key');
   setVal('ssh-port',    sshDefs.port     || 22);
   setVal('ssh-timeout', sshDefs.timeout  || 30);
 
@@ -2024,8 +2187,8 @@ function renderSSH() {
 
 function collectSSH() {
   sshDefs = {
-    username: getVal('ssh-user')    || 'nettest',
-    key_file: getVal('ssh-key')     || '~/.ssh/nettest_key',
+    username: getVal('ssh-user')    || 'linkstate',
+    key_file: getVal('ssh-key')     || '~/.ssh/linkstate_key',
     port:     parseInt(getVal('ssh-port'))    || 22,
     timeout:  parseInt(getVal('ssh-timeout')) || 30,
   };
@@ -2245,6 +2408,49 @@ function collectTests() {
     },
     iperf3_busy_retry_seconds: parseInt(getVal('tp-busy-retry')) || 10,
   };
+}
+
+// ── Thresholds ─────────────────────────────────────────────
+let _thresholdsWired = false;
+function renderThresholds() {
+  for (const [metric, def] of Object.entries(THRESHOLD_DEFAULTS)) {
+    const t = thresholds[metric] || {};
+    setVal(`th-${metric}-warn`, t.warn ?? def.warn);
+    setVal(`th-${metric}-crit`, t.crit ?? def.crit);
+  }
+  if (_thresholdsWired) return;
+  _thresholdsWired = true;
+  document.querySelectorAll('[id^="th-"]').forEach(el => {
+    el.addEventListener('input', () => { collectThresholds(); markDirty(); });
+  });
+}
+
+function collectThresholds() {
+  const out = {};
+  for (const [metric, def] of Object.entries(THRESHOLD_DEFAULTS)) {
+    const w = parseFloat(getVal(`th-${metric}-warn`));
+    const c = parseFloat(getVal(`th-${metric}-crit`));
+    out[metric] = { warn: isNaN(w) ? def.warn : w, crit: isNaN(c) ? def.crit : c };
+  }
+  thresholds = out;
+}
+
+function thresholdErrors() {
+  const names = { latency_ms:'Latency', packet_loss_pct:'Packet loss', jitter_ms:'Jitter',
+                  throughput_mbps:'Throughput', bufferbloat_ms:'Bufferbloat' };
+  const errs = [];
+  for (const [metric, t] of Object.entries(thresholds)) {
+    if (t.warn < 0 || t.crit < 0) errs.push(`Thresholds: ${names[metric]} can't be negative`);
+    else if (metric === 'throughput_mbps' ? t.crit >= t.warn : t.crit <= t.warn)
+      errs.push(`Thresholds: ${names[metric]} crit must be ${metric === 'throughput_mbps' ? 'lower' : 'higher'} than warn`);
+  }
+  return errs;
+}
+
+function resetThresholds() {
+  thresholds = JSON.parse(JSON.stringify(THRESHOLD_DEFAULTS));
+  renderThresholds();
+  markDirty();
 }
 
 // ── Packages ───────────────────────────────────────────────
@@ -2596,14 +2802,18 @@ async function toggleNginx() {
 
 async function generateCert() {
   const cn     = document.getElementById('https-cn').value.trim();
-  const org    = document.getElementById('https-org').value.trim() || 'NetTest';
+  const org    = document.getElementById('https-org').value.trim() || 'LinkState';
   const days   = parseInt(document.getElementById('https-days').value) || 3650;
   const sanRaw = document.getElementById('https-san').value.trim();
   const status = document.getElementById('https-gen-status');
 
-  if (!cn) { alert('Common Name / IP is required.'); return; }
+  if (!cn) { alert('Common Name is required.'); return; }
 
-  const san_ips = sanRaw ? sanRaw.split(',').map(s => s.trim()).filter(Boolean) : [cn];
+  // Browsers only check the SAN list, so the CN always goes in it too.
+  const san_ips = [cn, ...(sanRaw ? sanRaw.split(',').map(s => s.trim()).filter(Boolean) : [])]
+    .filter((v, i, arr) => arr.indexOf(v) === i);
+  const badSan = san_ips.find(n => hostError(n.startsWith('*.') ? n.slice(2) : n));
+  if (badSan) { alert('Certificate name ' + hostError(badSan.startsWith('*.') ? badSan.slice(2) : badSan)); return; }
 
   status.style.color = 'var(--cy)';
   status.textContent = 'Generating (this may take a few seconds)...';
@@ -2699,7 +2909,7 @@ async function doExport() {
     }
     const blob = await res.blob();
     const cd   = res.headers.get('Content-Disposition') || '';
-    const name = cd.match(/filename=(.+)/)?.[1] || 'nettest-export.tar.gz';
+    const name = cd.match(/filename=(.+)/)?.[1] || 'linkstate-export.tar.gz';
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href = url; a.download = name; a.click();
@@ -2749,7 +2959,7 @@ function renderImportPreview(data) {
     paths:           'Paths',
     controller:      'Controller name/dirs',
     schedule:        'Schedule',
-    test_params:     'Test parameters',
+    test_params:     'Test parameters & thresholds',
     ssh_credentials: 'SSH credentials',
     ssh_keys:        'SSH keys',
     auth:            'Auth/RADIUS',
@@ -2900,6 +3110,9 @@ async function loadUpdateStatus() {
     document.getElementById('upd-current-ver').textContent = 'v' + d.version;
     document.getElementById('upd-changelog').textContent =
       d.changelog || 'No changelog available.';
+    const hint = document.getElementById('upd-migrate-hint');
+    hint.textContent = d.migrate_hint || '';
+    hint.style.display = d.migrate_hint ? '' : 'none';
 
     // Render snapshots
     const snapDiv = document.getElementById('upd-snapshots');
@@ -3083,12 +3296,16 @@ async function saveConfig() {
   collectSchedule();
   collectSSH();
   collectAuth();
+  collectThresholds();
 
   // Validate
-  const errs = [];
+  const errs = thresholdErrors();
   agents.forEach((a, i) => {
     if (!a.id)   errs.push(`Agent ${i+1}: ID is required`);
-    if (!a.host_mgmt_ip && !a.host) errs.push(`Agent ${i+1} (${a.id||'?'}): Management IP is required`);
+    if (!a.host_mgmt_ip && !a.host) errs.push(`Agent ${i+1} (${a.id||'?'}): Management host is required`);
+    else if (hostError(a.host_mgmt_ip || a.host)) errs.push(`Agent ${i+1} (${a.id||'?'}): Management host ${hostError(a.host_mgmt_ip || a.host)}`);
+    if (a.host_test_ip && a.host_test_ip.trim() && hostError(a.host_test_ip))
+      errs.push(`Agent ${i+1} (${a.id||'?'}): Test host ${hostError(a.host_test_ip)}`);
   });
   paths.forEach((p, i) => {
     if (!p.id)          errs.push(`Path ${i+1}: ID is required`);
@@ -3126,6 +3343,7 @@ async function saveConfig() {
         schedule,
         ssh_defaults: sshDefs,
         test_params: testParams,
+        thresholds,
         auth: authSavePayload(),
       }),
     });
@@ -3394,12 +3612,12 @@ boot();
     <div id="wizard-form">
       <div class="wizard-body">
         <div class="form-row">
-          <label>Management IP <span style="color:var(--rd)">*</span></label>
-          <input type="text" id="ob-ip" placeholder="10.0.1.10" title="Controller will SSH to this IP">
+          <label>Management host <span style="color:var(--rd)">*</span></label>
+          <input type="text" id="ob-ip" placeholder="10.0.1.10 or branch-e.example.com" title="IP address or hostname the controller will SSH to">
         </div>
         <div class="form-row">
-          <label>Test IP</label>
-          <input type="text" id="ob-test-ip" placeholder="10.1.1.10 (leave blank to use Management IP)" title="iPerf3 and ping will target this IP">
+          <label>Test host</label>
+          <input type="text" id="ob-test-ip" placeholder="10.1.1.10 or hostname (blank = Management host)" title="IP address or hostname iPerf3 and ping will target">
         </div>
         <div class="form-row">
           <label>Label</label>
@@ -3442,7 +3660,7 @@ boot();
         </div>
         <div style="font-size:11px;color:var(--mt);padding:4px 0" id="ob-help">
           The controller will SSH in with these admin credentials, install tools,
-          create the nettest user, deploy the SSH key, and add the agent to config.
+          create the linkstate user, deploy the SSH key, and add the agent to config.
         </div>
       </div>
       <div class="wizard-footer">
@@ -3497,7 +3715,7 @@ function reonboardAgent(i) {
   document.getElementById('ob-title').textContent = '↻ Re-onboard ' + (a.label || a.id);
   document.getElementById('ob-help').innerHTML =
     'The controller will SSH in with these admin credentials and redo onboarding: ' +
-    'install missing tools and the iPerf3 service, and refresh the nettest user\'s ' +
+    'install missing tools and the iPerf3 service, and refresh the linkstate user\'s ' +
     'SSH key and sudoers. The agent\'s config entry is left as it is. ' +
     'Uses the <b>saved</b> config — save any changes to this agent first.';
   document.getElementById('ob-start').textContent = '▶ Start Re-onboarding';
@@ -3538,7 +3756,9 @@ async function startOnboard() {
   const pass  = document.getElementById('ob-pass').value;
   const port  = parseInt(document.getElementById('ob-port').value) || 22;
 
-  if (!ip)   { alert('Agent IP is required'); return; }
+  if (!ip)   { alert('Management host is required'); return; }
+  if (hostError(ip)) { alert('Management host ' + hostError(ip)); return; }
+  if (test_ip && hostError(test_ip)) { alert('Test host ' + hostError(test_ip)); return; }
   if (!user) { alert('Admin username is required'); return; }
   if (!pass) { alert('Admin password is required'); return; }
 

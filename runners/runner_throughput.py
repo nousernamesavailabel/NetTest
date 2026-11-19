@@ -5,6 +5,7 @@ Runs iPerf3 throughput tests between two agents via SSH.
 
 import json
 import logging
+import shlex
 import time
 
 from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
@@ -17,8 +18,9 @@ logger = logging.getLogger(__name__)
 
 class ThroughputRunner:
 
-    def __init__(self, params: ThroughputParams):
+    def __init__(self, params: ThroughputParams, af: str = ""):
         self.params = params
+        self.af = af
 
     def run(self, src_ssh: SSHManager, dst_ssh,
             dst_host: str,
@@ -107,7 +109,8 @@ class ThroughputRunner:
         port = port or p.iperf3_port
         cmd_parts = [
             "iperf3",
-            f"-c {dst_host}",
+            *([self.af] if self.af else []),
+            f"-c {shlex.quote(dst_host)}",
             f"-p {port}",
             f"-t {p.duration_sec}",
             f"-P {parallel_streams}",

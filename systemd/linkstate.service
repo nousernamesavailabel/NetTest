@@ -1,0 +1,18 @@
+[Unit]
+Description=LinkState Controller Scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=linkstate
+Group=linkstate
+WorkingDirectory=/opt/linkstate
+ExecStart=/opt/linkstate/venv/bin/python /opt/linkstate/main.py --config /opt/linkstate/config/config.yaml
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+

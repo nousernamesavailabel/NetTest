@@ -2,9 +2,9 @@
 host_locks.py
 Serializes iPerf3 tests per host, across threads and processes.
 
-Each host runs one iPerf3 server (the nettest-iperf3@ service, see
+Each host runs one iPerf3 server (the linkstate-iperf3@ service, see
 core/iperf_service.py), which takes one test at a time, and every test's
-cleanup kills the nettest user's iPerf3 clients on its endpoints. Two paths
+cleanup kills the linkstate user's iPerf3 clients on its endpoints. Two paths
 sharing a host (e.g. A→B and B→C) must therefore never run iPerf3 tests at
 the same time; they would also share each other's link capacity.
 
@@ -37,7 +37,7 @@ def _lock_path(host: str) -> str:
 def _open_lock_file(host: str):
     """Open (creating if needed) host's lock file so any user can lock it.
 
-    The services run as `nettest`, but the CLI/TUI may be run by an admin
+    The services run as `linkstate`, but the CLI/TUI may be run by an admin
     user, who would otherwise leave behind a lock dir or file the services
     can't use. flock() needs no write access, so the file is opened
     read-only; the dir is made sticky and world-writable (like /tmp) so any
