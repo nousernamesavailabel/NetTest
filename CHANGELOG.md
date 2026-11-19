@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [2.0.0] - 2026-11-19
 
 ### Added
 - Agents, the onboarding wizard, the RADIUS server and self-signed certificates now accept a hostname or FQDN anywhere an IP address was used, as well as IPv6 addresses. The config fields keep their names (`host_mgmt_ip`, `host_test_ip`), so existing configs work unchanged.
