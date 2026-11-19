@@ -49,3 +49,6 @@ id_ed25519*
 
 # Runtime lock files
 run/
+
+# Uploaded branding images (Config → Branding)
+config/branding/

@@ -5,6 +5,7 @@ for use throughout the controller.
 """
 
 import logging
+import re
 import yaml
 import os
 from dataclasses import dataclass, field
@@ -281,6 +282,66 @@ def parse_thresholds(raw) -> "tuple[Dict[str, Dict[str, float]], List[str]]":
     return out, errors
 
 
+# ── Branding ───────────────────────────────────────────────
+# Per-install look and wording (Config → Branding). Logo and favicon images
+# aren't in config.yaml — they're files in config/branding/ (see
+# core/branding.py), so a bad upload can't break config parsing.
+
+BRANDING_LIMITS = {          # max characters per text field
+    "org_name":      80,
+    "report_footer": 200,
+    "login_banner":  4000,
+}
+_HEX_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+@dataclass
+class Branding:
+    org_name: str = ""            # shown on login page and reports
+    accent_color: str = ""        # "#rrggbb"; blank = default cyan
+    login_banner: str = ""        # notice shown above the login form
+    login_banner_ack: bool = False  # require a tick-box before logging in
+    report_footer: str = ""       # footer line on executive summaries
+
+
+def parse_branding(raw) -> "tuple[Branding, List[str]]":
+    """Build Branding from config.yaml's branding block.
+
+    Returns (branding, errors). Like parse_thresholds, a bad field keeps its
+    default and adds an error; web UI saves reject on any error instead.
+    """
+    out = Branding()
+    errors: List[str] = []
+    if raw is None:
+        return out, errors
+    if not isinstance(raw, dict):
+        return out, ["branding must be a mapping"]
+    for key, val in raw.items():
+        if key in BRANDING_LIMITS:
+            text = "" if val is None else str(val)
+            # Banner keeps its line breaks; single-line fields don't.
+            text = text.strip() if key == "login_banner" else " ".join(text.split())
+            if len(text) > BRANDING_LIMITS[key]:
+                errors.append(f"branding.{key} is longer than "
+                              f"{BRANDING_LIMITS[key]} characters")
+                continue
+            setattr(out, key, text)
+        elif key == "accent_color":
+            text = str(val or "").strip()
+            if text and not _HEX_COLOUR.match(text):
+                errors.append("branding.accent_color must be a colour like #06b6d4")
+                continue
+            out.accent_color = text.lower()
+        elif key == "login_banner_ack":
+            if not isinstance(val, bool):
+                errors.append("branding.login_banner_ack must be true or false")
+                continue
+            out.login_banner_ack = val
+        else:
+            errors.append(f"branding: unknown setting '{key}'")
+    return out, errors
+
+
 @dataclass
 class LocalUser:
     username: str
@@ -321,6 +382,7 @@ class ControllerConfig:
     auth: AuthConfig = field(default_factory=AuthConfig)
     thresholds: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {k: dict(v) for k, v in THRESHOLD_DEFAULTS.items()})
+    branding: Branding = field(default_factory=Branding)
 
     def get_agent(self, agent_id: str) -> Optional[Agent]:
         return next((a for a in self.agents if a.id == agent_id), None)
@@ -475,6 +537,10 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
     for err in threshold_errs:
         logger.warning(f"config: {err} — using the default")
 
+    branding, branding_errs = parse_branding(raw.get("branding"))
+    for err in branding_errs:
+        logger.warning(f"config: {err} — using the default")
+
     ctrl = raw["controller"]
     return ControllerConfig(
         name=ctrl["name"],
@@ -488,4 +554,5 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
         schedule=schedule,
         auth=auth,
         thresholds=thresholds,
+        branding=branding,
     )

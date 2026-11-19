@@ -3,15 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--LS:HEAD-->
 <title>LinkState — Speed Test</title>
 <style>
-:root {
-  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
-  --bdr:#2a3040; --bdr2:#3a4458;
-  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
-  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --cy:#06b6d4; --bl:#3b82f6;
-  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
-}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);font-family:var(--fn);font-size:13px;min-height:100vh}
 a{color:var(--cy);text-decoration:none}
@@ -22,8 +16,6 @@ a:hover{text-decoration:underline}
         padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf);
         position:sticky;top:0;z-index:10}
 .topbar-left{display:flex;align-items:center;gap:14px}
-.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
-.logo span{color:var(--cy)}
 .topbar-right{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--mt)}
 #clock,#clock-local{font-variant-numeric:tabular-nums}
 @media (max-width:480px){#clock-local,#clock-local-sep{display:none}}
@@ -146,7 +138,7 @@ a:hover{text-decoration:underline}
 
   <div class="topbar">
     <div class="topbar-left">
-      <span class="logo">NET<span>TEST</span></span>
+      <!--LS:BRAND-->
       <span style="color:var(--mt);font-size:11px">Speed Test</span>
     </div>
     <div class="topbar-right">

@@ -251,7 +251,7 @@ python tui.py --path branch_a_to_hub
 - **Dashboard** (`/`) — live streaming test output, sparkline trend grid,
   traceroute and MTR hop visualization
 - **Config** (`/config`) — edit agents, paths, schedule, SSH, tests,
-  packages, HTTPS and login (Auth) settings from the browser;
+  thresholds, branding, packages, HTTPS and login (Auth) settings from the browser;
   export/import config as a `.tar.gz` bundle; apply or roll back release
   updates (Updates); turn on timed debug logging (Logging)
 - **Compare** (`/compare`) — side-by-side comparison of past runs
@@ -259,6 +259,11 @@ python tui.py --path branch_a_to_hub
 - Result annotations — attach notes and tags to individual test runs
 - Optional login (RADIUS or local accounts) with session management and
   rate limiting — see [Authentication](#authentication)
+- Branding (Config → Branding) — controller and organization name, logo,
+  favicon, accent colour, a login notice (optionally one users must accept),
+  and a footer line for executive summaries. Settings are in the `branding:`
+  section of `config.yaml`; uploaded images are in `config/branding/`, so
+  upgrades, web updates and rollbacks keep them.
 
 ### Authentication
 
@@ -337,7 +342,8 @@ linkstate/
 ├── requirements.lock          # Exact pins (generated: make_release.sh --lock)
 ├── config/
 │   ├── config.example.yaml   # Sanitized starter config committed to git
-│   └── config.yaml           # Local/private config ignored by git
+│   ├── config.yaml           # Local/private config ignored by git
+│   └── branding/             # Uploaded logo/favicon (Config → Branding)
 ├── core/
 │   ├── config_loader.py      # Loads and validates config.yaml
 │   ├── results.py            # Result dataclasses + local JSON store
@@ -348,6 +354,7 @@ linkstate/
 │   ├── iperf_service.py      # Persistent iPerf3 server checks and restarts
 │   ├── host_locks.py         # Serializes iPerf3 tests per host
 │   ├── radius_auth.py        # RADIUS authentication for the web dashboard
+│   ├── branding.py           # Product/service names; logo + favicon storage
 │   └── agent_packages.py     # Agent packages for air-gapped onboarding
 ├── runners/
 │   ├── runner_throughput.py  # iPerf3 TCP/UDP throughput
@@ -356,7 +363,8 @@ linkstate/
 │   └── runner_traceroute.py  # Traceroute with forward/reverse hop flow
 ├── web/                       # Dashboard static pages (index, config,
 │   │                          # compare, speedtest, login)
-│   └── static/chart.umd.js    # Chart.js, bundled so graphs work offline
+│   └── static/                # chart.umd.js (Chart.js, bundled so graphs
+│                              # work offline) and theme.css (shared colours)
 ├── systemd/                   # linkstate, linkstate-web and linkstate-iperf3@ units
 ├── vendor/                    # Release bundles only (built by make_release.sh)
 │   ├── wheels/                # Python wheels for requirements.lock

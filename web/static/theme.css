@@ -1,0 +1,28 @@
+/*
+ * LinkState shared theme. Every page loads this before its own styles.
+ * The server appends a small override block after it when Config → Branding
+ * sets an accent colour (see web_dashboard._brand_head).
+ */
+:root {
+  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
+  --bdr:#2a3040; --bdr2:#3a4458;
+  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
+  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --bl:#3b82f6;
+  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
+
+  /* Brand accent: links, focus rings, primary buttons, logo highlight.
+     --cy is kept as the name the pages use for it. */
+  --accent:#06b6d4;
+  --accent-bg:#0d1f3c;      /* button / badge fill behind accent text */
+  --accent-bdr:#1a3a5c;     /* button / badge border, hover fill */
+  --cy:var(--accent);
+}
+
+/* Header wordmark / uploaded logo, shared by every page's top bar. */
+.logo{font-size:15px;font-weight:700;letter-spacing:-.5px;color:var(--tx);white-space:nowrap}
+.logo span{color:var(--cy)}
+.brand{display:inline-flex;align-items:center;gap:10px;min-width:0}
+.brand-img{height:22px;max-width:160px;object-fit:contain;display:block}
+.brand-name{color:var(--mt2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:28ch}
+.brand-name:empty{display:none}
+@media (max-width: 640px){ .brand-name{display:none} }

@@ -3,15 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--LS:HEAD-->
 <title>LinkState — Compare Runs</title>
 <script src="/static/chart.umd.js"></script>
 <style>
 :root {
-  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
-  --bdr:#2a3040; --bdr2:#3a4458;
-  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
-  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --cy:#06b6d4; --bl:#3b82f6;
-  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
   /* User-pickable per-run colors — used consistently everywhere Run A / Run B
      is identified (picker cards, hop diff, traceroute meta, chart lines). */
   --run-a:#3b82f6; --run-b:#06b6d4;
@@ -25,8 +21,6 @@ a:hover{text-decoration:underline}
 .topbar{display:flex;align-items:center;justify-content:space-between;
         padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf)}
 .topbar-left{display:flex;align-items:center;gap:14px}
-.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
-.logo span{color:var(--cy)}
 .topbar-right{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--mt)}
 .content{padding:20px;display:flex;flex-direction:column;gap:16px;max-width:1400px;width:100%;margin:0 auto}
 
@@ -91,8 +85,8 @@ details.filters summary:hover{color:var(--tx)}
 .btn:hover{background:var(--surf3);color:var(--tx)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn:disabled:hover{background:transparent;color:var(--mt)}
-.btn-go{background:#0d1f3c;color:var(--cy);border-color:#1a3a5c;font-size:13px;padding:9px 22px}
-.btn-go:hover:not(:disabled){background:#1a3a5c;color:var(--cy)}
+.btn-go{background:var(--accent-bg);color:var(--cy);border-color:var(--accent-bdr);font-size:13px;padding:9px 22px}
+.btn-go:hover:not(:disabled){background:var(--accent-bdr);color:var(--cy)}
 
 .go-row{display:flex;align-items:center;justify-content:center;gap:12px}
 .go-status{font-size:11px;color:var(--mt)}
@@ -172,7 +166,7 @@ table.metrics tr:last-child td{border-bottom:none}
 
   <div class="topbar">
     <div class="topbar-left">
-      <span class="logo">NET<span>TEST</span></span>
+      <!--LS:BRAND-->
       <span style="color:var(--mt);font-size:11px">Compare Runs</span>
     </div>
     <div class="topbar-right">

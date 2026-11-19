@@ -3,15 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--LS:HEAD-->
 <title>LinkState — Config Editor</title>
 <style>
-:root {
-  --bg:#0d0f12; --surf:#151820; --surf2:#1c2130; --surf3:#232b3a;
-  --bdr:#2a3040; --bdr2:#3a4458;
-  --tx:#e2e8f0; --mt:#64748b; --mt2:#94a3b8;
-  --gn:#22c55e; --yw:#eab308; --rd:#ef4444; --cy:#06b6d4; --bl:#3b82f6;
-  --fn:'JetBrains Mono','Fira Mono',Consolas,monospace;
-}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);font-family:var(--fn);font-size:13px;min-height:100vh}
 a{color:var(--cy);text-decoration:none}
@@ -21,8 +15,6 @@ a:hover{text-decoration:underline}
 .shell{display:grid;grid-template-rows:48px 1fr;height:100vh}
 .topbar{display:flex;align-items:center;justify-content:space-between;
         padding:0 20px;border-bottom:1px solid var(--bdr);background:var(--surf)}
-.logo{font-size:15px;font-weight:700;letter-spacing:-.5px}
-.logo span{color:var(--cy)}
 .topbar-right{display:flex;align-items:center;gap:12px;font-size:11px;color:var(--mt)}
 .body{display:grid;grid-template-columns:200px 1fr;overflow:hidden}
 .sidebar{background:var(--surf);border-right:1px solid var(--bdr);padding:12px 0;overflow-y:auto}
@@ -59,24 +51,35 @@ a:hover{text-decoration:underline}
 .badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:700;
        text-transform:uppercase;letter-spacing:.5px}
 .badge-endpoint  {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
-.badge-svi       {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
+.badge-svi       {background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr)}
 .badge-noagent   {background:#1e0d3c;color:#b48ae0;border:1px solid #5a2a9a}
 .badge-reonboard {background:#2a2000;color:var(--yw);border:1px solid #4a3800;cursor:help}
 .badge-on        {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
 .badge-off       {background:var(--surf3);color:var(--mt);border:1px solid var(--bdr2)}
-.badge-source    {background:#0d1f3c;color:var(--cy);border:1px solid #1a3a5c}
+.badge-source    {background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr)}
 .badge-dest      {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
 
 /* ── Form fields ── */
 .form-row{display:grid;grid-template-columns:140px 1fr;align-items:center;gap:10px}
 .form-row.tall{align-items:start;padding-top:4px}
 label{font-size:11px;color:var(--mt2)}
-input,select{background:var(--bg);border:1px solid var(--bdr2);border-radius:4px;
+input,select,textarea{background:var(--bg);border:1px solid var(--bdr2);border-radius:4px;
              color:var(--tx);font-family:var(--fn);font-size:12px;
              padding:6px 10px;width:100%;outline:none;transition:border-color .15s}
-input:focus,select:focus{border-color:var(--cy)}
+input:focus,select:focus,textarea:focus{border-color:var(--cy)}
+textarea{resize:vertical;line-height:1.5}
 input.err{border-color:var(--rd)}
 select option{background:var(--bg)}
+
+/* ── Branding ── */
+.brand-asset{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.brand-preview{display:grid;place-items:center;min-width:72px;height:40px;padding:4px 8px;
+               background:var(--bg);border:1px dashed var(--bdr2);border-radius:4px;
+               color:var(--mt);font-size:10px}
+.brand-preview img{max-height:30px;max-width:180px;object-fit:contain;display:block}
+.brand-preview.fav img{width:24px;height:24px}
+.brand-hint{font-size:10px;color:var(--mt);font-weight:400;margin-top:2px}
+.brand-warn{font-size:11px;color:var(--yw)}
 
 /* ── Checkboxes (test type toggles) ── */
 .test-toggles{display:flex;flex-wrap:wrap;gap:6px}
@@ -121,8 +124,8 @@ select option{background:var(--bg)}
 .btn{display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:4px;
      font-size:11px;font-family:var(--fn);cursor:pointer;border:1px solid var(--bdr2);
      transition:all .15s;white-space:nowrap}
-.btn-primary{background:#0d1f3c;color:var(--cy);border-color:#1a3a5c}
-.btn-primary:hover{background:#1a3a5c}
+.btn-primary{background:var(--accent-bg);color:var(--cy);border-color:var(--accent-bdr)}
+.btn-primary:hover{background:var(--accent-bdr)}
 .btn-success{background:#0f3320;color:var(--gn);border-color:#1a4d30}
 .btn-success:hover{background:#1a4d30}
 .btn-danger{background:#2a0a0a;color:var(--rd);border-color:#4d1a1a}
@@ -152,7 +155,7 @@ select option{background:var(--bg)}
            background:var(--surf2);color:var(--mt);font-size:11px;cursor:pointer;
            font-family:var(--fn);transition:all .15s}
 .sg-daytab:hover{color:var(--tx)}
-.sg-daytab.active{background:#0d1f3c;border-color:var(--cy);color:var(--cy)}
+.sg-daytab.active{background:var(--accent-bg);border-color:var(--cy);color:var(--cy)}
 .sg-wrap{overflow-x:auto;padding-bottom:4px}
 .sg-grid{display:grid;grid-template-columns:220px repeat(48,minmax(11px,1fr));
          min-width:960px;user-select:none;row-gap:2px}
@@ -220,7 +223,7 @@ select option{background:var(--bg)}
 <!-- Topbar -->
 <div class="topbar">
   <div style="display:flex;align-items:center;gap:16px">
-    <span class="logo">NET<span>TEST</span></span>
+    <!--LS:BRAND-->
     <span style="color:var(--bdr2)">|</span>
     <span style="color:var(--mt);font-size:12px">Config Editor</span>
   </div>
@@ -254,6 +257,9 @@ select option{background:var(--bg)}
     </div>
     <div class="tab" onclick="showSection('thresholds',this)">
       <span class="tab-icon">◐</span> Thresholds
+    </div>
+    <div class="tab" onclick="showSection('branding',this)">
+      <span class="tab-icon">◆</span> Branding
     </div>
     <div class="tab" onclick="showSection('packages',this)">
       <span class="tab-icon">📦</span> Packages
@@ -741,6 +747,133 @@ select option{background:var(--bg)}
     </div>
 
 
+    <!-- ── Branding ── -->
+    <div class="section" id="section-branding">
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Identity</span>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label for="br-controller-name">Controller name
+              <div class="brand-hint">Header, browser tab, reports</div>
+            </label>
+            <input type="text" id="br-controller-name" maxlength="80" placeholder="e.g. Guam DC">
+          </div>
+          <div class="form-row">
+            <label for="br-org-name">Organization
+              <div class="brand-hint">Login page, reports</div>
+            </label>
+            <input type="text" id="br-org-name" maxlength="80" placeholder="e.g. Acme Corp NOC">
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Logo &amp; Favicon</span>
+          <span style="font-size:11px;color:var(--mt)">Applied as soon as they're uploaded</span>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label>Logo
+              <div class="brand-hint">PNG, JPG, GIF, WebP or SVG, up to 512 KB. Replaces the LinkState wordmark.</div>
+            </label>
+            <div class="brand-asset">
+              <div class="brand-preview" id="br-logo-preview">None</div>
+              <button class="btn" onclick="document.getElementById('br-logo-file').click()">Upload…</button>
+              <button class="btn btn-danger" id="br-logo-remove" onclick="removeBrandAsset('logo')">Remove</button>
+              <input type="file" id="br-logo-file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,.svg"
+                     style="display:none" onchange="uploadBrandAsset('logo', this)">
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Favicon
+              <div class="brand-hint">PNG, ICO, GIF or SVG, up to 128 KB. Square works best.</div>
+            </label>
+            <div class="brand-asset">
+              <div class="brand-preview fav" id="br-favicon-preview">None</div>
+              <button class="btn" onclick="document.getElementById('br-favicon-file').click()">Upload…</button>
+              <button class="btn btn-danger" id="br-favicon-remove" onclick="removeBrandAsset('favicon')">Remove</button>
+              <input type="file" id="br-favicon-file" accept="image/png,image/x-icon,image/vnd.microsoft.icon,image/gif,image/svg+xml,.ico,.svg"
+                     style="display:none" onchange="uploadBrandAsset('favicon', this)">
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--mt)">
+            The logo appears on the dark dashboard header and on white printed reports, so pick one
+            that reads on both.
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Accent Colour</span>
+          <button class="btn btn-ghost" style="font-size:10px;padding:3px 8px" onclick="resetAccent()">↺ Default</button>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label for="br-accent-text">Accent
+              <div class="brand-hint">Links, buttons, highlights. Status colours don't change.</div>
+            </label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <input type="color" id="br-accent-picker" style="width:44px;height:30px;padding:2px">
+              <input type="text" id="br-accent-text" maxlength="7" placeholder="#06b6d4" style="width:110px">
+              <button class="btn btn-primary" tabindex="-1" style="pointer-events:none">Preview</button>
+              <a href="#" onclick="return false" style="font-size:11px">Sample link</a>
+            </div>
+          </div>
+          <div class="brand-warn" id="br-accent-warn" style="display:none"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Login Notice</span>
+        </div>
+        <div class="panel-body">
+          <div style="font-size:11px;color:var(--mt)">
+            Shown above the login form, e.g. an authorized-use or monitoring consent banner.
+            Only appears when a login method is enabled under Auth.
+          </div>
+          <div class="form-row tall">
+            <label for="br-login-banner">Notice text
+              <div class="brand-hint">Plain text, line breaks kept. Up to 4000 characters.</div>
+            </label>
+            <textarea id="br-login-banner" rows="6" maxlength="4000"
+              placeholder="You are accessing a private information system. Usage may be monitored, recorded and audited…"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="br-login-ack">Require acceptance</label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="br-login-ack" style="width:auto;accent-color:var(--cy)">
+              <span>Users must tick “I accept” before they can log in</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Reports</span>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <label for="br-report-footer">Footer line
+              <div class="brand-hint">Printed at the end of executive summaries</div>
+            </label>
+            <input type="text" id="br-report-footer" maxlength="200" placeholder="e.g. Acme Corp — Internal use only">
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size:11px;color:var(--mt);padding:0 2px">
+        Text and colour changes apply after <strong>Save</strong>; reload open pages to see them.
+      </div>
+    </div>
+
+
     <!-- ── Packages ── -->
     <div class="section" id="section-packages">
 
@@ -898,7 +1031,7 @@ select option{background:var(--bg)}
             ⚠ RADIUS isn't fully configured yet — enter the server and shared secret under
             RADIUS Server below.
           </div>
-          <div id="auth-fallback-note" style="display:none;background:#0d1f3c;border:1px solid #1a3a5c;
+          <div id="auth-fallback-note" style="display:none;background:var(--accent-bg);border:1px solid var(--accent-bdr);
                       border-radius:4px;padding:8px 12px;font-size:11px;color:#5bc4f5;margin-top:10px">
             ℹ If the RADIUS server can't be reached at login time, any account listed below
             under Local Users is used as an automatic fallback login.
@@ -1298,6 +1431,10 @@ const THRESHOLD_DEFAULTS = {
 };
 let authConfig     = {};
 let authLocalUsers = [];
+let controllerName = '';
+let brandingCfg    = {};
+let brandingAssets = {};
+const DEFAULT_ACCENT = '#06b6d4';
 
 const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu','traceroute'];
 const SVI_TESTS  = ['latency','mtu','traceroute'];   // tests supported by switch_router agents
@@ -1331,6 +1468,9 @@ async function loadConfig() {
     testParams = raw.test_params || {};
     thresholds = raw.thresholds  || {};
     authConfig     = raw.auth || {};
+    controllerName = (raw.controller || {}).name || '';
+    brandingCfg    = raw.branding || {};
+    brandingAssets = raw.branding_assets || {};
     authLocalUsers = (authConfig.local_users || []).map(u => ({ username: u.username }));
     renderAll();
     setStatus('');
@@ -1362,6 +1502,7 @@ function renderAll() {
   renderSSH();
   renderTests();
   renderThresholds();
+  renderBranding();
   renderAuth();
 }
 
@@ -1667,7 +1808,7 @@ function renderPathCard(i) {
 
         <!-- Flow preview -->
         <div class="path-flow">
-          <div class="path-node badge-source" style="background:#0d1f3c;border:1px solid #1a3a5c;border-radius:4px;padding:4px 10px">
+          <div class="path-node badge-source" style="background:var(--accent-bg);border:1px solid var(--accent-bdr);border-radius:4px;padding:4px 10px">
             ${escHtml(srcLabel)}
           </div>
           <div class="path-arrow">→</div>
@@ -2453,6 +2594,143 @@ function resetThresholds() {
   markDirty();
 }
 
+// ── Branding ───────────────────────────────────────────────
+let _brandingWired = false;
+function renderBranding() {
+  setVal('br-controller-name', controllerName);
+  setVal('br-org-name',        brandingCfg.org_name || '');
+  setVal('br-login-banner',    brandingCfg.login_banner || '');
+  setVal('br-report-footer',   brandingCfg.report_footer || '');
+  document.getElementById('br-login-ack').checked = !!brandingCfg.login_banner_ack;
+  setAccentInputs(brandingCfg.accent_color || '');
+  renderBrandAssets();
+  if (_brandingWired) return;
+  _brandingWired = true;
+  ['br-controller-name','br-org-name','br-login-banner','br-report-footer','br-login-ack'].forEach(id => {
+    document.getElementById(id).addEventListener('input',  () => { collectBranding(); markDirty(); });
+    document.getElementById(id).addEventListener('change', () => { collectBranding(); markDirty(); });
+  });
+  document.getElementById('br-accent-picker').addEventListener('input', e => {
+    setAccentInputs(e.target.value); collectBranding(); markDirty();
+  });
+  document.getElementById('br-accent-text').addEventListener('input', e => {
+    const v = e.target.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) setAccentInputs(v, true);
+    else previewAccent(null);
+    collectBranding(); markDirty();
+  });
+}
+
+// keepText: don't rewrite the text box while the user is typing in it.
+function setAccentInputs(hex, keepText) {
+  const v = (hex || '').toLowerCase();
+  document.getElementById('br-accent-picker').value = v || DEFAULT_ACCENT;
+  if (!keepText) setVal('br-accent-text', v);
+  previewAccent(v || DEFAULT_ACCENT);
+}
+
+// Live preview on this page. Saved colours reach other pages after Save.
+function previewAccent(hex) {
+  const warn = document.getElementById('br-accent-warn');
+  const root = document.documentElement.style;
+  if (!hex) { warn.style.display = 'none'; return; }
+  if (hex === DEFAULT_ACCENT) {
+    root.setProperty('--accent', DEFAULT_ACCENT);
+    root.setProperty('--accent-bg', '#0d1f3c');
+    root.setProperty('--accent-bdr', '#1a3a5c');
+  } else {
+    root.setProperty('--accent', hex);
+    root.setProperty('--accent-bg', 'color-mix(in srgb,var(--accent) 16%,#0b0d11)');
+    root.setProperty('--accent-bdr', 'color-mix(in srgb,var(--accent) 35%,#0b0d11)');
+  }
+  // Accent is used for text on the dark background, so check it stays legible.
+  const ratio = contrastRatio(hex, '#0d0f12');
+  if (ratio < 4.5) {
+    warn.textContent = `⚠ This colour is hard to read on the dark background (contrast ${ratio.toFixed(1)}:1, aim for at least 4.5:1). Try a lighter shade.`;
+    warn.style.display = 'block';
+  } else {
+    warn.style.display = 'none';
+  }
+}
+
+function contrastRatio(a, b) {
+  const lum = hex => {
+    const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map(v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const [l1, l2] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (l1 + 0.05) / (l2 + 0.05);
+}
+
+function resetAccent() {
+  setAccentInputs('');
+  collectBranding();
+  markDirty();
+}
+
+function collectBranding() {
+  controllerName = getVal('br-controller-name');
+  brandingCfg = {
+    org_name:         getVal('br-org-name'),
+    accent_color:     getVal('br-accent-text').toLowerCase(),
+    login_banner:     document.getElementById('br-login-banner').value.trim(),
+    login_banner_ack: document.getElementById('br-login-ack').checked,
+    report_footer:    getVal('br-report-footer'),
+  };
+}
+
+function brandingErrors() {
+  const errs = [];
+  if (!controllerName) errs.push('Branding: Controller name is required');
+  const a = brandingCfg.accent_color;
+  if (a && !/^#[0-9a-f]{6}$/.test(a)) errs.push('Branding: Accent must be a colour like #06b6d4');
+  if (brandingCfg.login_banner_ack && !brandingCfg.login_banner)
+    errs.push('Branding: Enter notice text, or turn off "Require acceptance"');
+  return errs;
+}
+
+function renderBrandAssets() {
+  for (const kind of ['logo', 'favicon']) {
+    const url = brandingAssets[kind];
+    const box = document.getElementById(`br-${kind}-preview`);
+    box.innerHTML = url ? `<img src="${escHtml(url)}" alt="${kind}">` : 'None';
+    document.getElementById(`br-${kind}-remove`).style.display = url ? '' : 'none';
+  }
+}
+
+async function uploadBrandAsset(kind, input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch(`/api/branding/${kind}`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || res.statusText);
+    brandingAssets[kind] = data.url;
+    renderBrandAssets();
+    toast(`${kind === 'logo' ? 'Logo' : 'Favicon'} uploaded ✓ — reload pages to see it`, 'ok');
+  } catch (e) {
+    toast(`Upload failed: ${e.message}`, 'err');
+  }
+}
+
+async function removeBrandAsset(kind) {
+  if (!confirm(`Remove the custom ${kind}?`)) return;
+  try {
+    const res = await fetch(`/api/branding/${kind}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || res.statusText);
+    brandingAssets[kind] = null;
+    renderBrandAssets();
+    toast(`${kind === 'logo' ? 'Logo' : 'Favicon'} removed`, 'ok');
+  } catch (e) {
+    toast(`Remove failed: ${e.message}`, 'err');
+  }
+}
+
 // ── Packages ───────────────────────────────────────────────
 async function loadPackages() {
   const list = document.getElementById('pkg-list');
@@ -2999,14 +3277,14 @@ function renderImportPreview(data) {
         ${data.agent_diff.map(a => `
           <tr style="border-bottom:1px solid var(--bdr)">
             <td style="padding:4px 8px;width:24px">
-              <span style="color:${a.status==='new'?'var(--gn)':'var(--ye)'}">
+              <span style="color:${a.status==='new'?'var(--gn)':'var(--yw)'}">
                 ${a.status==='new'?'＋':'≈'}
               </span>
             </td>
             <td style="padding:4px 8px">${escHtml(a.label)}</td>
             <td style="padding:4px 8px;color:var(--mt);font-family:monospace;font-size:10px">${escHtml(a.host)}</td>
             <td style="padding:4px 8px;color:var(--mt)">${escHtml(a.type)}</td>
-            <td style="padding:4px 8px;color:${a.status==='new'?'var(--gn)':'var(--ye)'};font-size:10px">
+            <td style="padding:4px 8px;color:${a.status==='new'?'var(--gn)':'var(--yw)'};font-size:10px">
               ${a.status==='new'?'will add':'already exists'}
             </td>
           </tr>`).join('')}
@@ -3026,7 +3304,7 @@ function renderImportPreview(data) {
         ${data.path_diff.map(p => `
           <tr style="border-bottom:1px solid var(--bdr)">
             <td style="padding:4px 8px;width:24px">
-              <span style="color:${p.status==='new'?'var(--gn)':'var(--ye)'}">
+              <span style="color:${p.status==='new'?'var(--gn)':'var(--yw)'}">
                 ${p.status==='new'?'＋':'≈'}
               </span>
             </td>
@@ -3034,7 +3312,7 @@ function renderImportPreview(data) {
             <td style="padding:4px 8px;color:var(--mt);font-size:10px">
               ${escHtml(p.source)} → ${escHtml(p.dest)}
             </td>
-            <td style="padding:4px 8px;color:${p.status==='new'?'var(--gn)':'var(--ye)'};font-size:10px">
+            <td style="padding:4px 8px;color:${p.status==='new'?'var(--gn)':'var(--yw)'};font-size:10px">
               ${p.status==='new'?'will add':'already exists'}
             </td>
           </tr>`).join('')}
@@ -3127,7 +3405,7 @@ async function loadUpdateStatus() {
             <span style="font-size:12px;font-family:monospace">v${escHtml(s.version)}</span>
             <span style="font-size:10px;color:var(--mt);margin-left:8px">${escHtml(s.name)}</span>
           </div>
-          <button class="btn" style="font-size:11px;color:var(--ye);border-color:var(--ye)"
+          <button class="btn" style="font-size:11px;color:var(--yw);border-color:var(--yw)"
                   onclick="doRollback('${escHtml(s.name)}', this)">
             ↩ Rollback
           </button>
@@ -3297,9 +3575,10 @@ async function saveConfig() {
   collectSSH();
   collectAuth();
   collectThresholds();
+  collectBranding();
 
   // Validate
-  const errs = thresholdErrors();
+  const errs = [...thresholdErrors(), ...brandingErrors()];
   agents.forEach((a, i) => {
     if (!a.id)   errs.push(`Agent ${i+1}: ID is required`);
     if (!a.host_mgmt_ip && !a.host) errs.push(`Agent ${i+1} (${a.id||'?'}): Management host is required`);
@@ -3344,6 +3623,8 @@ async function saveConfig() {
         ssh_defaults: sshDefs,
         test_params: testParams,
         thresholds,
+        branding: brandingCfg,
+        controller: { name: controllerName },
         auth: authSavePayload(),
       }),
     });
@@ -3674,7 +3955,7 @@ boot();
       <div class="wizard-body">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
           <span style="font-size:12px;font-weight:700" id="ob-progress-label">Onboarding...</span>
-          <span class="log-badge" id="ob-status-badge" style="font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--border)">running</span>
+          <span class="log-badge" id="ob-status-badge" style="font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--bdr)">running</span>
         </div>
         <div class="wizard-log" id="ob-log">
           <div class="wlog-dim">Connecting to agent...</div>

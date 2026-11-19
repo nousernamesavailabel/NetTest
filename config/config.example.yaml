@@ -8,7 +8,9 @@
 
 # ── Controller ─────────────────────────────────────────────
 controller:
-  # Display name shown in the web dashboard header
+  # This controller's name, shown in the dashboard header, browser tab
+  # titles and executive summaries — e.g. "Guam DC" or "HQ Lab". Also
+  # editable under Config → Branding.
   name: "LinkState Controller"
 
   # Directory for test result files (JSONL, one file per day)
@@ -320,6 +322,34 @@ thresholds:
   jitter_ms:       { warn: 5,  crit: 20 }
   throughput_mbps: { warn: 10, crit: 2 }
   bufferbloat_ms:  { warn: 30, crit: 100 }   # added latency under load
+
+
+# ── Branding ────────────────────────────────────────────────
+# Optional. Also editable under Config → Branding in the web UI. Leave the
+# section out (or any setting blank) for the default LinkState look.
+#
+# The logo and favicon aren't set here: upload them under Config → Branding.
+# They're stored in config/branding/, which upgrades leave alone.
+#
+# branding:
+#   # Organization name, shown on the login page and executive summaries
+#   org_name: "Acme Corp NOC"
+#
+#   # Accent colour for links, buttons and highlights (#rrggbb).
+#   # Status colours (green/amber/red) don't change.
+#   accent_color: "#06b6d4"
+#
+#   # Notice shown above the login form (only when a login method is set
+#   # under auth). Line breaks are kept.
+#   login_banner: |
+#     You are accessing a private information system.
+#     Use may be monitored, recorded and audited.
+#
+#   # true = users must tick "I accept" before they can log in
+#   login_banner_ack: false
+#
+#   # Footer line printed at the end of executive summaries
+#   report_footer: "Acme Corp — Internal use only"
 
 
 # ── Schedule ────────────────────────────────────────────────

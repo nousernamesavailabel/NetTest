@@ -11,10 +11,12 @@ Usage:
 """
 
 import argparse
+import html as _html
 import ipaddress
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import collections
@@ -22,14 +24,15 @@ import secrets
 import threading
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import replace, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
-from flask import Flask, jsonify, send_from_directory, request, Response, session, redirect, url_for, stream_with_context
+from flask import Flask, jsonify, send_from_directory, send_file, abort, request, Response, session, redirect, url_for, stream_with_context
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core.config_loader import load_config, agent_host_errors, parse_thresholds, THRESHOLD_DEFAULTS
+from core.config_loader import (load_config, agent_host_errors, parse_thresholds, THRESHOLD_DEFAULTS,
+                                parse_branding, Branding)
 from core.hostaddr import validate_host, resolve_all, is_ip, HostResolutionError
 from core.results import ResultStore
 from core.path_tester import PathTester
@@ -2256,7 +2259,8 @@ def live_output_page():
                 "font-family:monospace;padding:40px;font-size:14px'>"
                 "Not authenticated. Log in to the dashboard first.</body></html>"), 401
     job_id = request.args.get("job_id", "")
-    return _render_live_page(job_id)
+    # The live page has its own colours, so it only gets the title and favicon.
+    return _apply_branding(_render_live_page(job_id), "Live Output", theme=False)
 
 
 def _render_live_page(job_id: str) -> str:
@@ -2265,7 +2269,8 @@ def _render_live_page(job_id: str) -> str:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>LinkState — Live Output</title>
+  <title>Live Output</title>
+<!--LS:HEAD-->
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:#0a0c10;color:#c8cdd6;font-family:'Menlo','Consolas',monospace;
@@ -3056,6 +3061,8 @@ def api_config_get():
         ssh['password_set'] = bool(ssh.pop('password'))
     # Effective values (defaults filled in) so the Thresholds tab is never blank.
     raw['thresholds'] = _config.thresholds if _config else parse_thresholds(raw.get('thresholds'))[0]
+    raw['branding'] = asdict(_config.branding if _config else parse_branding(raw.get('branding'))[0])
+    raw['branding_assets'] = {k: branding.asset_url(k) for k in branding.ASSET_KINDS}
     return jsonify(raw)
 
 
@@ -3114,6 +3121,24 @@ def api_config_save():
         if errs:
             return jsonify({'error': 'Invalid thresholds: ' + '; '.join(errs)})
         raw['thresholds'] = thresholds
+    if 'branding' in body:
+        brand, errs = parse_branding(body['branding'])
+        if errs:
+            return jsonify({'error': 'Invalid branding: ' + '; '.join(errs)})
+        # Only non-default values, so config.yaml stays as before for anyone
+        # not using branding.
+        kept = {k: v for k, v in asdict(brand).items() if v not in ('', False)}
+        if kept:
+            raw['branding'] = kept
+        else:
+            raw.pop('branding', None)
+    if 'controller' in body:
+        name = ' '.join(str((body['controller'] or {}).get('name') or '').split())
+        if not name:
+            return jsonify({'error': 'Controller name is required'})
+        if len(name) > 80:
+            return jsonify({'error': 'Controller name is longer than 80 characters'})
+        raw['controller']['name'] = name
 
     if 'auth' in body:
         raw.setdefault('auth', {})
@@ -3594,12 +3619,16 @@ def login():
         return redirect(request.args.get("next", "/"))
 
     error = ""
+    brand = _config.branding
+    must_ack = bool(brand.login_banner and brand.login_banner_ack)
     if request.method == "POST":
         ip       = request.remote_addr
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         allowed, wait = _check_rate_limit(ip)
-        if not allowed:
+        if must_ack and request.form.get("ack") != "1":
+            error = "You must accept the notice to log in."
+        elif not allowed:
             error = f"Too many failed attempts. Try again in {wait}s."
         elif not username or not password:
             error = "Username and password are required."
@@ -3649,12 +3678,27 @@ def login():
             except Exception as e:
                 error = f"Authentication error: {e}"
 
-    next_url = request.args.get("next", "/")
-    html = open(os.path.join(STATIC_DIR, "login.html")).read()
-    html = html.replace("{{next}}", next_url)
-    html = html.replace("{{csrf_token}}", secrets.token_hex(16))
-    html = html.replace("{{error}}", error)
-    return html
+    esc = _html.escape
+    next_url = request.values.get("next", "/")
+    banner = ack = powered = ""
+    if brand.login_banner:
+        banner = f'<div class="banner" role="note">{esc(brand.login_banner)}</div>'
+    if must_ack:
+        ack = ('<label class="ack"><input type="checkbox" name="ack" value="1" required>'
+               '<span>I have read and accept the notice above</span></label>')
+    if brand.org_name or branding.asset_url("logo"):
+        powered = f'<div class="powered">Powered by {branding.PRODUCT}</div>'
+    # Filled before _apply_branding, so a {{...}} typed into a branding field
+    # is never mistaken for a placeholder.
+    page = open(os.path.join(STATIC_DIR, "login.html"), encoding="utf-8").read()
+    for key, val in (("next", esc(next_url)),
+                     ("csrf_token", secrets.token_hex(16)),
+                     ("error", esc(error)),
+                     ("sub", esc(brand.org_name or "Sign in to continue")),
+                     ("login_class", " has-banner" if banner else ""),
+                     ("banner", banner), ("ack", ack), ("powered", powered)):
+        page = page.replace("{{" + key + "}}", val)
+    return _html_response(_apply_branding(page, "Log In"))
 
 
 @app.route("/logout")
@@ -3663,30 +3707,153 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ── Branding ───────────────────────────────────────────────
+# Pages carry two markers the server fills in: <!--LS:HEAD--> (shared theme
+# stylesheet, accent override, favicon, window.LS_BRAND) and <!--LS:BRAND-->
+# (header logo + controller name). Their <title> is replaced too.
+
+# Names config.example.yaml has shipped with — not worth showing next to the
+# LinkState wordmark, which already says it.
+_DEFAULT_CONTROLLER_NAMES = {"linkstate controller", "nettest controller"}
+
+
+def _controller_name() -> str:
+    name = (_config.name if _config else "") or ""
+    return "" if name.strip().lower() in _DEFAULT_CONTROLLER_NAMES else name.strip()
+
+
+def _brand_head(theme: bool = True) -> str:
+    brand = _config.branding if _config else Branding()
+    parts = []
+    if theme:
+        try:
+            ver = int(os.path.getmtime(os.path.join(STATIC_DIR, "static", "theme.css")))
+        except OSError:
+            ver = 0
+        parts.append(f'<link rel="stylesheet" href="/static/theme.css?v={ver}">')
+        if brand.accent_color:
+            # Button/badge fills are the accent blended into the page
+            # background, so any accent gets matching ones.
+            parts.append(
+                "<style>:root{"
+                f"--accent:{brand.accent_color};"
+                "--accent-bg:color-mix(in srgb,var(--accent) 16%,#0b0d11);"
+                "--accent-bdr:color-mix(in srgb,var(--accent) 35%,#0b0d11)"
+                "}</style>")
+    favicon = branding.asset_url("favicon")
+    if favicon:
+        parts.append(f'<link rel="icon" href="{favicon}">')
+    info = {
+        "product":         branding.PRODUCT,
+        "controller_name": _controller_name(),
+        "org_name":        brand.org_name,
+        "report_footer":   brand.report_footer,
+        "logo_url":        branding.asset_url("logo"),
+    }
+    # "<" escaped so no value can close the <script> element.
+    parts.append("<script>window.LS_BRAND=" +
+                 json.dumps(info).replace("<", "\\u003c") + ";</script>")
+    return "\n".join(parts)
+
+
+def _brand_html() -> str:
+    esc = _html.escape
+    brand = _config.branding if _config else Branding()
+    logo = branding.asset_url("logo")
+    if logo:
+        alt = brand.org_name or branding.PRODUCT
+        mark = f'<img class="brand-img" src="{logo}" alt="{esc(alt)}">'
+    else:
+        mark = '<span class="logo">Link<span>State</span></span>'
+    name = _controller_name()
+    return (f'<span class="brand">{mark}'
+            f'<span class="brand-name" title="{esc(name)}">{esc(name)}</span></span>')
+
+
+def _apply_branding(page: str, title: str, theme: bool = True) -> str:
+    name = _controller_name() or branding.PRODUCT
+    page = page.replace("<!--LS:HEAD-->", _brand_head(theme), 1)
+    page = page.replace("<!--LS:BRAND-->", _brand_html(), 1)
+    return re.sub(r"<title>.*?</title>",
+                  lambda _m: f"<title>{_html.escape(f'{title} — {name}')}</title>",
+                  page, count=1, flags=re.S)
+
+
+def _html_response(page: str) -> Response:
+    # Branding changes take effect on the next load, so don't let browsers
+    # reuse a cached copy without asking.
+    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-cache"})
+
+
+def _render_page(filename: str, title: str) -> Response:
+    with open(os.path.join(STATIC_DIR, filename), encoding="utf-8") as f:
+        return _html_response(_apply_branding(f.read(), title))
+
+
+@app.route("/branding/<kind>")
+def serve_brand_asset(kind):
+    # Not behind login: the login page shows the logo and favicon.
+    found = branding.find_asset(kind)
+    if not found:
+        abort(404)
+    path, ext, _mtime = found
+    # URLs carry ?v=<mtime>, so a long cache lifetime is safe.
+    resp = send_file(path, mimetype=branding.ASSET_MIMETYPES[ext], max_age=30 * 86400)
+    # An SVG opened directly is a document that could run script — this
+    # stops it. (Inside <img>, browsers never run SVG script anyway.)
+    resp.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@app.route("/api/branding/<kind>", methods=["POST"])
+@login_required
+def api_branding_upload(kind):
+    if kind not in branding.ASSET_KINDS:
+        return jsonify({"error": f"Unknown asset '{kind}'"}), 404
+    upload = request.files.get("file")
+    if not upload:
+        return jsonify({"error": "No file uploaded"})
+    data = upload.read(branding.ASSET_KINDS[kind]["max_bytes"] + 1)
+    err = branding.save_asset(kind, data)
+    if err:
+        return jsonify({"error": err})
+    return jsonify({"ok": True, "url": branding.asset_url(kind)})
+
+
+@app.route("/api/branding/<kind>", methods=["DELETE"])
+@login_required
+def api_branding_delete(kind):
+    if kind not in branding.ASSET_KINDS:
+        return jsonify({"error": f"Unknown asset '{kind}'"}), 404
+    branding.delete_asset(kind)
+    return jsonify({"ok": True})
+
+
 # ── Serve HTML ─────────────────────────────────────────────
 
 @app.route("/")
 @login_required
 def serve_dashboard():
-    return send_from_directory(STATIC_DIR, "index.html")
+    return _render_page("index.html", "Network Monitor")
 
 
 @app.route("/config")
 @login_required
 def serve_config_page():
-    return send_from_directory(STATIC_DIR, "config.html")
+    return _render_page("config.html", "Config Editor")
 
 
 @app.route("/compare")
 @login_required
 def serve_compare_page():
-    return send_from_directory(STATIC_DIR, "compare.html")
+    return _render_page("compare.html", "Compare Runs")
 
 
 @app.route("/speedtest")
 @login_required
 def serve_speedtest_page():
-    return send_from_directory(STATIC_DIR, "speedtest.html")
+    return _render_page("speedtest.html", "Speed Test")
 
 
 # ── Entry point (flask dev server only — use gunicorn in prod) ─

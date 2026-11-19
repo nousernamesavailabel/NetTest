@@ -3,150 +3,134 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--LS:HEAD-->
 <title>LinkState — Network Monitor</title>
 <script src="/static/chart.umd.js"></script>
 <style>
-  :root {
-    --bg:        #0d0f12;
-    --surface:   #151820;
-    --surface2:  #1c2130;
-    --border:    #2a3040;
-    --border2:   #3a4458;
-    --text:      #e2e8f0;
-    --muted:     #64748b;
-    --green:     #22c55e;
-    --yellow:    #eab308;
-    --red:       #ef4444;
-    --blue:      #3b82f6;
-    --cyan:      #06b6d4;
-    --font:      'JetBrains Mono', 'Fira Mono', 'Consolas', monospace;
-  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: var(--font);
+  body { background: var(--bg); color: var(--tx); font-family: var(--fn);
          font-size: 13px; line-height: 1.5; min-height: 100vh; }
 
   /* ── Layout ── */
   .shell { display: grid; grid-template-rows: 48px 1fr; height: 100vh; }
   .topbar { display: flex; align-items: center; justify-content: space-between;
-            padding: 0 20px; border-bottom: 1px solid var(--border);
-            background: var(--surface); }
+            padding: 0 20px; border-bottom: 1px solid var(--bdr);
+            background: var(--surf); }
   .topbar-left { display: flex; align-items: center; gap: 16px; }
-  .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.5px; color: var(--text); }
-  .logo span { color: var(--cyan); }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green);
-                box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gn);
+                box-shadow: 0 0 6px var(--gn); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-  .topbar-right { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; }
+  .topbar-right { display: flex; align-items: center; gap: 12px; color: var(--mt); font-size: 11px; }
   #clock { font-variant-numeric: tabular-nums; }
 
   .main { display: grid; grid-template-columns: 220px 1fr 340px; overflow: hidden; }
-  .sidebar { border-right: 1px solid var(--border); overflow-y: auto;
-             background: var(--surface); padding: 12px 0; }
+  .sidebar { border-right: 1px solid var(--bdr); overflow-y: auto;
+             background: var(--surf); padding: 12px 0; }
   .content { overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
 
   /* ── Sidebar ── */
   .sidebar-section { padding: 4px 0 8px; }
   .sidebar-label { font-size: 10px; font-weight: 700; letter-spacing: 1px;
-                   color: var(--muted); padding: 0 16px 4px; text-transform: uppercase; }
+                   color: var(--mt); padding: 0 16px 4px; text-transform: uppercase; }
   .nav-item { display: flex; align-items: center; justify-content: space-between;
-              padding: 6px 16px; cursor: pointer; color: var(--muted);
+              padding: 6px 16px; cursor: pointer; color: var(--mt);
               border-left: 2px solid transparent; transition: all .15s; }
-  .nav-item:hover { background: var(--surface2); color: var(--text); }
-  .nav-item.active { background: var(--surface2); color: var(--text);
-                     border-left-color: var(--cyan); }
+  .nav-item:hover { background: var(--surf2); color: var(--tx); }
+  .nav-item.active { background: var(--surf2); color: var(--tx);
+                     border-left-color: var(--cy); }
   .nav-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                     max-width: 160px; font-size: 12px; }
   .nav-group { margin-bottom: 2px; }
   .nav-group-label { display: flex; align-items: center; gap: 6px; font-size: 10px;
-                      font-weight: 700; letter-spacing: .5px; color: var(--muted);
+                      font-weight: 700; letter-spacing: .5px; color: var(--mt);
                       padding: 8px 16px 4px; text-transform: uppercase; cursor: pointer;
                       user-select: none; }
   .nav-group:first-child .nav-group-label { padding-top: 0; }
-  .nav-group-label:hover { color: var(--text); }
+  .nav-group-label:hover { color: var(--tx); }
   .nav-group-chevron { font-size: 8px; flex-shrink: 0; width: 8px; text-align: center;
                         transition: transform .15s; }
   .nav-group-chevron.collapsed { transform: rotate(-90deg); }
   .nav-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nav-group-count { font-weight: 400; text-transform: none; letter-spacing: 0;
                       opacity: .7; flex-shrink: 0; margin-left: auto; }
-  .nav-group-items { margin-left: 14px; border-left: 2px solid var(--border);
+  .nav-group-items { margin-left: 14px; border-left: 2px solid var(--bdr);
                       display: flex; flex-direction: column; }
   .nav-group-items.collapsed { display: none; }
   .nav-group-items .nav-item { padding-left: 10px; }
   .nav-group-items .nav-item-label { max-width: 138px; }
   .nav-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px;
-               background: var(--surface); border: 1px solid var(--border); }
-  .badge-ok   { border-color: var(--green); color: var(--green); }
-  .badge-warn { border-color: var(--yellow); color: var(--yellow); }
-  .badge-crit { border-color: var(--red); color: var(--red); }
-  .badge-dim  { color: var(--muted); }
+               background: var(--surf); border: 1px solid var(--bdr); }
+  .badge-ok   { border-color: var(--gn); color: var(--gn); }
+  .badge-warn { border-color: var(--yw); color: var(--yw); }
+  .badge-crit { border-color: var(--rd); color: var(--rd); }
+  .badge-dim  { color: var(--mt); }
 
   /* ── Stat cards ── */
   .stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
-  .stat-card { background: var(--surface); border: 1px solid var(--border);
+  .stat-card { background: var(--surf); border: 1px solid var(--bdr);
                border-radius: 6px; padding: 14px 16px; }
   .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
-                color: var(--muted); margin-bottom: 6px; }
+                color: var(--mt); margin-bottom: 6px; }
   .stat-value { font-size: 22px; font-weight: 700; letter-spacing: -1px; }
-  .stat-sub   { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  .c-green  { color: var(--green); }
-  .c-yellow { color: var(--yellow); }
-  .c-red    { color: var(--red); }
-  .c-blue   { color: var(--blue); }
-  .c-cyan   { color: var(--cyan); }
-  .c-muted  { color: var(--muted); }
+  .stat-sub   { font-size: 11px; color: var(--mt); margin-top: 2px; }
+  .c-green  { color: var(--gn); }
+  .c-yellow { color: var(--yw); }
+  .c-red    { color: var(--rd); }
+  .c-blue   { color: var(--bl); }
+  .c-cyan   { color: var(--cy); }
+  .c-muted  { color: var(--mt); }
 
   /* ── Section panels ── */
-  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  .panel { background: var(--surf); border: 1px solid var(--bdr); border-radius: 6px; }
   #path-charts { display: flex; flex-direction: column; gap: 12px; }
   .panel-header { display: flex; align-items: center; justify-content: space-between;
-                  padding: 10px 16px; border-bottom: 1px solid var(--border); }
+                  padding: 10px 16px; border-bottom: 1px solid var(--bdr); }
   .panel-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
-                 letter-spacing: .8px; color: var(--muted); }
+                 letter-spacing: .8px; color: var(--mt); }
   .panel-body  { padding: 0; }
 
   /* ── Chart grid ── */
   /* ── Path flow banner ── */
   .path-flow-banner { display:flex; align-items:center; gap:0;
-                      background:var(--surface); border:1px solid var(--border);
+                      background:var(--surf); border:1px solid var(--bdr);
                       border-radius:6px; padding:10px 16px; margin-bottom:12px;
                       flex-wrap:wrap; gap:6px; }
-  .pf-node { background:var(--surface2); border:1px solid var(--border2);
+  .pf-node { background:var(--surf2); border:1px solid var(--bdr2);
              border-radius:4px; padding:4px 10px; font-size:11px; line-height:1.4; }
-  .pf-node-label { color:var(--muted); font-size:9px; text-transform:uppercase;
+  .pf-node-label { color:var(--mt); font-size:9px; text-transform:uppercase;
                    letter-spacing:.5px; display:block; }
   .pf-node-name  { color:var(--tx); font-weight:600; display:block; }
-  .pf-node-ip    { color:var(--cyan); font-size:10px; display:block; }
-  .pf-node-svi   { border-color:var(--yellow); }
-  .pf-node-svi .pf-node-label { color:var(--yellow); }
-  .pf-arrow { color:var(--muted); font-size:16px; padding:0 4px; flex-shrink:0; }
+  .pf-node-ip    { color:var(--cy); font-size:10px; display:block; }
+  .pf-node-svi   { border-color:var(--yw); }
+  .pf-node-svi .pf-node-label { color:var(--yw); }
+  .pf-arrow { color:var(--mt); font-size:16px; padding:0 4px; flex-shrink:0; }
   .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .chart-panel { background: var(--surface); border: 1px solid var(--border);
+  .chart-panel { background: var(--surf); border: 1px solid var(--bdr);
                  border-radius: 6px; padding: 14px 16px; }
   .chart-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
-                 letter-spacing: .8px; color: var(--muted); margin-bottom: 12px; }
+                 letter-spacing: .8px; color: var(--mt); margin-bottom: 12px; }
   .chart-wrap  { position: relative; height: 120px; }
 
   /* ── Results table ── */
   .tbl-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   thead th { font-size: 10px; font-weight: 700; text-transform: uppercase;
-             letter-spacing: .6px; color: var(--muted); text-align: right;
-             padding: 8px 14px; border-bottom: 1px solid var(--border);
+             letter-spacing: .6px; color: var(--mt); text-align: right;
+             padding: 8px 14px; border-bottom: 1px solid var(--bdr);
              white-space: nowrap; }
   thead th:first-child { text-align: left; }
-  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
-  tbody tr:hover { background: var(--surface2); }
+  tbody tr { border-bottom: 1px solid var(--bdr); transition: background .1s; }
+  tbody tr:hover { background: var(--surf2); }
   tbody tr:last-child { border-bottom: none; }
   td { padding: 7px 14px; text-align: right; white-space: nowrap;
        font-variant-numeric: tabular-nums; }
   td:first-child { text-align: left; }
-  .td-path { font-size: 12px; color: var(--text); width: 240px; min-width: 180px; max-width: 280px;
+  .td-path { font-size: 12px; color: var(--tx); width: 240px; min-width: 180px; max-width: 280px;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .td-time { color: var(--muted); font-size: 11px; }
-  .ok-dot   { color: var(--green); }
-  .fail-dot { color: var(--red); }
-  .warn-dot { color: var(--yellow); }
+  .td-time { color: var(--mt); font-size: 11px; }
+  .ok-dot   { color: var(--gn); }
+  .fail-dot { color: var(--rd); }
+  .warn-dot { color: var(--yw); }
 
   /* ── Hop table ── */
   .hop-bar-wrap { display: flex; align-items: center; gap: 8px; }
@@ -157,178 +141,178 @@
              gap:0; padding:12px 16px; overflow-x:auto; }
   .tr-hop { display:flex; flex-direction:column; align-items:center;
             min-width:90px; max-width:130px; }
-  .tr-hop-node { background:var(--surface2); border:1px solid var(--border2);
+  .tr-hop-node { background:var(--surf2); border:1px solid var(--bdr2);
                  border-radius:4px; padding:5px 8px; text-align:center;
                  width:100%; font-size:10px; line-height:1.4; }
-  .tr-hop-node.tr-dead { background:transparent; border-color:var(--border);
+  .tr-hop-node.tr-dead { background:transparent; border-color:var(--bdr);
                          opacity:.4; min-width:40px; max-width:50px; }
-  .tr-hop-num { font-size:9px; color:var(--muted); margin-bottom:2px; }
+  .tr-hop-num { font-size:9px; color:var(--mt); margin-bottom:2px; }
   .tr-hop-host { color:var(--tx); word-break:break-all; font-size:10px; }
-  .tr-hop-ip { color:var(--muted); font-size:9px; }
-  .tr-hop-rtt { color:var(--cyan); font-size:10px; font-weight:600; margin-top:2px; }
-  .tr-hop-rtt.c-yellow { color:var(--yellow); }
-  .tr-hop-rtt.c-red    { color:var(--red); }
-  .tr-arrow { color:var(--border2); font-size:12px; padding:0 4px;
+  .tr-hop-ip { color:var(--mt); font-size:9px; }
+  .tr-hop-rtt { color:var(--cy); font-size:10px; font-weight:600; margin-top:2px; }
+  .tr-hop-rtt.c-yellow { color:var(--yw); }
+  .tr-hop-rtt.c-red    { color:var(--rd); }
+  .tr-arrow { color:var(--bdr2); font-size:12px; padding:0 4px;
               flex-shrink:0; margin-bottom:18px; }
-  .tr-dir-label { font-size:10px; color:var(--muted); padding:6px 14px 2px;
+  .tr-dir-label { font-size:10px; color:var(--mt); padding:6px 14px 2px;
                   font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
-  .tr-empty { padding:16px 14px; font-size:11px; color:var(--muted); }
-  .tr-row-btn { font-size:9px; color:var(--muted); margin-left:5px; cursor:pointer;
-                padding:1px 4px; border-radius:3px; border:1px solid var(--border);
+  .tr-empty { padding:16px 14px; font-size:11px; color:var(--mt); }
+  .tr-row-btn { font-size:9px; color:var(--mt); margin-left:5px; cursor:pointer;
+                padding:1px 4px; border-radius:3px; border:1px solid var(--bdr);
                 user-select:none; display:inline-block; vertical-align:middle; }
-  .tr-row-btn:hover { background:var(--surface2); color:var(--cyan); }
-  .tr-row-btn.active { background:#0f1f30; border-color:var(--cyan); color:var(--cyan); }
+  .tr-row-btn:hover { background:var(--surf2); color:var(--cy); }
+  .tr-row-btn.active { background:#0f1f30; border-color:var(--cy); color:var(--cy); }
 
   /* ── Run tags/notes ── */
-  .run-tag-chip { font-size:9px; padding:1px 6px; border-radius:8px; background:var(--surface2);
-                  border:1px solid var(--border2); color:var(--cyan); margin-left:4px;
+  .run-tag-chip { font-size:9px; padding:1px 6px; border-radius:8px; background:var(--surf2);
+                  border:1px solid var(--bdr2); color:var(--cy); margin-left:4px;
                   display:inline-block; vertical-align:middle; }
-  .run-note-dot { color:var(--yellow); margin-left:4px; cursor:default; vertical-align:middle; }
+  .run-note-dot { color:var(--yw); margin-left:4px; cursor:default; vertical-align:middle; }
   .annotate-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.75);
                       z-index:2500; align-items:center; justify-content:center; }
   .annotate-overlay.open { display:flex; }
-  .annotate-modal { background:var(--surface); border:1px solid var(--border2); border-radius:8px;
+  .annotate-modal { background:var(--surf); border:1px solid var(--bdr2); border-radius:8px;
                     width:420px; max-width:95vw; overflow:hidden; }
   .annotate-header { display:flex; align-items:center; justify-content:space-between;
-                     padding:12px 16px; border-bottom:1px solid var(--border); }
+                     padding:12px 16px; border-bottom:1px solid var(--bdr); }
   .annotate-title { font-size:12px; font-weight:700; }
-  .annotate-close { background:none; border:none; color:var(--muted); cursor:pointer;
-                    font-size:18px; padding:0; font-family:var(--font); }
+  .annotate-close { background:none; border:none; color:var(--mt); cursor:pointer;
+                    font-size:18px; padding:0; font-family:var(--fn); }
   .annotate-body { padding:16px; display:flex; flex-direction:column; gap:10px; }
-  .annotate-body label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .annotate-body label { font-size:10px; color:var(--mt); text-transform:uppercase; letter-spacing:.5px; }
   .annotate-body textarea, .annotate-body input[type=text] {
-    background:var(--bg); border:1px solid var(--border2); border-radius:4px; color:var(--text);
-    font-family:var(--font); font-size:12px; padding:8px 10px; width:100%; outline:none;
+    background:var(--bg); border:1px solid var(--bdr2); border-radius:4px; color:var(--tx);
+    font-family:var(--fn); font-size:12px; padding:8px 10px; width:100%; outline:none;
     transition:border-color .15s;
   }
-  .annotate-body textarea:focus, .annotate-body input[type=text]:focus { border-color:var(--cyan); }
+  .annotate-body textarea:focus, .annotate-body input[type=text]:focus { border-color:var(--cy); }
   .annotate-body textarea { resize:vertical; min-height:64px; }
-  .annotate-footer { padding:10px 16px; border-top:1px solid var(--border);
+  .annotate-footer { padding:10px 16px; border-top:1px solid var(--bdr);
                      display:flex; justify-content:flex-end; gap:8px; }
   /* ── MTR detail section ── */
   .hop-grid { display: grid; grid-template-columns: 40px 1fr 80px 80px 80px 80px 80px;
               gap: 0; }
   .hop-grid > div { padding: 6px 14px; font-size: 12px; }
-  .hop-header { background: var(--surface2); font-size: 10px; text-transform: uppercase;
-                letter-spacing: .6px; color: var(--muted); font-weight: 700;
-                border-bottom: 1px solid var(--border); }
-  .hop-row { border-bottom: 1px solid var(--border); }
+  .hop-header { background: var(--surf2); font-size: 10px; text-transform: uppercase;
+                letter-spacing: .6px; color: var(--mt); font-weight: 700;
+                border-bottom: 1px solid var(--bdr); }
+  .hop-row { border-bottom: 1px solid var(--bdr); }
   .hop-row:last-child { border-bottom: none; }
-  .hop-row:hover > div { background: var(--surface2); }
+  .hop-row:hover > div { background: var(--surf2); }
 
   /* ── Day selector ── */
   .day-tabs { display: flex; gap: 4px; }
   .day-tab { padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;
-             color: var(--muted); border: 1px solid transparent; }
-  .day-tab:hover { background: var(--surface2); }
-  .day-tab.active { background: var(--surface2); border-color: var(--border2); color: var(--text); }
+             color: var(--mt); border: 1px solid transparent; }
+  .day-tab:hover { background: var(--surf2); }
+  .day-tab.active { background: var(--surf2); border-color: var(--bdr2); color: var(--tx); }
 
   /* ── Loading / empty states ── */
-  .empty { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
-  .loading { padding: 32px; text-align: center; color: var(--muted); font-size: 12px; }
+  .empty { padding: 32px; text-align: center; color: var(--mt); font-size: 12px; }
+  .loading { padding: 32px; text-align: center; color: var(--mt); font-size: 12px; }
 
   /* ── Buttons ── */
   .btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px;
-         border-radius: 4px; font-size: 11px; font-family: var(--font);
-         cursor: pointer; border: 1px solid var(--border2); transition: all .15s; }
-  .btn-run  { background: #0f3320; color: var(--green); border-color: #1a4d30; }
+         border-radius: 4px; font-size: 11px; font-family: var(--fn);
+         cursor: pointer; border: 1px solid var(--bdr2); transition: all .15s; }
+  .btn-run  { background: #0f3320; color: var(--gn); border-color: #1a4d30; }
   .btn-run:hover  { background: #1a4d30; }
   .btn-run:disabled { opacity: .4; cursor: not-allowed; }
-  .btn-run-all { background: #0d1f3c; color: var(--cyan); border-color: #1a3a5c; }
-  .btn-run-all:hover { background: #1a3a5c; }
+  .btn-run-all { background: var(--accent-bg); color: var(--cy); border-color: var(--accent-bdr); }
+  .btn-run-all:hover { background: var(--accent-bdr); }
   .btn-run-all:disabled { opacity: .4; cursor: not-allowed; }
   .nav-run-btn { font-size: 10px; padding: 2px 7px; border-radius: 3px; cursor: pointer;
-                 border: 1px solid #1a4d30; background: #0f3320; color: var(--green);
-                 font-family: var(--font); transition: all .15s; white-space: nowrap; }
+                 border: 1px solid #1a4d30; background: #0f3320; color: var(--gn);
+                 font-family: var(--fn); transition: all .15s; white-space: nowrap; }
   .nav-run-btn:hover { background: #1a4d30; }
-  .nav-run-btn.running { border-color: var(--yellow); color: var(--yellow);
+  .nav-run-btn.running { border-color: var(--yw); color: var(--yw);
                          background: #2a2000; animation: pulse 1s infinite; }
   .job-row { display: grid; grid-template-columns: 70px 1fr 80px 80px;
-             padding: 6px 14px; border-bottom: 1px solid var(--border);
+             padding: 6px 14px; border-bottom: 1px solid var(--bdr);
              font-size: 11px; align-items: center; gap: 8px; }
   .job-row:last-child { border-bottom: none; }
-  .job-queued  { color: var(--muted); }
-  .job-running { color: var(--yellow); animation: pulse 1s infinite; }
-  .job-done    { color: var(--green); }
-  .job-error   { color: var(--red); }
+  .job-queued  { color: var(--mt); }
+  .job-running { color: var(--yw); animation: pulse 1s infinite; }
+  .job-done    { color: var(--gn); }
+  .job-error   { color: var(--rd); }
 
   /* ── Live log panel ── */
-  .log-panel { background: var(--surface); border-left: 1px solid var(--border);
+  .log-panel { background: var(--surf); border-left: 1px solid var(--bdr);
                display: flex; flex-direction: column; overflow: hidden; }
   .log-header { display: flex; align-items: center; justify-content: space-between;
-                padding: 10px 16px; border-bottom: 1px solid var(--border); }
+                padding: 10px 16px; border-bottom: 1px solid var(--bdr); }
   .log-title  { font-size: 11px; font-weight: 700; text-transform: uppercase;
-                letter-spacing: .8px; color: var(--muted); }
+                letter-spacing: .8px; color: var(--mt); }
   .log-body   { background: #080a0d; padding: 12px 16px; flex: 1;
                 overflow-y: auto; font-size: 11px; line-height: 1.6;
-                font-family: var(--font); }
+                font-family: var(--fn); }
   .log-panel.expanded {
     position: fixed; top: 0; right: 0; bottom: 0;
     left: 220px; z-index: 1000;
     width: auto; min-width: unset;
     box-shadow: -6px 0 32px rgba(0,0,0,0.6);
-    border-left: 1px solid var(--border);
+    border-left: 1px solid var(--bdr);
   }
   .log-panel.expanded .log-body { font-size: 12px; line-height: 1.7; }
   .log-line   { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
   .log-info   { color: #94a3b8; }
-  .log-warn   { color: var(--yellow); }
-  .log-error  { color: var(--red); }
-  .log-ok     { color: var(--green); }
+  .log-warn   { color: var(--yw); }
+  .log-error  { color: var(--rd); }
+  .log-ok     { color: var(--gn); }
   .log-dim    { color: #475569; }
   .log-active { animation: pulse 1.5s infinite; }
   .log-badge  { display: inline-flex; align-items: center; gap: 4px; font-size: 10px;
                 padding: 2px 8px; border-radius: 3px; }
-  .log-badge-running { background: #2a2000; color: var(--yellow);
+  .log-badge-running { background: #2a2000; color: var(--yw);
                        border: 1px solid #4a3800; animation: pulse 1.5s infinite; }
-  .log-badge-done    { background: #0f3320; color: var(--green); border: 1px solid #1a4d30; }
-  .log-badge-error   { background: #2a0a0a; color: var(--red);   border: 1px solid #4d1a1a; }
-  .log-badge-idle    { color: var(--muted); border: 1px solid var(--border); }
+  .log-badge-done    { background: #0f3320; color: var(--gn); border: 1px solid #1a4d30; }
+  .log-badge-error   { background: #2a0a0a; color: var(--rd);   border: 1px solid #4d1a1a; }
+  .log-badge-idle    { color: var(--mt); border: 1px solid var(--bdr); }
 
   /* ── Sparkline grid (all-paths overview) ── */
   .sparkline-grid { display: flex; flex-direction: column; gap: 0; }
   .spark-cols { display: grid;
     grid-template-columns: 180px 1fr 80px 75px 75px 70px 70px 65px 55px 55px;
     align-items: center; gap: 0; }
-  .spark-row { border-bottom: 1px solid var(--border); }
+  .spark-row { border-bottom: 1px solid var(--bdr); }
   .spark-row:last-child { border-bottom: none; }
   .spark-main { padding: 0; }
-  .spark-main:hover { background: var(--surface2); }
+  .spark-main:hover { background: var(--surf2); }
   .spark-hop-rows { display: none; }
   .spark-hop-rows.open { display: block; }
-  .spark-hop { border-top: 1px solid var(--border); padding-left: 20px;
+  .spark-hop { border-top: 1px solid var(--bdr); padding-left: 20px;
                background: #080b10; }
   .spark-hop .spark-cols { opacity: .85; }
-  .spark-row.spark-header { background: var(--surface2); font-size: 9px; font-weight: 700;
-                             text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .spark-row.spark-header { background: var(--surf2); font-size: 9px; font-weight: 700;
+                             text-transform: uppercase; letter-spacing: .6px; color: var(--mt); }
   .spark-cell { padding: 5px 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
   .spark-cell-sm { padding: 4px 8px; font-size: 10px; font-variant-numeric: tabular-nums; }
   .spark-cell-chart { padding: 3px 6px; }
   .spark-path { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                 cursor: pointer; }
-  .spark-path:hover { color: var(--cyan); }
+  .spark-path:hover { color: var(--cy); }
   .spark-val { text-align: right; }
-  .spark-hop-label { font-size: 10px; color: var(--muted); white-space: nowrap;
+  .spark-hop-label { font-size: 10px; color: var(--mt); white-space: nowrap;
                      overflow: hidden; text-overflow: ellipsis; }
   .spark-hop-label::before { content: "└ "; }
-  .hop-toggle { font-size: 9px; color: var(--muted); margin-left: 5px; cursor: pointer;
-                padding: 1px 4px; border-radius: 3px; border: 1px solid var(--border);
+  .hop-toggle { font-size: 9px; color: var(--mt); margin-left: 5px; cursor: pointer;
+                padding: 1px 4px; border-radius: 3px; border: 1px solid var(--bdr);
                 user-select: none; display: inline-block; }
-  .hop-toggle:hover { background: var(--surface2); color: var(--cyan); }
+  .hop-toggle:hover { background: var(--surf2); color: var(--cy); }
   .mtu-warn { font-size: 9px; padding: 1px 3px; border-radius: 2px;
-              background: rgba(234,179,8,.15); color: var(--yellow);
+              background: rgba(234,179,8,.15); color: var(--yw);
               border: 1px solid rgba(234,179,8,.4); }
   .spark-canvas-wrap { position: relative; height: 28px; }
   .spark-canvas-wrap canvas { position: absolute; inset: 0; }
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb { background: var(--bdr2); border-radius: 3px; }
 
   /* ── Mobile nav / drawer (hidden on desktop) ── */
   .nav-toggle-btn { display: none; align-items: center; justify-content: center;
-    width: 30px; height: 30px; background: var(--surface2); border: 1px solid var(--border2);
-    border-radius: 4px; color: var(--text); font-size: 16px; cursor: pointer; flex-shrink: 0; }
+    width: 30px; height: 30px; background: var(--surf2); border: 1px solid var(--bdr2);
+    border-radius: 4px; color: var(--tx); font-size: 16px; cursor: pointer; flex-shrink: 0; }
   .sidebar-backdrop { display: none; }
   .sidebar-mobile-header { display: none; }
   .mobile-log-toggle { display: none; }
@@ -350,9 +334,9 @@
                z-index: 2001; transition: left .2s ease; box-shadow: 4px 0 24px rgba(0,0,0,.5); }
     .sidebar.open { left: 0; }
     .sidebar-mobile-header { display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 16px; border-bottom: 1px solid var(--border); }
-    .sidebar-mobile-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--muted); }
-    .sidebar-close-btn { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+      padding: 12px 16px; border-bottom: 1px solid var(--bdr); }
+    .sidebar-mobile-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--mt); }
+    .sidebar-close-btn { background: none; border: none; color: var(--mt); font-size: 16px; cursor: pointer; }
     .sidebar-backdrop.open { display: block; position: fixed; inset: 0;
       background: rgba(0,0,0,.5); z-index: 2000; }
 
@@ -372,7 +356,7 @@
     .job-row { grid-template-columns: 55px 1fr 60px 60px; font-size: 10px; }
 
     /* Live log panel stacks below content and starts collapsed */
-    .log-panel { border-left: none; border-top: 1px solid var(--border); max-height: none; }
+    .log-panel { border-left: none; border-top: 1px solid var(--bdr); max-height: none; }
     .log-panel .log-body { display: none; max-height: 260px; }
     .log-panel.mobile-open .log-body { display: block; }
     .mobile-log-toggle { display: inline-block; }
@@ -392,32 +376,32 @@
   <div class="topbar">
     <div class="topbar-left">
       <button class="nav-toggle-btn" id="nav-toggle-btn" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
-      <span class="logo">NET<span>TEST</span></span>
+      <!--LS:BRAND-->
       <div class="status-dot" id="status-dot"></div>
-      <span style="color:var(--muted);font-size:11px;" id="status-text">connecting...</span>
+      <span style="color:var(--mt);font-size:11px;" id="status-text">connecting...</span>
     </div>
     <div class="topbar-right">
       <button class="btn btn-run-all" id="btn-run-all" onclick="runAll()">▶ Run All</button>
       <button class="btn btn-run-all" id="btn-run-latency" onclick="runAll(['latency','jitter'])" style="margin-left:4px">▶ Latency Only</button>
-      <span style="margin:0 4px;color:var(--border2)">|</span>
-      <button onclick="exportResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#0d1f3c;color:var(--cyan);border:1px solid #1a3a5c;transition:all .15s;" onmouseover="this.style.background='#1a3a5c'" onmouseout="this.style.background='#0d1f3c'">Export CSV</button>
+      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <button onclick="exportResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr);transition:all .15s;" onmouseover="this.style.background='var(--accent-bdr)'" onmouseout="this.style.background='var(--accent-bg)'">Export CSV</button>
       <button onclick="exportPathSummary()" id="btn-export-summary" disabled
-        style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#0d1f3c;color:var(--cyan);border:1px solid #1a3a5c;transition:all .15s;opacity:0.4;cursor:not-allowed;"
-        onmouseover="if(!this.disabled)this.style.background='#1a3a5c'" onmouseout="this.style.background='#0d1f3c'"
+        style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr);transition:all .15s;opacity:0.4;cursor:not-allowed;"
+        onmouseover="if(!this.disabled)this.style.background='var(--accent-bdr)'" onmouseout="this.style.background='var(--accent-bg)'"
         title="Select a path to export its executive summary">📄 Export Summary</button>
-      <button onclick="clearResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--font);background:#2a0a0a;color:var(--red);border:1px solid #4d1a1a;transition:all .15s;" onmouseover="this.style.background='#3a1010'" onmouseout="this.style.background='#2a0a0a'">Clear Results</button>
-      <span style="margin:0 4px;color:var(--border2)">|</span>
-      <a href="/speedtest" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Browser speed test">⚡ Speed Test</a>
-      <span style="margin:0 4px;color:var(--border2)">|</span>
-      <a href="/compare" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Compare two runs">⇄ Compare</a>
-      <span style="margin:0 4px;color:var(--border2)">|</span>
-      <a href="/config" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Config Editor">⚙ Config</a>
-      <span style="margin:0 4px;color:var(--border2)">|</span>
-      <a href="/logout" style="color:var(--cyan);font-size:11px;text-decoration:none" title="Logout">Logout</a>
-      <span style="margin:0 4px;color:var(--border2)">|</span>
-      <span id="clock-local"></span><span style="color:var(--border2)">·</span><span id="clock"></span>
+      <button onclick="clearResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a;transition:all .15s;" onmouseover="this.style.background='#3a1010'" onmouseout="this.style.background='#2a0a0a'">Clear Results</button>
+      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <a href="/speedtest" style="color:var(--cy);font-size:11px;text-decoration:none" title="Browser speed test">⚡ Speed Test</a>
+      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <a href="/compare" style="color:var(--cy);font-size:11px;text-decoration:none" title="Compare two runs">⇄ Compare</a>
+      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <a href="/config" style="color:var(--cy);font-size:11px;text-decoration:none" title="Config Editor">⚙ Config</a>
+      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <a href="/logout" style="color:var(--cy);font-size:11px;text-decoration:none" title="Logout">Logout</a>
+      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <span id="clock-local"></span><span style="color:var(--bdr2)">·</span><span id="clock"></span>
       <span>|</span>
-      <span id="last-update" style="color:var(--muted)">—</span>
+      <span id="last-update" style="color:var(--mt)">—</span>
     </div>
   </div>
 
@@ -445,7 +429,7 @@
       </div>
       <div class="sidebar-section">
         <div class="sidebar-label">Jobs</div>
-        <div id="jobs-sidebar" style="padding:0 16px 8px;font-size:11px;color:var(--muted)">No jobs yet</div>
+        <div id="jobs-sidebar" style="padding:0 16px 8px;font-size:11px;color:var(--mt)">No jobs yet</div>
       </div>
     </nav>
 
@@ -467,7 +451,7 @@
         <div class="panel">
           <div class="panel-header">
             <span class="panel-title">Path Overview</span>
-            <span style="font-size:10px;color:var(--muted)">averages over the Recent results window — click path name to drill in</span>
+            <span style="font-size:10px;color:var(--mt)">averages over the Recent results window — click path name to drill in</span>
           </div>
           <div class="panel-body" style="padding:0">
             <div class="sparkline-grid" id="spark-grid"></div>
@@ -490,7 +474,7 @@
         </div>
         <div id="results-scroll" style="max-height:185px;overflow-y:auto">
           <table style="width:100%">
-            <thead style="position:sticky;top:0;z-index:1;background:var(--surface2)"><tr>
+            <thead style="position:sticky;top:0;z-index:1;background:var(--surf2)"><tr>
               <th style="text-align:left">Path</th>
               <th>Date</th>
               <th>Time</th>
@@ -516,14 +500,14 @@
       <div id="path-charts">
         <div id="path-flow-banner-wrap" style="display:none;margin-bottom:12px">
           <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;
-                      color:var(--muted);padding:0 4px 5px">Test Path Visualization</div>
+                      color:var(--mt);padding:0 4px 5px">Test Path Visualization</div>
           <div id="path-flow-banner" class="path-flow-banner" style="margin-bottom:0"></div>
         </div>
 
         <!-- Per-test run buttons — run just one test type for this path -->
         <div id="path-test-actions" class="panel" style="display:none;margin-bottom:12px;padding:10px 16px">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-            <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Run individual test</span>
+            <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mt)">Run individual test</span>
             <div id="path-test-btns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
           </div>
         </div>
@@ -532,7 +516,7 @@
         <div class="panel" id="tr-panel" style="display:none">
           <div class="panel-header">
             <span class="panel-title" id="tr-title">Traceroute</span>
-            <span style="font-size:11px;color:var(--muted)" id="tr-subtitle">most recent run</span>
+            <span style="font-size:11px;color:var(--mt)" id="tr-subtitle">most recent run</span>
           </div>
           <div id="tr-body">
             <div class="tr-empty">No traceroute data for this path yet.</div>
@@ -571,7 +555,7 @@
         <div class="panel" id="hops-panel">
           <div class="panel-header">
             <span class="panel-title" id="hops-title">MTR hop detail</span>
-            <span style="font-size:11px;color:var(--muted)">most recent latency-under-load run</span>
+            <span style="font-size:11px;color:var(--mt)">most recent latency-under-load run</span>
           </div>
           <div class="panel-body" id="hops-body">
             <div class="empty">Select a path with latency_under_load tests to see per-hop breakdown.</div>
@@ -582,7 +566,7 @@
         <div class="panel" id="seg-panel" style="display:none">
           <div class="panel-header">
             <span class="panel-title" id="seg-title">Hop segment breakdown</span>
-            <span style="font-size:11px;color:var(--muted)">source → each defined hop → destination</span>
+            <span style="font-size:11px;color:var(--mt)">source → each defined hop → destination</span>
           </div>
           <div class="panel-body" id="seg-body" style="padding:0">
             <div class="empty">No segment data.</div>
@@ -595,7 +579,7 @@
 
     <!-- Live log — always visible right panel -->
     <div class="log-panel" id="log-panel">
-      <div class="log-header" style="padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div class="log-header" style="padding:10px 16px;border-bottom:1px solid var(--bdr);flex-shrink:0">
         <span class="log-title">Live Output</span>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <button class="day-tab mobile-log-toggle" id="mobile-log-toggle-btn" onclick="toggleMobileLog()"
@@ -1013,7 +997,7 @@ function _renderTracerouteData(data) {
 
   if (data.reverse && data.reverse.hops && data.reverse.hops.length) {
     const divider = document.createElement('div');
-    divider.style.cssText = 'border-top:1px solid var(--border);margin:0';
+    divider.style.cssText = 'border-top:1px solid var(--bdr);margin:0';
     body.appendChild(divider);
     body.appendChild(buildHopFlow(data.reverse.hops,
       'Reverse  (' + data.reverse.source_host + ' → ' + data.reverse.dest_host + ')'));
@@ -1085,7 +1069,7 @@ async function updateSegPanel(pathId, results) {
   body.innerHTML = `
     <table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead>
-        <tr style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);background:var(--surface2)">
+        <tr style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--mt);background:var(--surf2)">
           <th style="padding:6px 14px;text-align:left;font-weight:700">Segment</th>
           <th style="padding:6px 14px;text-align:right;font-weight:700">RTT avg</th>
           <th style="padding:6px 14px;text-align:right;font-weight:700">RTT max</th>
@@ -1105,17 +1089,17 @@ async function updateSegPanel(pathId, results) {
           const mtuW  = sm?.fragmentation_detected ? 'c-yellow' : '';
           const label = agentMap[seg.destination_agent_id] || seg.destination_agent_id;
           const isFinal = seg.isFinal;
-          return `<tr style="border-top:1px solid var(--border)${isFinal ? ';background:var(--surface2)' : ''}">
-            <td style="padding:7px 14px;color:var(--muted)">
+          return `<tr style="border-top:1px solid var(--bdr)${isFinal ? ';background:var(--surf2)' : ''}">
+            <td style="padding:7px 14px;color:var(--mt)">
               ${isFinal
-                ? `<span style="color:var(--tx)">→ ${label}</span> <span style="font-size:9px;color:var(--cyan);margin-left:4px">final</span>`
+                ? `<span style="color:var(--tx)">→ ${label}</span> <span style="font-size:9px;color:var(--cy);margin-left:4px">final</span>`
                 : `→ ${label}`}
             </td>
             <td style="padding:7px 14px;text-align:right" class="${latC}">${fmt(sl?.rtt_avg_ms,'ms')}</td>
             <td style="padding:7px 14px;text-align:right">${fmt(sl?.rtt_max_ms,'ms')}</td>
             <td style="padding:7px 14px;text-align:right">${fmt(sl?.packet_loss_pct,'%')}</td>
             <td style="padding:7px 14px;text-align:right" class="${mtuW}">${sm ? sm.effective_mtu_bytes : '—'}</td>
-            <td style="padding:7px 14px;text-align:right;color:var(--muted)">
+            <td style="padding:7px 14px;text-align:right;color:var(--mt)">
               ${delta !== null ? `${dSign}${delta}ms` : '—'}
             </td>
           </tr>`;
@@ -1521,12 +1505,12 @@ async function pollJobs() {
 function updateJobsSidebar() {
   const el = document.getElementById('jobs-sidebar');
   const jobs = Object.values(activeJobs);
-  if (!jobs.length) { el.innerHTML = '<span style="color:var(--muted)">No active jobs</span>'; return; }
+  if (!jobs.length) { el.innerHTML = '<span style="color:var(--mt)">No active jobs</span>'; return; }
   el.innerHTML = jobs.slice(-8).reverse().map(j => {
-    const icon = j.status === 'done' ? '<span style="color:var(--green)">✓</span>'
-               : j.status === 'error' ? '<span style="color:var(--red)">✗</span>'
-               : j.status === 'running' ? '<span style="color:var(--yellow)">⟳</span>'
-               : '<span style="color:var(--muted)">·</span>';
+    const icon = j.status === 'done' ? '<span style="color:var(--gn)">✓</span>'
+               : j.status === 'error' ? '<span style="color:var(--rd)">✗</span>'
+               : j.status === 'running' ? '<span style="color:var(--yw)">⟳</span>'
+               : '<span style="color:var(--mt)">·</span>';
     const label = j.label || j.path_id || j.job_id;
     const isRunning = j.status === 'running';
     const btns = `
@@ -1753,13 +1737,36 @@ async function exportPathSummary() {
       return `<div class="rpt-chart"><h3>${escapeHtml(title)}</h3><img src="${img}" alt="${escapeHtml(title)}"></div>`;
     }).filter(Boolean).join('');
 
+    // Branding (Config → Branding), filled in by the server as window.LS_BRAND.
+    const brand = window.LS_BRAND || {};
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#06b6d4';
+    const generated = new Date();
+    const brandMark = brand.logo_url
+      ? `<img class="rpt-logo" src="${escapeHtml(new URL(brand.logo_url, location.origin).href)}" alt="${escapeHtml(brand.org_name || brand.product || '')}">`
+      : `<span class="rpt-org">${escapeHtml(brand.org_name || brand.product || 'LinkState')}</span>`;
+    const brandSide = [brand.logo_url && brand.org_name ? brand.org_name : '', brand.controller_name]
+      .filter(Boolean).map(escapeHtml).join('<br>');
+    const footerBits = [
+      brand.report_footer ? `<div class="rpt-footer-custom">${escapeHtml(brand.report_footer)}</div>` : '',
+      `<div>Generated ${escapeHtml(generated.toLocaleString())} by ${escapeHtml(brand.product || 'LinkState')}` +
+        (brand.controller_name ? ` · ${escapeHtml(brand.controller_name)}` : '') + `</div>`,
+    ].join('');
+
     const stat = (label, value) => `<div class="rpt-stat"><div class="rpt-stat-label">${escapeHtml(label)}</div><div class="rpt-stat-value">${escapeHtml(value)}</div></div>`;
 
     const html = `<!doctype html>
 <html><head><meta charset="utf-8">
-<title>Executive Summary — ${escapeHtml(path.label)}</title>
+<title>Executive Summary — ${escapeHtml(path.label)}${brand.org_name ? ' — ' + escapeHtml(brand.org_name) : ''}</title>
 <style>
   * { box-sizing: border-box; }
+  .rpt-brand { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+               padding-bottom: 10px; margin-bottom: 18px; border-bottom: 3px solid ${accent}; }
+  .rpt-logo { max-height: 40px; max-width: 240px; object-fit: contain; display: block; }
+  .rpt-org { font-size: 16px; font-weight: 700; }
+  .rpt-brand-side { text-align: right; font-size: 11px; color: #555; line-height: 1.5; }
+  .rpt-footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid #ccc;
+                font-size: 10px; color: #777; display: flex; justify-content: space-between; gap: 16px; }
+  .rpt-footer-custom { font-weight: 600; color: #444; }
   body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #111; margin: 32px; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: #444; margin: 28px 0 10px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
@@ -1780,12 +1787,13 @@ async function exportPathSummary() {
 </style>
 </head>
 <body>
+  <div class="rpt-brand">${brandMark}<div class="rpt-brand-side">${brandSide}</div></div>
   <h1>${escapeHtml(path.label)} — Executive Summary</h1>
   <div class="rpt-meta">
     <span><strong>Source:</strong> ${escapeHtml(path.source || '—')}</span>
     <span><strong>Destination:</strong> ${escapeHtml(path.destination || '—')}</span>
     <span><strong>Window:</strong> ${escapeHtml(windowLabel)}</span>
-    <span><strong>Generated:</strong> ${escapeHtml(new Date().toLocaleString())}</span>
+    <span><strong>Generated:</strong> ${escapeHtml(generated.toLocaleString())}</span>
   </div>
 
   <h2>Summary</h2>
@@ -1803,6 +1811,8 @@ async function exportPathSummary() {
 
   <h2>Trends</h2>
   <div class="rpt-charts">${chartSections || '<p style="color:#777">No chart data available for this window.</p>'}</div>
+
+  <div class="rpt-footer">${footerBits}</div>
 </body></html>`;
 
     const win = window.open('', '_blank');
@@ -1982,8 +1992,8 @@ function renderTable(records) {
 
     const hopBtn = hasSegs
       ? `<span onclick="toggleTableHops('${rowId}', this)"
-           style="font-size:9px;color:var(--muted);margin-left:5px;cursor:pointer;
-                  padding:1px 4px;border-radius:3px;border:1px solid var(--border)">▸ ${segs.length}</span>`
+           style="font-size:9px;color:var(--mt);margin-left:5px;cursor:pointer;
+                  padding:1px 4px;border-radius:3px;border:1px solid var(--bdr)">▸ ${segs.length}</span>`
       : '';
 
     const hasTr = !!(r.traceroute_forward?.hops?.length);
@@ -2007,7 +2017,7 @@ function renderTable(records) {
       <td class="td-path" title="${escapeHtml(r.path_label)}" style="white-space:nowrap;overflow:hidden">
         <span style="overflow:hidden;text-overflow:ellipsis;max-width:calc(100% - 70px);display:inline-block;vertical-align:middle">${r.path_label}</span>${hopBtn}${trBtn}${cmpBtn}${tagBtn}${tagChips}${moreTagsChip}${noteDot}
       </td>
-      <td class="td-time" style="color:var(--muted);font-size:10px">${r.timestamp_utc.slice(0,10)}</td>
+      <td class="td-time" style="color:var(--mt);font-size:10px">${r.timestamp_utc.slice(0,10)}</td>
       <td class="td-time">${ts}</td>
       <td>${statusMark(r)}</td>
       <td class="${txC}">${fmt(t?.tx_mbps)}</td>
@@ -2027,7 +2037,7 @@ function renderTable(records) {
       rows.push(`<tr id="${rowId}" style="display:none">
         <td colspan="15" style="padding:0 0 0 24px;background:#080b10">
           <table style="width:100%;font-size:10px;border-collapse:collapse">
-            <tr style="color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.5px">
+            <tr style="color:var(--mt);font-size:9px;text-transform:uppercase;letter-spacing:.5px">
               <td style="padding:4px 8px">Hop</td>
               <td style="padding:4px 8px;text-align:right">RTT avg</td>
               <td style="padding:4px 8px;text-align:right">RTT max</td>
@@ -2039,8 +2049,8 @@ function renderTable(records) {
               const sm = seg.mtu;
               const sLatC = health(sl?.rtt_avg_ms, T.latWarn, T.latCrit);
               const sMtuW = sm?.fragmentation_detected ? 'c-yellow' : 'c-green';
-              return `<tr style="border-top:1px solid var(--border)">
-                <td style="padding:4px 8px;color:var(--muted)">→ ${seg.destination_agent_id}</td>
+              return `<tr style="border-top:1px solid var(--bdr)">
+                <td style="padding:4px 8px;color:var(--mt)">→ ${seg.destination_agent_id}</td>
                 <td style="padding:4px 8px;text-align:right" class="${sLatC}">${fmt(sl?.rtt_avg_ms,'ms')}</td>
                 <td style="padding:4px 8px;text-align:right">${fmt(sl?.rtt_max_ms,'ms')}</td>
                 <td style="padding:4px 8px;text-align:right">${fmt(sl?.packet_loss_pct,'%')}</td>
@@ -2267,7 +2277,7 @@ async function renderSparklines(minutes) {
     const mtuHtml = !mtuVal ? '—'
       : m.fragmentation_detected
         ? `<span class="mtu-warn">${mtuVal}</span>`
-        : `<span style="color:var(--green)">${mtuVal}</span>`;
+        : `<span style="color:var(--gn)">${mtuVal}</span>`;
 
     const statusIcon = windowStatusMark(s);
 
@@ -2352,7 +2362,7 @@ async function renderSparklines(minutes) {
         const hMtuHtml = !sm ? '—'
           : sm.fragmentation_detected
             ? `<span class="mtu-warn">${sm.effective_mtu_bytes}</span>`
-            : `<span style="color:var(--green)">${sm.effective_mtu_bytes}</span>`;
+            : `<span style="color:var(--gn)">${sm.effective_mtu_bytes}</span>`;
         const hcid = `spark-hop-${p.id}-${si}`;
 
         const hopRow = document.createElement('div');
@@ -2405,7 +2415,7 @@ async function renderSparklines(minutes) {
 
 // Status across every run in the window: ✓ all passed, ⚠ some partial, ✗ any failed
 function windowStatusMark(s) {
-  if (!s || !s.total_runs) return '<span style="color:var(--muted)" title="No runs in this period">?</span>';
+  if (!s || !s.total_runs) return '<span style="color:var(--mt)" title="No runs in this period">?</span>';
   const tip = `${s.successful} ok, ${s.partial} partial, ${s.failed} failed of ${s.total_runs} runs`;
   if (s.failed)  return `<span class="fail-dot" title="${tip}">✗ ${s.failed}</span>`;
   if (s.partial) return `<span class="warn-dot" title="${tip}">⚠ ${s.partial}</span>`;
@@ -2495,7 +2505,7 @@ async function renderHops(pathId) {
         const barW = maxAvg > 0 ? Math.round((h.avg_ms / maxAvg) * 120) : 4;
         return `
         <div class="hop-grid hop-row">
-          <div style="color:var(--muted)">${h.hop}</div>
+          <div style="color:var(--mt)">${h.hop}</div>
           <div>
             <div class="hop-bar-wrap">
               <div class="hop-bar" style="width:${barW}px;background:${avgC};opacity:.7"></div>
@@ -2504,9 +2514,9 @@ async function renderHops(pathId) {
           </div>
           <div style="text-align:right;color:${lssC}">${fmt(h.loss_pct,'%')}</div>
           <div style="text-align:right;color:${avgC}">${fmt(h.avg_ms,'ms')}</div>
-          <div style="text-align:right;color:var(--muted)">${fmt(h.best_ms,'ms')}</div>
-          <div style="text-align:right;color:var(--muted)">${fmt(h.worst_ms,'ms')}</div>
-          <div style="text-align:right;color:var(--muted)">${fmt(h.stddev_ms,'ms')}</div>
+          <div style="text-align:right;color:var(--mt)">${fmt(h.best_ms,'ms')}</div>
+          <div style="text-align:right;color:var(--mt)">${fmt(h.worst_ms,'ms')}</div>
+          <div style="text-align:right;color:var(--mt)">${fmt(h.stddev_ms,'ms')}</div>
         </div>`;
       }).join('')}
     `;
