@@ -1072,6 +1072,41 @@ select option{background:var(--bg)}
               <span style="color:var(--mt);font-size:11px">seconds</span>
             </div>
           </div>
+
+          <div style="border-top:1px solid var(--bdr);margin-top:14px;padding-top:14px">
+            <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
+              <b style="color:var(--tx)">Account type.</b> Set the type per user on the RADIUS server by
+              returning this attribute in the Access-Accept. A user whose reply carries neither value
+              gets the default type.
+            </p>
+            <div class="form-row">
+              <label>Reply attribute</label>
+              <select id="auth-radius-role-attr" style="width:160px" onchange="markDirty()">
+                <option value="Class">Class (25)</option>
+                <option value="Filter-Id">Filter-Id (11)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Admin value</label>
+              <input type="text" id="auth-radius-admin-value" autocomplete="off"
+                     placeholder="linkstate-admin" oninput="markDirty()">
+            </div>
+            <div class="form-row">
+              <label>Read-only value</label>
+              <input type="text" id="auth-radius-readonly-value" autocomplete="off"
+                     placeholder="linkstate-readonly" oninput="markDirty()">
+            </div>
+            <div class="form-row">
+              <label>Default type</label>
+              <div style="display:flex;align-items:center;gap:8px;flex:1">
+                <select id="auth-radius-default-role" style="width:160px" onchange="markDirty()">
+                  <option value="admin">Admin</option>
+                  <option value="readonly">Read-only</option>
+                </select>
+                <span style="color:var(--mt);font-size:11px">when the attribute is missing or doesn't match</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1084,6 +1119,10 @@ select option{background:var(--bg)}
           <p style="font-size:11px;color:var(--mt);margin-bottom:14px">
             Local accounts log in directly against this dashboard — no external RADIUS server
             needed. Passwords are stored as salted hashes, never in plaintext.
+            <b style="color:var(--tx)">Admin</b> accounts can do everything;
+            <b style="color:var(--tx)">read-only</b> accounts can view results, compare runs and run
+            the browser speed test, but can't run path tests, edit notes or open Config.
+            To update an existing user, enter its username — leave the password blank to keep it.
           </p>
           <div id="auth-users-list"></div>
           <div style="border-top:1px solid var(--bdr);margin-top:14px;padding-top:14px">
@@ -1098,6 +1137,13 @@ select option{background:var(--bg)}
             <div class="form-row">
               <label>Confirm</label>
               <input type="password" id="auth-new-password2" autocomplete="new-password" placeholder="min. 8 characters">
+            </div>
+            <div class="form-row">
+              <label>Account type</label>
+              <select id="auth-new-role" style="width:160px">
+                <option value="admin">Admin</option>
+                <option value="readonly">Read-only</option>
+              </select>
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-primary" onclick="addLocalUser()">+ Add / Update User</button>
@@ -1471,7 +1517,7 @@ async function loadConfig() {
     controllerName = (raw.controller || {}).name || '';
     brandingCfg    = raw.branding || {};
     brandingAssets = raw.branding_assets || {};
-    authLocalUsers = (authConfig.local_users || []).map(u => ({ username: u.username }));
+    authLocalUsers = (authConfig.local_users || []).map(u => ({ username: u.username, role: u.role || 'admin' }));
     renderAll();
     setStatus('');
     loadIperfServiceStatus();
@@ -2343,6 +2389,10 @@ function renderAuth() {
   setVal('auth-radius-port',    authConfig.radius_port    || 1812);
   setVal('auth-radius-timeout', authConfig.radius_timeout || 5);
   setVal('auth-radius-secret',  '');
+  setVal('auth-radius-role-attr',      authConfig.radius_role_attribute || 'Class');
+  setVal('auth-radius-admin-value',    authConfig.radius_admin_value    ?? 'linkstate-admin');
+  setVal('auth-radius-readonly-value', authConfig.radius_readonly_value ?? 'linkstate-readonly');
+  setVal('auth-radius-default-role',   authConfig.radius_default_role   || 'admin');
   updateRadiusSecretPlaceholder();
   updateAuthMethodHints();
   renderLocalUsersList();
@@ -2380,6 +2430,10 @@ function collectAuth() {
     radius_server:  getVal('auth-radius-server'),
     radius_port:    parseInt(getVal('auth-radius-port'))    || 1812,
     radius_timeout: parseInt(getVal('auth-radius-timeout')) || 5,
+    radius_role_attribute: getVal('auth-radius-role-attr') || 'Class',
+    radius_admin_value:    getVal('auth-radius-admin-value'),
+    radius_readonly_value: getVal('auth-radius-readonly-value'),
+    radius_default_role:   getVal('auth-radius-default-role') || 'admin',
   };
 }
 
@@ -2390,6 +2444,10 @@ function authSavePayload() {
     radius_server:  authConfig.radius_server || '',
     radius_port:    authConfig.radius_port,
     radius_timeout: authConfig.radius_timeout,
+    radius_role_attribute: authConfig.radius_role_attribute || 'Class',
+    radius_admin_value:    authConfig.radius_admin_value    ?? 'linkstate-admin',
+    radius_readonly_value: authConfig.radius_readonly_value ?? 'linkstate-readonly',
+    radius_default_role:   authConfig.radius_default_role   || 'admin',
   };
   const secret = document.getElementById('auth-radius-secret').value;
   if (secret) out.radius_secret = secret;
@@ -2406,8 +2464,14 @@ function renderLocalUsersList() {
   list.innerHTML = authLocalUsers.map(u => `
     <div class="card" style="margin-bottom:6px">
       <div class="card-header" style="cursor:default">
-        <div class="card-title"><span>${escHtml(u.username)}</span></div>
+        <div class="card-title"><span>${escHtml(u.username)}</span>
+          <span class="badge ${u.role === 'readonly' ? 'badge-off' : 'badge-svi'}">${u.role === 'readonly' ? 'Read-only' : 'Admin'}</span></div>
         <div class="card-actions">
+          <select style="font-size:10px;padding:2px 4px" aria-label="Account type for ${escHtml(u.username)}"
+            onchange="setLocalUserRole(${escHtml(JSON.stringify(u.username))}, this.value, this)">
+            <option value="admin"${u.role === 'readonly' ? '' : ' selected'}>Admin</option>
+            <option value="readonly"${u.role === 'readonly' ? ' selected' : ''}>Read-only</option>
+          </select>
           <button class="btn btn-danger" style="font-size:10px;padding:3px 8px"
             onclick="removeLocalUser('${escHtml(u.username)}')">✕ Remove</button>
         </div>
@@ -2428,15 +2492,19 @@ async function addLocalUser() {
     status.style.color = type === 'err' ? 'var(--rd)' : 'var(--gn)';
   };
 
+  const role   = getVal('auth-new-role') || 'admin';
+  const exists = authLocalUsers.some(u => u.username === username);
+
   if (!username)              return showStatus('Username is required', 'err');
-  if (password.length < 8)    return showStatus('Password must be at least 8 characters', 'err');
+  if ((password || !exists) && password.length < 8)
+                              return showStatus('Password must be at least 8 characters', 'err');
   if (password !== password2) return showStatus('Passwords do not match', 'err');
 
   try {
     const r   = await fetch('/api/config/local-users', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, role }),
     });
     const res = await r.json();
     if (!r.ok || res.error) return showStatus(res.error || 'Save failed', 'err');
@@ -2447,10 +2515,33 @@ async function addLocalUser() {
     setVal('auth-new-username', '');
     setVal('auth-new-password', '');
     setVal('auth-new-password2', '');
+    setVal('auth-new-role', 'admin');
     showStatus(`User '${username}' saved`, 'ok');
     toast(`Local user '${username}' saved ✓`, 'ok');
   } catch(e) {
     showStatus('Save error: ' + e.message, 'err');
+  }
+}
+
+async function setLocalUserRole(username, role, sel) {
+  try {
+    const r   = await fetch('/api/config/local-users', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ username, role }),
+    });
+    const res = await r.json();
+    if (!r.ok || res.error) {
+      toast(res.error || 'Update failed', 'err');
+      renderLocalUsersList();   // put the select back
+      return;
+    }
+    authLocalUsers = res.users;
+    renderLocalUsersList();
+    toast(`'${username}' is now ${role === 'readonly' ? 'read-only' : 'an admin'} ✓`, 'ok');
+  } catch(e) {
+    toast('Update error: ' + e.message, 'err');
+    renderLocalUsersList();
   }
 }
 

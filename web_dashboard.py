@@ -32,7 +32,8 @@ from flask import Flask, jsonify, send_from_directory, send_file, abort, request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.config_loader import (load_config, agent_host_errors, parse_thresholds, THRESHOLD_DEFAULTS,
-                                parse_branding, Branding)
+                                parse_branding, Branding, ROLE_ADMIN, ROLE_READONLY, ROLES,
+                                RADIUS_ROLE_ATTRIBUTES, normalize_role)
 from core.hostaddr import validate_host, resolve_all, is_ip, HostResolutionError
 from core.results import ResultStore
 from core.path_tester import PathTester
@@ -147,13 +148,65 @@ def _session_expired() -> bool:
     return time.time() - login_at > _session_lifetime().total_seconds()
 
 
+# ── Account types ─────────────────────────────────────────
+# Read-only accounts may use any GET below except the admin-only ones, plus the
+# browser speed test (it measures the viewer's own link and saves nothing but
+# its result). Everything else that changes state is admin-only. Checked
+# centrally so a new write endpoint is admin-only unless listed here.
+_READONLY_WRITE_ALLOWED = ("/login", "/logout", "/api/speedtest/")
+_ADMIN_ONLY_PREFIXES = (
+    "/config", "/api/config", "/api/ssh/", "/api/packages", "/api/https/",
+    "/api/update/", "/api/export", "/api/import/", "/api/onboard",
+)
+
+
+def _path_matches(path: str, prefixes) -> bool:
+    return any(path == p or path.startswith(p if p.endswith("/") else p + "/")
+               or (p.endswith("/") and path == p[:-1]) for p in prefixes)
+
+
+def _current_role():
+    """Role of the logged-in session, or None if it must log in again."""
+    if not _config or not _config.auth.method:
+        return ROLE_ADMIN
+    role = session.get("role")
+    if role not in ROLES:
+        return None   # session from before account types — log in again
+    if session.get("auth_source") == "local":
+        # Re-read so a demoted or removed local user takes effect immediately.
+        user = next((u for u in _config.auth.local_users
+                     if u.username == session.get("username")), None)
+        return user.role if user else None
+    return role
+
+
+def _is_admin() -> bool:
+    return _current_role() == ROLE_ADMIN
+
+
+@app.before_request
+def _enforce_role():
+    if not session.get("authenticated") or _current_role() != ROLE_READONLY:
+        return None   # admins, and not-logged-in (login_required handles those)
+    path = request.path
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        blocked = _path_matches(path, _ADMIN_ONLY_PREFIXES)
+    else:
+        blocked = not _path_matches(path, _READONLY_WRITE_ALLOWED)
+    if not blocked:
+        return None
+    if path.startswith("/api/"):
+        return jsonify({"error": "Your account is read-only"}), 403
+    return redirect("/")
+
+
 def login_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
         if not _config or not _config.auth.method:
             return f(*args, **kwargs)
-        if session.get("authenticated") and _session_expired():
+        if session.get("authenticated") and (_session_expired() or _current_role() is None):
             session.clear()
         if not session.get("authenticated"):
             if request.path.startswith("/api/"):
@@ -1513,8 +1566,12 @@ def api_export():
             "radius_port":                a.radius_port,
             "radius_secret":              a.radius_secret,
             "radius_timeout":             a.radius_timeout,
+            "radius_role_attribute":      a.radius_role_attribute,
+            "radius_admin_value":         a.radius_admin_value,
+            "radius_readonly_value":      a.radius_readonly_value,
+            "radius_default_role":        a.radius_default_role,
             "local_users": [
-                {"username": u.username, "password_hash": u.password_hash}
+                {"username": u.username, "password_hash": u.password_hash, "role": u.role}
                 for u in a.local_users
             ],
             "session_secret":             a.session_secret,
@@ -2309,7 +2366,7 @@ def _render_live_page(job_id: str) -> str:
 <div id="toolbar">
   <button class="btn" onclick="copyAll()">&#10088; Copy</button>
   <button class="btn" onclick="clearOut()">&times; Clear</button>
-  <button class="btn btn-abort" id="abort-btn" onclick="doAbort()">&#9209; Abort</button>
+  <button class="btn btn-abort admin-only" id="abort-btn" onclick="doAbort()">&#9209; Abort</button>
   <span id="elapsed">0s</span>
   <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;margin-left:auto">
     <input type="checkbox" id="asc" checked> Auto-scroll
@@ -3051,11 +3108,15 @@ def api_config_get():
     # RADIUS/local by inference (see load_config).
     if _config:
         auth['method'] = _config.auth.method
+        for key in ('radius_role_attribute', 'radius_admin_value',
+                    'radius_readonly_value', 'radius_default_role'):
+            auth[key] = getattr(_config.auth, key)
     if 'radius_secret' in auth:
         auth['radius_secret_set'] = bool(auth.pop('radius_secret'))
     auth.pop('session_secret', None)
     for u in auth.get('local_users') or []:
         u.pop('password_hash', None)
+        u['role'] = normalize_role(u.get('role'))
     ssh = raw.get('ssh_defaults') or {}
     if 'password' in ssh:
         ssh['password_set'] = bool(ssh.pop('password'))
@@ -3064,6 +3125,17 @@ def api_config_get():
     raw['branding'] = asdict(_config.branding if _config else parse_branding(raw.get('branding'))[0])
     raw['branding_assets'] = {k: branding.asset_url(k) for k in branding.ASSET_KINDS}
     return jsonify(raw)
+
+
+@app.route('/api/schedule')
+@login_required
+def api_schedule():
+    """Schedule only — what the dashboard's next-run countdown needs, without
+    the rest of the config (which read-only accounts can't see)."""
+    import yaml
+    with open(_config_path, 'r') as f:
+        raw = yaml.safe_load(f) or {}
+    return jsonify(raw.get('schedule') or {})
 
 
 @app.route('/api/thresholds')
@@ -3173,6 +3245,23 @@ def api_config_save():
                 return jsonify({'error': f'{key} must be between {lo} and {hi}'})
             incoming_auth[key] = val
 
+        if 'radius_role_attribute' in incoming_auth:
+            if incoming_auth['radius_role_attribute'] not in RADIUS_ROLE_ATTRIBUTES:
+                return jsonify({'error': 'RADIUS role attribute must be one of '
+                                         + ', '.join(RADIUS_ROLE_ATTRIBUTES)})
+        for key in ('radius_admin_value', 'radius_readonly_value'):
+            if key in incoming_auth:
+                incoming_auth[key] = str(incoming_auth[key] or '').strip()
+        if (incoming_auth.get('radius_admin_value') and
+                incoming_auth.get('radius_admin_value', '').lower()
+                == incoming_auth.get('radius_readonly_value', '').lower()):
+            return jsonify({'error': 'The RADIUS admin and read-only values must differ'})
+        if 'radius_default_role' in incoming_auth:
+            role = normalize_role(incoming_auth['radius_default_role'], default='')
+            if not role:
+                return jsonify({'error': 'RADIUS default account type must be "admin" or "readonly"'})
+            incoming_auth['radius_default_role'] = role
+
         # "Disabled" in the UI is sent as "". Store it as "none": a blank method
         # is inferred as RADIUS/local by load_config, which wouldn't disable login.
         if 'method' in incoming_auth and not incoming_auth['method']:
@@ -3183,6 +3272,9 @@ def api_config_save():
         if new_method == 'local' and not raw['auth'].get('local_users'):
             return jsonify({'error': 'Cannot set login method to "Local accounts" — '
                                       'add a local user first.'})
+        if new_method == 'local' and not _local_admins_left(raw['auth'].get('local_users') or []):
+            return jsonify({'error': 'Cannot set login method to "Local accounts" — '
+                                      'every local user is read-only. Make one an admin first.'})
         if new_method == 'radius' and not merged.get('radius_server'):
             return jsonify({'error': 'Cannot set login method to "RADIUS" — enter a RADIUS '
                                       'server first.'})
@@ -3207,16 +3299,26 @@ def api_config_save():
         return jsonify({'error': f'Config saved but reload failed: {e}'}), 500
 
 
+def _local_users_json():
+    return [{'username': u.username, 'role': u.role} for u in _config.auth.local_users]
+
+
+def _local_admins_left(users_raw) -> int:
+    return sum(1 for u in users_raw if normalize_role(u.get('role')) == ROLE_ADMIN)
+
+
 @app.route('/api/config/local-users', methods=['GET'])
 @login_required
 def api_local_users_list():
-    return jsonify({'users': [{'username': u.username} for u in _config.auth.local_users]})
+    return jsonify({'users': _local_users_json()})
 
 
 @app.route('/api/config/local-users', methods=['POST'])
 @login_required
 def api_local_users_add():
-    """Add a new local user, or reset an existing one's password (upsert)."""
+    """Add a new local user, or update an existing one's password and/or
+    account type (upsert). Password may be left blank when only the account
+    type of an existing user changes."""
     import yaml
     from werkzeug.security import generate_password_hash
     global _config, _tester
@@ -3224,25 +3326,38 @@ def api_local_users_add():
     body     = request.get_json(silent=True) or {}
     username = (body.get('username') or '').strip()
     password = body.get('password') or ''
+    role_in  = body.get('role')
+    role     = normalize_role(role_in, default='')
+    if role_in not in (None, '') and not role:
+        return jsonify({'error': 'Account type must be "admin" or "readonly"'}), 400
 
     if not username:
         return jsonify({'error': 'Username is required'}), 400
-    if len(password) < 8:
-        return jsonify({'error': 'Password must be at least 8 characters'}), 400
 
     with open(_config_path, 'r') as f:
         raw = yaml.safe_load(f)
 
     auth  = raw.setdefault('auth', {})
     users = auth.setdefault('local_users', [])
-    pw_hash = generate_password_hash(password)
+    existing = next((u for u in users if u.get('username') == username), None)
 
-    for u in users:
-        if u.get('username') == username:
-            u['password_hash'] = pw_hash
-            break
+    if password or not existing:
+        if len(password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+    if existing:
+        if password:
+            existing['password_hash'] = generate_password_hash(password)
+        if role:
+            existing['role'] = role
     else:
-        users.append({'username': username, 'password_hash': pw_hash})
+        users.append({'username': username, 'password_hash': generate_password_hash(password),
+                      'role': role or ROLE_ADMIN})
+
+    if _config.auth.method == 'local' and not _local_admins_left(users):
+        return jsonify({'error': 'Can\'t make the last local admin read-only while "Local '
+                                  'accounts" is the login method — no one could change '
+                                  'settings any more. Add another admin first.'}), 400
 
     with open(_config_path, 'w') as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -3253,7 +3368,7 @@ def api_local_users_add():
     except Exception as e:
         return jsonify({'error': f'Saved but reload failed: {e}'}), 500
 
-    return jsonify({'ok': True, 'users': [{'username': u.username} for u in _config.auth.local_users]})
+    return jsonify({'ok': True, 'users': _local_users_json()})
 
 
 @app.route('/api/config/local-users/<username>', methods=['DELETE'])
@@ -3275,6 +3390,9 @@ def api_local_users_delete(username):
         return jsonify({'error': 'Cannot remove the last local user while "Local accounts" is '
                                   'the active login method — switch method or add another '
                                   'user first.'}), 400
+    if _config.auth.method == 'local' and not _local_admins_left(remaining):
+        return jsonify({'error': 'Cannot remove the last local admin while "Local accounts" is '
+                                  'the active login method — add another admin first.'}), 400
 
     auth['local_users'] = remaining
 
@@ -3287,7 +3405,7 @@ def api_local_users_delete(username):
     except Exception as e:
         return jsonify({'error': f'Saved but reload failed: {e}'}), 500
 
-    return jsonify({'ok': True, 'users': [{'username': u.username} for u in _config.auth.local_users]})
+    return jsonify({'ok': True, 'users': _local_users_json()})
 
 
 @app.route('/api/config/iperf-service-status')
@@ -3616,6 +3734,7 @@ def login():
     if not _config or not _config.auth.method:
         session["authenticated"] = True
         session["username"] = "admin"
+        session["role"] = ROLE_ADMIN
         return redirect(request.args.get("next", "/"))
 
     error = ""
@@ -3635,6 +3754,7 @@ def login():
         else:
             _record_attempt(ip)
             try:
+                auth_source = _config.auth.method
                 if _config.auth.method == "local":
                     from core.local_auth import authenticate_local
                     authed = authenticate_local(username, password, _config.auth)
@@ -3655,10 +3775,11 @@ def login():
                             "RADIUS unreachable (%s) — trying local fallback for user '%s'",
                             radius_err, username,
                         )
+                        auth_source = "local"
                         try:
                             authed = authenticate_local(username, password, _config.auth)
                         except LocalAuthError:
-                            authed = False
+                            authed = None
                         if authed:
                             auth_log.warning(
                                 "User '%s' authenticated via local fallback account "
@@ -3666,9 +3787,13 @@ def login():
                             )
 
                 if authed:
+                    # authed is the account's role
+                    session.clear()
                     session.permanent = True
                     session["authenticated"] = True
                     session["username"] = username
+                    session["role"] = authed
+                    session["auth_source"] = auth_source
                     session["login_at"] = time.time()
                     with _login_lock:
                         _login_attempts[ip].clear()
@@ -3753,6 +3878,15 @@ def _brand_head(theme: bool = True) -> str:
     # "<" escaped so no value can close the <script> element.
     parts.append("<script>window.LS_BRAND=" +
                  json.dumps(info).replace("<", "\\u003c") + ";</script>")
+    # Account type: read-only sessions hide controls marked .admin-only. The
+    # server enforces it regardless (see _enforce_role) — this is just UI.
+    if session.get("authenticated") or not (_config and _config.auth.method):
+        user = {"username": session.get("username", ""), "role": _current_role() or ROLE_READONLY}
+        parts.append("<style>.ls-readonly .admin-only{display:none!important}</style>")
+        parts.append("<script>window.LS_USER=" +
+                     json.dumps(user).replace("<", "\\u003c") + ";"
+                     "if(LS_USER.role!=='admin')document.documentElement.classList.add('ls-readonly');"
+                     "</script>")
     return "\n".join(parts)
 
 

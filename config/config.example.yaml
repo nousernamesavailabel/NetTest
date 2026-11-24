@@ -50,6 +50,22 @@ auth:
   # RADIUS request timeout in seconds
   radius_timeout: 5
 
+  # Account type for RADIUS users: "admin" (full access) or "readonly" (can
+  # view results, compare runs and use the browser speed test, but can't run
+  # path tests, edit notes or open Config). Have the RADIUS server return
+  # radius_role_attribute ("Class" or "Filter-Id") in the Access-Accept, set
+  # to one of the values below (case-insensitive). Users whose reply has
+  # neither value get radius_default_role. The default role is "admin" so
+  # existing RADIUS users keep full access — set it to "readonly" so only
+  # users the server marks as admins get full access.
+  #   FreeRADIUS users file example:
+  #     alice  Cleartext-Password := "..."
+  #            Class = "linkstate-readonly"
+  radius_role_attribute: Class
+  radius_admin_value: linkstate-admin
+  radius_readonly_value: linkstate-readonly
+  radius_default_role: admin
+
   # ── Local accounts (method: local, or fallback when method: radius) ──
   # One or more local username/password accounts, checked against the
   # dashboard's own login form — no external server required.
@@ -68,9 +84,16 @@ auth:
   #     "from werkzeug.security import generate_password_hash; \
   #      print(generate_password_hash(input('Password: ')))"
   #
+  # role is "admin" (the default when left out) or "readonly" — see
+  # radius_default_role above for what read-only accounts can do.
+  #
   # local_users:
   #   - username: admin
   #     password_hash: "pbkdf2:sha256:..."
+  #     role: admin
+  #   - username: noc-viewer
+  #     password_hash: "pbkdf2:sha256:..."
+  #     role: readonly
   local_users: []
 
   # Secret key for signing Flask session cookies.

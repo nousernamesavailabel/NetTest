@@ -171,8 +171,8 @@ table.metrics tr:last-child td{border-bottom:none}
     </div>
     <div class="topbar-right">
       <a href="/">← Dashboard</a>
-      <span style="color:var(--bdr2)">|</span>
-      <a href="/config">⚙ Config</a>
+      <span class="admin-only" style="color:var(--bdr2)">|</span>
+      <a href="/config" class="admin-only">⚙ Config</a>
       <span style="color:var(--bdr2)">|</span>
       <a href="/logout">Logout</a>
     </div>
@@ -595,7 +595,7 @@ function renderMeta(side, record) {
     </span>
     ${errLine}
     ${notesLine}
-    <span>${tagChips} <span class="edit-link" onclick="openAnnotateModal('${side}')">🏷 edit notes/tags</span></span>`;
+    <span>${tagChips} <span class="edit-link admin-only" onclick="openAnnotateModal('${side}')">🏷 edit notes/tags</span></span>`;
 }
 
 // ── Notes/tags editor ──────────────────────────────────────

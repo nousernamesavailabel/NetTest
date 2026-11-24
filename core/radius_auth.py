@@ -2,14 +2,47 @@
 RADIUS authentication helper for the web dashboard.
 """
 
+import logging
 import os
+from typing import Optional
+
+from core.config_loader import normalize_role, ROLE_ADMIN, ROLE_READONLY
+
+_log = logging.getLogger("auth")
 
 
 class RadiusAuthError(Exception):
     pass
 
 
-def authenticate_radius(username: str, password: str, auth_config) -> bool:
+def _reply_values(reply, attribute: str) -> list:
+    try:
+        values = reply[attribute]
+    except KeyError:
+        return []
+    out = []
+    for v in values:
+        if isinstance(v, bytes):
+            v = v.decode("utf-8", errors="replace")
+        out.append(str(v).strip().lower())
+    return out
+
+
+def role_from_reply(reply, auth_config) -> str:
+    """Pick the account type from the Access-Accept's role attribute."""
+    values = _reply_values(reply, auth_config.radius_role_attribute or "Class")
+    admin_value    = (auth_config.radius_admin_value or "").strip().lower()
+    readonly_value = (auth_config.radius_readonly_value or "").strip().lower()
+    # Admin wins if a server sends both.
+    if admin_value and admin_value in values:
+        return ROLE_ADMIN
+    if readonly_value and readonly_value in values:
+        return ROLE_READONLY
+    return normalize_role(auth_config.radius_default_role)
+
+
+def authenticate_radius(username: str, password: str, auth_config) -> Optional[str]:
+    """Return the account's role ("admin" / "readonly") on Access-Accept, else None."""
     if not auth_config.radius_server:
         raise RadiusAuthError("RADIUS server is not configured")
     if not auth_config.radius_secret:
@@ -45,4 +78,8 @@ def authenticate_radius(username: str, password: str, auth_config) -> bool:
     except Exception as exc:
         raise RadiusAuthError(f"RADIUS request failed: {exc}") from exc
 
-    return reply.code == AccessAccept
+    if reply.code != AccessAccept:
+        return None
+    role = role_from_reply(reply, auth_config)
+    _log.info("RADIUS accepted user '%s' as %s", username, role)
+    return role

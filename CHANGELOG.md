@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+---
+
+## [2.2.0] - 2026-11-24
+
+### Added
+- **Read-only accounts.** Every account is now either an admin (full access, as before) or read-only. Read-only accounts can view the dashboard, results, traceroutes and job output, compare runs, export CSV and summaries, and run the browser speed test. They can't run or abort path tests, clear results, edit notes/tags, or open Config, and the controls for those are hidden. The server enforces this centrally: any request that changes state, and any Config, SSH, package, HTTPS, update or import/export endpoint, is refused with 403 for read-only sessions.
+  - Local users get an account type (`role: admin | readonly` in `config.yaml`; existing users default to admin). Set it when adding a user in Config → Auth, or change it from the user list. You can't remove the last local admin, or make them read-only, while local login is in use.
+  - RADIUS users get their account type from the Access-Accept: return `Class` or `Filter-Id` (configurable) set to `linkstate-admin` or `linkstate-readonly` (also configurable). Users with neither value get `radius_default_role`, which is `admin` so existing RADIUS users keep full access. Set it to `readonly` so only users the server marks as admins get full access.
+  - The local fallback login used while RADIUS is unreachable uses the local user's account type.
+- `GET /api/schedule`, which the dashboard's next-run countdown now uses instead of reading the whole config.
+
+### Changed
+- Local users' account types take effect immediately. Changing a user's type, or removing the user, applies to their open sessions on the next request.
+- Sessions from before this change have to log in again once.
+
+---
+
 ## [2.1.0] - 2026-11-19
 
 ### Added

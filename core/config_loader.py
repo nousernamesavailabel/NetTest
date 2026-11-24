@@ -342,10 +342,30 @@ def parse_branding(raw) -> "tuple[Branding, List[str]]":
     return out, errors
 
 
+# Account types. "admin" can do everything; "readonly" can view results but
+# can't run tests, change config, or manage the controller.
+ROLE_ADMIN    = "admin"
+ROLE_READONLY = "readonly"
+ROLES = (ROLE_ADMIN, ROLE_READONLY)
+
+# RADIUS reply attributes that can carry the account type (see AuthConfig).
+RADIUS_ROLE_ATTRIBUTES = ("Class", "Filter-Id")
+
+
+def normalize_role(value, default: str = ROLE_ADMIN) -> str:
+    role = str(value or "").strip().lower().replace("-", "").replace("_", "")
+    if role == "admin":
+        return ROLE_ADMIN
+    if role in ("readonly", "ro", "viewer"):
+        return ROLE_READONLY
+    return default
+
+
 @dataclass
 class LocalUser:
     username: str
     password_hash: str  # werkzeug generate_password_hash() output — never plaintext
+    role: str = ROLE_ADMIN   # accounts from before roles existed were all admins
 
 
 @dataclass
@@ -359,6 +379,14 @@ class AuthConfig:
     radius_port: int = 1812
     radius_secret: str = ""
     radius_timeout: int = 5
+    # Account type for RADIUS logins, read from a reply attribute of the
+    # Access-Accept. A value matching radius_admin_value / radius_readonly_value
+    # (case-insensitive) picks that type; anything else, including no attribute
+    # at all, gets radius_default_role.
+    radius_role_attribute: str = "Class"
+    radius_admin_value: str = "linkstate-admin"
+    radius_readonly_value: str = "linkstate-readonly"
+    radius_default_role: str = ROLE_ADMIN   # admin keeps pre-role behaviour
     local_users: List[LocalUser] = field(default_factory=list)
     session_secret: str = ""
     session_lifetime_minutes: int = 480
@@ -514,9 +542,16 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
     raw_auth = dict(raw.get("auth") or {})
     raw_local_users = raw_auth.pop("local_users", None) or []
     local_users = [
-        LocalUser(username=u["username"], password_hash=u["password_hash"])
+        LocalUser(username=u["username"], password_hash=u["password_hash"],
+                  role=normalize_role(u.get("role")))
         for u in raw_local_users
     ]
+    if "radius_default_role" in raw_auth:
+        raw_auth["radius_default_role"] = normalize_role(raw_auth["radius_default_role"])
+    if raw_auth.get("radius_role_attribute") not in (None, *RADIUS_ROLE_ATTRIBUTES):
+        logger.warning(f"config: auth.radius_role_attribute must be one of "
+                       f"{', '.join(RADIUS_ROLE_ATTRIBUTES)} — using Class")
+        raw_auth["radius_role_attribute"] = "Class"
     method = (raw_auth.pop("method", "") or "").strip().lower()
     if method not in ("", "none", "radius", "local"):
         method = ""

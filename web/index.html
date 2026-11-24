@@ -381,21 +381,21 @@
       <span style="color:var(--mt);font-size:11px;" id="status-text">connecting...</span>
     </div>
     <div class="topbar-right">
-      <button class="btn btn-run-all" id="btn-run-all" onclick="runAll()">▶ Run All</button>
-      <button class="btn btn-run-all" id="btn-run-latency" onclick="runAll(['latency','jitter'])" style="margin-left:4px">▶ Latency Only</button>
-      <span style="margin:0 4px;color:var(--bdr2)">|</span>
+      <button class="btn btn-run-all admin-only" id="btn-run-all" onclick="runAll()">▶ Run All</button>
+      <button class="btn btn-run-all admin-only" id="btn-run-latency" onclick="runAll(['latency','jitter'])" style="margin-left:4px">▶ Latency Only</button>
+      <span class="admin-only" style="margin:0 4px;color:var(--bdr2)">|</span>
       <button onclick="exportResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr);transition:all .15s;" onmouseover="this.style.background='var(--accent-bdr)'" onmouseout="this.style.background='var(--accent-bg)'">Export CSV</button>
       <button onclick="exportPathSummary()" id="btn-export-summary" disabled
         style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr);transition:all .15s;opacity:0.4;cursor:not-allowed;"
         onmouseover="if(!this.disabled)this.style.background='var(--accent-bdr)'" onmouseout="this.style.background='var(--accent-bg)'"
         title="Select a path to export its executive summary">📄 Export Summary</button>
-      <button onclick="clearResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a;transition:all .15s;" onmouseover="this.style.background='#3a1010'" onmouseout="this.style.background='#2a0a0a'">Clear Results</button>
+      <button class="admin-only" onclick="clearResults()" style="font-size:11px;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:var(--fn);background:#2a0a0a;color:var(--rd);border:1px solid #4d1a1a;transition:all .15s;" onmouseover="this.style.background='#3a1010'" onmouseout="this.style.background='#2a0a0a'">Clear Results</button>
       <span style="margin:0 4px;color:var(--bdr2)">|</span>
       <a href="/speedtest" style="color:var(--cy);font-size:11px;text-decoration:none" title="Browser speed test">⚡ Speed Test</a>
       <span style="margin:0 4px;color:var(--bdr2)">|</span>
       <a href="/compare" style="color:var(--cy);font-size:11px;text-decoration:none" title="Compare two runs">⇄ Compare</a>
-      <span style="margin:0 4px;color:var(--bdr2)">|</span>
-      <a href="/config" style="color:var(--cy);font-size:11px;text-decoration:none" title="Config Editor">⚙ Config</a>
+      <span class="admin-only" style="margin:0 4px;color:var(--bdr2)">|</span>
+      <a href="/config" class="admin-only" style="color:var(--cy);font-size:11px;text-decoration:none" title="Config Editor">⚙ Config</a>
       <span style="margin:0 4px;color:var(--bdr2)">|</span>
       <a href="/logout" style="color:var(--cy);font-size:11px;text-decoration:none" title="Logout">Logout</a>
       <span style="margin:0 4px;color:var(--bdr2)">|</span>
@@ -585,7 +585,7 @@
           <button class="day-tab mobile-log-toggle" id="mobile-log-toggle-btn" onclick="toggleMobileLog()"
             style="padding:2px 8px;font-size:10px" title="Show/hide output">▾</button>
           <span class="log-badge log-badge-idle" id="log-status">idle</span>
-          <button class="day-tab" id="abort-btn" onclick="abortCurrentJob()"
+          <button class="day-tab admin-only" id="abort-btn" onclick="abortCurrentJob()"
             style="padding:2px 8px;font-size:10px;display:none;
                    color:#ff6060;border-color:#8b2020;background:#1a0808">
             ⏹ Abort
@@ -906,14 +906,14 @@ function renderPathTestActions(pathId) {
       // One button per configured direction, so a single direction can be
       // run on demand without waiting on the others.
       return path.directions.map(d => `
-        <button class="btn nav-run-btn" id="test-run-btn-${pathId}-${t}-${d}"
+        <button class="btn nav-run-btn admin-only" id="test-run-btn-${pathId}-${t}-${d}"
           onclick="runPath('${pathId}', ['${t}'], ['${d}'])"
           title="Run only Throughput (${DIRECTION_LABELS[d] || d}) for this path"
           >▶ Throughput ${DIRECTION_LABELS[d] || d}</button>
       `).join('');
     }
     return `
-    <button class="btn nav-run-btn" id="test-run-btn-${pathId}-${t}"
+    <button class="btn nav-run-btn admin-only" id="test-run-btn-${pathId}-${t}"
       onclick="runPath('${pathId}', ['${t}'])"
       title="Run only ${TEST_LABELS[t] || t} for this path">▶ ${TEST_LABELS[t] || t}</button>`;
   }).join('');
@@ -1313,8 +1313,7 @@ let _nextRunTimer = null;
 
 async function updateNextRun() {
   try {
-    const cfg = await api('/api/config');
-    const schedule = cfg.schedule || {};
+    const schedule = (await api('/api/schedule')) || {};
     if (schedule.enabled === false) {
       if (_nextRunTimer) clearInterval(_nextRunTimer);
       el('s-nextrun').textContent = 'paused';
@@ -1517,7 +1516,7 @@ function updateJobsSidebar() {
       <button title="Expand live output" onclick="event.stopPropagation();openLivePopout('${j.job_id}')"
         style="font-size:9px;padding:1px 5px;background:#1a2030;border:1px solid #2a3040;
                border-radius:3px;color:#5bc4f5;cursor:pointer;flex-shrink:0">⤢</button>
-      ${isRunning ? `<button title="Abort" onclick="event.stopPropagation();abortJob('${j.job_id}')"
+      ${isRunning ? `<button class="admin-only" title="Abort" onclick="event.stopPropagation();abortJob('${j.job_id}')"
         style="font-size:9px;padding:1px 5px;background:#1a0808;border:1px solid #8b2020;
                border-radius:3px;color:#ff6060;cursor:pointer;flex-shrink:0">⏹</button>` : ''}`;
     return `<div style="padding:3px 0;display:flex;gap:4px;align-items:center" onclick="openLogStream('${j.job_id}','${label}')">
@@ -1634,7 +1633,7 @@ function renderNavItem(p) {
       <span class="nav-item-label" title="${p.label}">${p.label}</span>
       <div style="display:flex;align-items:center;gap:5px">
         <span class="nav-badge badge-dim" id="badge-${p.id}">—</span>
-        <button class="nav-run-btn" id="run-btn-${p.id}"
+        <button class="nav-run-btn admin-only" id="run-btn-${p.id}"
           onclick="event.stopPropagation();runPath('${p.id}')">▶</button>
       </div>
     </div>`;
@@ -2003,7 +2002,7 @@ function renderTable(records) {
       : '';
     const cmpBtn = `<span class="tr-row-btn" title="Compare this run against another"
            onclick="event.stopPropagation(); window.location.href='/compare?a=${r.result_id}'">⇄ cmp</span>`;
-    const tagBtn = `<span class="tr-row-btn" title="Add notes/tags for this run"
+    const tagBtn = `<span class="tr-row-btn admin-only" title="Add notes/tags for this run"
            onclick="event.stopPropagation(); openAnnotateModal('${r.result_id}')">🏷</span>`;
 
     const tags = r.tags || [];
