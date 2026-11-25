@@ -53,6 +53,7 @@ a:hover{text-decoration:underline}
 .badge-endpoint  {background:#0f3320;color:var(--gn);border:1px solid #1a4d30}
 .badge-svi       {background:var(--accent-bg);color:var(--cy);border:1px solid var(--accent-bdr)}
 .badge-noagent   {background:#1e0d3c;color:#b48ae0;border:1px solid #5a2a9a}
+.badge-web       {background:#0d2a1e;color:#5fd3a0;border:1px solid #1f6a4a}
 .badge-reonboard {background:#2a2000;color:var(--yw);border:1px solid #4a3800;cursor:help}
 .badge-on        {background:#1a1000;color:var(--yw);border:1px solid #3a2500}
 .badge-off       {background:var(--surf3);color:var(--mt);border:1px solid var(--bdr2)}
@@ -554,6 +555,15 @@ select option{background:var(--bg)}
             <div style="display:flex;align-items:center;gap:8px">
               <input type="number" id="tp-lat-size" min="28" max="1400" style="width:80px">
               <span style="color:var(--mt);font-size:11px">bytes</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>TCP probe count</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="tp-lat-tcp-count" min="3" max="300" style="width:80px">
+              <span style="color:var(--mt);font-size:11px"
+                title="Web Server destinations that don't answer ping are timed by TCP handshake, one probe per second">
+                Web Server TCP handshakes (1/sec)</span>
             </div>
           </div>
         </div>
@@ -1485,6 +1495,28 @@ const DEFAULT_ACCENT = '#06b6d4';
 const ALL_TESTS = ['throughput','latency','latency_under_load','jitter','mtu','traceroute'];
 const SVI_TESTS  = ['latency','mtu','traceroute'];   // tests supported by switch_router agents
 const NO_AGENT_TESTS = ['latency','mtu','traceroute','throughput','jitter','latency_under_load'];
+const WEB_SERVER_TESTS = ['latency','traceroute'];  // MTU needs ICMP, which web servers may filter
+const NO_SSH_TYPES = ['switch_router','agent_not_installed','web_server'];
+function isNoSsh(type) { return NO_SSH_TYPES.includes(type); }
+// Tests a destination of this type supports (null = all)
+function supportedTests(type) {
+  return type === 'switch_router' ? SVI_TESTS
+       : type === 'agent_not_installed' ? NO_AGENT_TESTS
+       : type === 'web_server' ? WEB_SERVER_TESTS
+       : null;
+}
+const TYPE_LIMIT_NOTE = {
+  switch_router:       'Switch/Router (latency/MTU/traceroute only)',
+  agent_not_installed: 'Agent Not Installed',
+  web_server:          'Web Server (latency/traceroute only)',
+};
+function typeBadge(type) {
+  const [cls, txt] = type === 'switch_router' ? ['badge-svi', 'SVI']
+                   : type === 'agent_not_installed' ? ['badge-noagent', 'NO AGENT']
+                   : type === 'web_server' ? ['badge-web', 'WEB']
+                   : ['badge-endpoint', 'AGENT'];
+  return `<span class="badge ${cls}">${txt}</span>`;
+}
 const TEST_LABELS = {
   throughput:          'Throughput',
   latency:             'Latency',
@@ -1568,15 +1600,14 @@ function renderAgents() {
         <div class="card-title">
           <span class="card-chevron" id="agent-chev-${i}">▶</span>
           <span>${escHtml(a.label || a.id || 'Agent ' + (i+1))}</span>
-          <span class="badge ${a.type === 'switch_router' ? 'badge-svi' : a.type === 'agent_not_installed' ? 'badge-noagent' : 'badge-endpoint'}">
-            ${a.type === 'switch_router' ? 'SVI' : a.type === 'agent_not_installed' ? 'NO AGENT' : 'AGENT'}
-          </span>
+          ${typeBadge(a.type)}
           ${iperfSvcBadge(a)}
           <span style="color:var(--mt);font-size:11px">${escHtml(a.host_mgmt_ip || a.host || '')}</span>
         </div>
         <div class="card-actions" onclick="event.stopPropagation()">
           <button class="btn btn-ghost" style="font-size:10px;padding:3px 8px"
-            onclick="testAgent(${i})">⚡ Test</button>
+            onclick="testAgent(${i})"
+            title="${isNoSsh(a.type) ? 'Check the test host is reachable from the controller' : 'Test SSH login and iPerf3'}">⚡ Test</button>
           ${isInstalledAgent(a) ? `<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px"
             onclick="reonboardAgent(${i})"
             title="Re-run onboarding with admin credentials — installs the iPerf3 service and refreshes packages, key and sudoers">↻ Re-onboard</button>` : ''}
@@ -1635,12 +1666,30 @@ function renderAgents() {
             style="width:100px"
             title="Port the persistent iPerf3 server is listening on">
         </div>` : ''}
+        ${a.type === 'web_server' ? `
+        <div class="form-row">
+          <label>TCP port</label>
+          <input type="number" min="1" max="65535" value="${a.tcp_port||''}" placeholder="443 (default)"
+            oninput="agents[${i}].tcp_port=parseInt(this.value)||null;markDirty()"
+            style="width:100px"
+            title="Port the web server listens on — latency is timed as TCP handshakes to it when ping is blocked, and traceroute probes it">
+        </div>
+        <div class="form-row">
+          <label>Latency method</label>
+          <select onchange="agents[${i}].latency_method=this.value;markDirty()"
+            title="Auto: ping if the server answers ICMP, otherwise time TCP handshakes. TCP: always time handshakes. ICMP: ping only.">
+            <option value="auto" ${(a.latency_method||'auto')==='auto'?'selected':''}>Auto (ping, else TCP)</option>
+            <option value="tcp"  ${a.latency_method==='tcp'?'selected':''}>TCP handshake</option>
+            <option value="icmp" ${a.latency_method==='icmp'?'selected':''}>ICMP ping</option>
+          </select>
+        </div>` : ''}
         <div class="form-row">
           <label>Type</label>
-          <select onchange="agents[${i}].type=this.value;updateAgentHeader(${i});markDirty();toggleIperf3Port(${i})">
+          <select onchange="changeAgentType(${i}, this.value)">
             <option value="agent_installed"    ${a.type==='agent_installed'||a.type==='endpoint'?'selected':''}>Agent Installed</option>
             <option value="switch_router"         ${a.type==='switch_router'?'selected':''}>Switch/Router</option>
             <option value="agent_not_installed"   ${a.type==='agent_not_installed'?'selected':''}>Agent Not Installed</option>
+            <option value="web_server"            ${a.type==='web_server'?'selected':''}>Web Server</option>
           </select>
         </div>
         <div id="agent-ping-${i}"></div>
@@ -1759,6 +1808,27 @@ async function testAgent(i) {
   const div = document.getElementById('agent-ping-' + i);
   const mgmtIp = a.host_mgmt_ip || a.host;
   if (!mgmtIp) { div.innerHTML = '<div class="ping-result ping-err">No Management host set</div>'; return; }
+  if (isNoSsh(a.type)) {
+    // No SSH to test — check the test host answers what its tests will use
+    const what = a.type === 'web_server' ? `ping and TCP ${a.tcp_port || 443}`
+               : a.type === 'agent_not_installed' ? 'the iPerf3 port' : 'ping';
+    div.innerHTML = `<div class="ping-result ping-pending">⟳ Checking ${what} on ${escHtml(a.host_test_ip || mgmtIp)}...</div>`;
+    try {
+      const res = await apiFetch('/api/config/test-agent', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ host: mgmtIp, host_test: a.host_test_ip || '', type: a.type,
+                               tcp_port: a.tcp_port || null, iperf3_port: a.iperf3_port || null,
+                               address_family: a.address_family || 'ipv4' })
+      });
+      div.innerHTML = res.ok
+        ? `<div class="ping-result ping-ok">✓ ${escHtml(res.summary)}</div>`
+        : `<div class="ping-result ping-err">✗ ${escHtml(res.error)}</div>`;
+    } catch(e) {
+      div.innerHTML = `<div class="ping-result ping-err">✗ ${escHtml(e.message)}</div>`;
+    }
+    return;
+  }
   div.innerHTML = '<div class="ping-result ping-pending">⟳ Testing SSH connectivity to ' + escHtml(mgmtIp) + '...</div>';
   try {
     const res = await apiFetch('/api/config/test-agent', {
@@ -1917,16 +1987,12 @@ function renderPathCard(i) {
           <div class="test-toggles">
             ${ALL_TESTS.map(t => {
               const dstAgent  = agents.find(a => a.id === p.destination);
-              const isSvi     = dstAgent && dstAgent.type === 'switch_router';
-              const isNoAgent = dstAgent && dstAgent.type === 'agent_not_installed';
-              const supported = isSvi ? SVI_TESTS.includes(t)
-                              : isNoAgent ? NO_AGENT_TESTS.includes(t)
-                              : true;
+              const allowed   = dstAgent ? supportedTests(dstAgent.type) : null;
+              const supported = !allowed || allowed.includes(t);
               const on        = tests.includes(t) && supported;
               const disabled  = !supported;
               const title     = disabled
-                ? (isSvi ? `${TEST_LABELS[t]} is not supported for Switch/Router agents (ping target only)`
-                         : `${TEST_LABELS[t]} is not supported for Agent Not Installed endpoints`)
+                ? `${TEST_LABELS[t]} is not supported for ${TYPE_LIMIT_NOTE[dstAgent.type]} destinations`
                 : '';
               return `<label class="test-toggle ${on?'on':''} ${disabled?'svi-disabled':''}"
                         title="${title}"
@@ -1939,34 +2005,56 @@ function renderPathCard(i) {
           </div>
         </div>
 
-        <div class="form-row tall">
-          <label>Throughput direction${(!p.directions||!p.directions.length)?' <span style="color:var(--rd)">*</span>':''}</label>
+        <div id="path-tput-${i}">${throughputOptsHtml(i)}</div>
+
+      </div>
+    </div>`;
+}
+
+// Throughput direction + parallel streams for path i. Disabled (values kept,
+// in case the destination changes back) when the destination can't run the
+// tests they apply to: directions need Throughput; streams need Throughput
+// or Latency Under Load.
+function throughputOptsHtml(i) {
+  const p = paths[i];
+  const dstAgent = agents.find(a => a.id === p.destination);
+  const allowed  = dstAgent ? supportedTests(dstAgent.type) : null;
+  const canTput  = !allowed || allowed.includes('throughput');
+  const canLoad  = canTput || allowed.includes('latency_under_load');
+  const why      = dstAgent && TYPE_LIMIT_NOTE[dstAgent.type]
+    ? `Not available — destination '${escHtml(dstAgent.label || dstAgent.id)}' is ${TYPE_LIMIT_NOTE[dstAgent.type]}` : '';
+  const offStyle = 'opacity:0.35;cursor:not-allowed;pointer-events:none';
+  const needDir  = canTput && (!p.directions || !p.directions.length);
+  return `
+        <div class="form-row tall" ${canTput ? '' : `title="${why}"`}>
+          <label style="${canTput ? '' : 'opacity:0.5'}">Throughput direction${needDir?' <span style="color:var(--rd)">*</span>':''}</label>
           <div>
-            <div class="test-toggles">
+            <div class="test-toggles" style="${canTput ? '' : offStyle}">
               ${Object.entries(THROUGHPUT_DIRECTIONS).map(([v,lbl]) => {
-                const on = (p.directions||[]).includes(v);
+                const on = canTput && (p.directions||[]).includes(v);
                 return `<label class="test-toggle ${on?'on':''}">
-                  <input type="checkbox" ${on?'checked':''}
+                  <input type="checkbox" ${on?'checked':''} ${canTput?'':'disabled'}
                     onchange="toggleDirection(${i},'${v}',this.checked)">
                   ${lbl}
                 </label>`;
               }).join('')}
             </div>
-            <div style="color:var(--mt);font-size:11px;margin-top:4px">Each checked direction runs as its own iPerf3 test — select more than one to run them all. Duration stays global, set above in Throughput test params.</div>
+            <div style="color:var(--mt);font-size:11px;margin-top:4px">${canTput
+              ? 'Each checked direction runs as its own iPerf3 test — select more than one to run them all. Duration stays global, set above in Throughput test params.'
+              : why + ' — Throughput can\'t run on this path.'}</div>
           </div>
         </div>
 
-        <div class="form-row">
-          <label>Parallel streams</label>
+        <div class="form-row" ${canLoad ? '' : `title="${why}"`}>
+          <label style="${canLoad ? '' : 'opacity:0.5'}">Parallel streams</label>
           <div>
             <input type="number" min="1" max="32" style="width:80px" value="${p.parallel_streams ?? 8}"
+              ${canLoad ? '' : 'disabled'}
               oninput="paths[${i}].parallel_streams=parseInt(this.value)||1;markDirty()">
             <div style="color:var(--mt);font-size:11px;margin-top:4px">iPerf3 -P for this path's Throughput test, and the saturation stream count for Latency Under Load. A constrained or policed link can collapse (stalled streams, heavy retransmits) with too many streams open at once — lower this if that happens.</div>
           </div>
         </div>
-
-      </div>
-    </div>`;
+`;
 }
 
 function movePath(i, dir) {
@@ -2090,11 +2178,9 @@ function rebuildHopsContainer(pathIdx, container) {
 function enforceSviTests(pathIdx) {
   const p = paths[pathIdx];
   const dstAgent = agents.find(a => a.id === p.destination);
-  const isSvi    = dstAgent && dstAgent.type === 'switch_router';
-              const isNoAgent = dstAgent && dstAgent.type === 'agent_not_installed';
+  const allowed  = dstAgent ? supportedTests(dstAgent.type) : null;
 
-  if (isSvi || isNoAgent) {
-    const allowed = isSvi ? SVI_TESTS : NO_AGENT_TESTS;
+  if (allowed) {
     const before = p.tests.length;
     p.tests = p.tests.filter(t => allowed.includes(t));
     if (!p.tests.length) p.tests = ['latency'];
@@ -2102,7 +2188,7 @@ function enforceSviTests(pathIdx) {
       const removed = before - p.tests.length;
       const errBar = document.getElementById('save-errors');
       if (errBar) {
-        errBar.textContent = `Note: removed ${removed} unsupported test${removed>1?'s':''} — '${dstAgent.label}' is Switch/Router (latency/MTU/traceroute only)`;
+        errBar.textContent = `Note: removed ${removed} unsupported test${removed>1?'s':''} — '${dstAgent.label}' is ${TYPE_LIMIT_NOTE[dstAgent.type]}`;
         errBar.style.background = '#2a1f00';
         errBar.style.color = 'var(--yw)';
         errBar.style.display = 'block';
@@ -2111,17 +2197,19 @@ function enforceSviTests(pathIdx) {
     }
   }
 
+  // Direction/streams follow the destination's capabilities too
+  const tput = document.getElementById('path-tput-' + pathIdx);
+  if (tput) tput.innerHTML = throughputOptsHtml(pathIdx);
+
   // Update test toggles in-place without re-rendering the whole path list
   const container = document.querySelector(`#path-body-${pathIdx} .test-toggles`);
   if (!container) return;
   container.innerHTML = ALL_TESTS.map(t => {
-    const supported = isSvi ? SVI_TESTS.includes(t)
-                              : isNoAgent ? NO_AGENT_TESTS.includes(t)
-                              : true;
+    const supported = !allowed || allowed.includes(t);
     const on        = p.tests.includes(t) && supported;
     const disabled  = !supported;
     const title     = disabled
-      ? `${TEST_LABELS[t]} is not supported for Switch/Router agents (ping target only)`
+      ? `${TEST_LABELS[t]} is not supported for ${TYPE_LIMIT_NOTE[dstAgent.type]} destinations`
       : '';
     return `<label class="test-toggle ${on?'on':''} ${disabled?'svi-disabled':''}"
               title="${title}"
@@ -2581,6 +2669,7 @@ function renderTests() {
   setVal('tp-lat-count',    la.packet_count      ?? 100);
   setVal('tp-lat-interval', la.interval_ms       ?? 10);
   setVal('tp-lat-size',     la.packet_size_bytes ?? 64);
+  setVal('tp-lat-tcp-count', la.tcp_probe_count  ?? 20);
 
   setVal('tp-jit-count',  ji.packet_count      ?? 1000);
   setVal('tp-jit-bw',     ji.bandwidth_kbps    ?? 1000);
@@ -2614,6 +2703,7 @@ function collectTests() {
       packet_count:      parseInt(getVal('tp-lat-count'))    || 100,
       interval_ms:       parseInt(getVal('tp-lat-interval')) || 10,
       packet_size_bytes: parseInt(getVal('tp-lat-size'))     || 64,
+      tcp_probe_count:   parseInt(getVal('tp-lat-tcp-count')) || 20,
     },
     jitter: {
       packet_count:      parseInt(getVal('tp-jit-count')) || 1000,
@@ -2860,7 +2950,7 @@ async function loadPackages() {
 
     // Load agent push buttons
     const ags = await apiFetch('/api/agents');
-    const endpoints = ags.filter(a => a.type !== 'switch_router' && a.type !== 'agent_not_installed');
+    const endpoints = ags.filter(a => !isNoSsh(a.type));
     if (!endpoints.length) {
       agentsList.innerHTML = '<div style="color:var(--mt);font-size:11px">No endpoint agents configured.</div>';
     } else {
@@ -3001,7 +3091,7 @@ function loadPushKeyAgents() {
   const sel = document.getElementById('pk-agent');
   if (!sel) return;
   // Rebuild agent options
-  const endpointAgents = agents.filter(a => a.type !== 'switch_router');
+  const endpointAgents = agents.filter(a => !isNoSsh(a.type));
   const opts = ['<option value="__all__">— All endpoint agents —</option>'];
   endpointAgents.forEach(a => {
     opts.push(`<option value="${escHtml(a.id)}">${escHtml(a.label||a.id)} (${escHtml(a.host_mgmt_ip||a.host||'')})</option>`);
@@ -3463,6 +3553,19 @@ async function confirmImport() {
   }
 }
 
+// Type change: re-render the agent list so type-specific fields (iPerf3
+// port, Web Server TCP port / latency method) appear, keeping the card open.
+function changeAgentType(i, type) {
+  agents[i].type = type;
+  markDirty();
+  const open = agents.map((_, j) => j === i ||
+    !(document.getElementById('agent-body-' + j)?.classList.contains('hidden') ?? true));
+  renderAgents();
+  open.forEach((o, j) => { if (o) toggleCard('agent-body-' + j, 'agent-chev-' + j); });
+  // Tests a path to this agent can run may have changed
+  paths.forEach((p, pi) => { if (p.destination === agents[i].id) enforceSviTests(pi); });
+}
+
 // Toggle iPerf3 port field visibility based on agent type
 function toggleIperf3Port(i) {
   const type = agents[i]?.type;
@@ -3723,7 +3826,9 @@ async function saveConfig() {
     if (!p.source)      errs.push(`Path ${i+1} (${p.id||'?'}): Source agent is required`);
     if (!p.destination) errs.push(`Path ${i+1} (${p.id||'?'}): Destination agent is required`);
     if (!p.tests || !p.tests.length) errs.push(`Path ${i+1} (${p.id||'?'}): At least one test required`);
-    if ((p.tests||[]).includes('throughput') && (!p.directions || !p.directions.length))
+    const dstAllowed = supportedTests(agents.find(a => a.id === p.destination)?.type);
+    if ((p.tests||[]).includes('throughput') && (!dstAllowed || dstAllowed.includes('throughput'))
+        && (!p.directions || !p.directions.length))
       errs.push(`Path ${i+1} (${p.id||'?'}): At least one throughput direction required`);
     if (!p.parallel_streams || p.parallel_streams < 1 || p.parallel_streams > 32)
       errs.push(`Path ${i+1} (${p.id||'?'}): Parallel streams must be between 1 and 32`);
@@ -3957,9 +4062,7 @@ function updateAgentHeader(i) {
   titleEl.innerHTML = `
     <span class="card-chevron open" id="agent-chev-${i}">▶</span>
     <span>${escHtml(a.label || a.id || 'Agent ' + (i+1))}</span>
-    <span class="badge ${a.type === 'switch_router' ? 'badge-svi' : a.type === 'agent_not_installed' ? 'badge-noagent' : 'badge-endpoint'}">
-      ${a.type === 'switch_router' ? 'SVI' : a.type === 'agent_not_installed' ? 'NO AGENT' : 'AGENT'}
-    </span>
+    ${typeBadge(a.type)}
     ${iperfSvcBadge(a)}
     <span style="color:var(--mt);font-size:11px">${escHtml(a.host_mgmt_ip || a.host || '')}</span>
   `;
@@ -3992,7 +4095,7 @@ function updatePathFlow(i) {
     flowDiv.innerHTML = allIds.map((id, idx) => {
       const a = allAgents[idx];
       const label = a ? (a.label || a.id) : (id || '?');
-      const noSsh = a && (a.type === 'switch_router' || a.type === 'agent_not_installed');
+      const noSsh = a && isNoSsh(a.type);
       return (idx > 0 ? '<span class="path-arrow">→</span>' : '') +
         `<span class="path-node${noSsh?' path-node-svi':''}">${escHtml(label)}</span>`;
     }).join('');
@@ -4042,13 +4145,14 @@ boot();
         </div>
         <div class="form-row">
           <label>Type</label>
-          <select id="ob-type">
-            <option value="endpoint">endpoint</option>
+          <select id="ob-type" onchange="obTypeChanged()">
+            <option value="endpoint">Agent Installed</option>
             <option value="switch_router">Switch/Router</option>
             <option value="agent_not_installed">Agent Not Installed</option>
+            <option value="web_server">Web Server</option>
           </select>
         </div>
-        <div class="form-row">
+        <div class="form-row" id="ob-airgap-row">
           <label>Air-gapped</label>
           <div style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" id="ob-airgap" style="width:auto;accent-color:var(--cy)">
@@ -4057,7 +4161,7 @@ boot();
             </span>
           </div>
         </div>
-        <div style="border-top:1px solid var(--bdr);padding-top:12px;margin-top:4px">
+        <div style="border-top:1px solid var(--bdr);padding-top:12px;margin-top:4px" id="ob-admin">
           <div class="form-row">
             <label>Admin Username <span style="color:var(--rd)">*</span></label>
             <input type="text" id="ob-user" placeholder="jared">
@@ -4106,6 +4210,33 @@ let _obStream = null;
 let _obReonboardId = null;   // agent id when re-onboarding an existing agent
 const OB_AGENT_FIELDS = ['ob-ip','ob-test-ip','ob-label','ob-id','ob-type'];
 const OB_HELP_NEW = document.getElementById('ob-help').innerHTML;
+const OB_HELP_NO_SSH = 'This device type has no SSH, so there is nothing to install. ' +
+  'It is added to the config editor — set any type-specific fields there, then save.';
+
+// No-SSH types skip onboarding: hide admin credentials and air-gap
+function obTypeChanged() {
+  const noSsh = isNoSsh(document.getElementById('ob-type').value);
+  document.getElementById('ob-admin').style.display      = noSsh ? 'none' : '';
+  document.getElementById('ob-airgap-row').style.display = noSsh ? 'none' : '';
+  if (!_obReonboardId) {
+    document.getElementById('ob-help').innerHTML = noSsh ? OB_HELP_NO_SSH : OB_HELP_NEW;
+    document.getElementById('ob-start').textContent = noSsh ? '+ Add to Config' : '▶ Start Onboarding';
+  }
+}
+
+function addNoSshFromWizard(type, ip, test_ip, label, id) {
+  id = id || (label || ip).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (agents.some(a => a.id === id)) { alert(`An agent with ID '${id}' already exists`); return; }
+  agents.push({ id, label: label || ip, host_mgmt_ip: ip, host_test_ip: test_ip || '', type,
+                iperf3_port: null, tcp_port: null, latency_method: type === 'web_server' ? 'auto' : undefined });
+  closeWizard();
+  renderAgents();
+  const i = agents.length - 1;
+  toggleCard('agent-body-' + i, 'agent-chev-' + i);
+  document.getElementById('agent-card-' + i)?.scrollIntoView({block: 'nearest'});
+  markDirty();
+  toast(`Added '${label || ip}' — save the config to keep it`, 'ok');
+}
 
 function openWizard() {
   document.getElementById('wizard-overlay').classList.add('open');
@@ -4147,6 +4278,8 @@ function closeWizard() {
   document.getElementById('ob-port').value = '22';
   document.getElementById('ob-type').value = 'endpoint';
   OB_AGENT_FIELDS.forEach(id => document.getElementById(id).disabled = false);
+  document.getElementById('ob-admin').style.display = '';
+  document.getElementById('ob-airgap-row').style.display = '';
   document.getElementById('ob-title').textContent = '⬡ Onboard New Endpoint';
   document.getElementById('ob-help').innerHTML = OB_HELP_NEW;
   document.getElementById('ob-start').textContent = '▶ Start Onboarding';
@@ -4172,6 +4305,7 @@ async function startOnboard() {
   if (!ip)   { alert('Management host is required'); return; }
   if (hostError(ip)) { alert('Management host ' + hostError(ip)); return; }
   if (test_ip && hostError(test_ip)) { alert('Test host ' + hostError(test_ip)); return; }
+  if (isNoSsh(type)) { addNoSshFromWizard(type, ip, test_ip, label, id); return; }
   if (!user) { alert('Admin username is required'); return; }
   if (!pass) { alert('Admin password is required'); return; }
 

@@ -37,6 +37,7 @@ AGENT_TYPES = {
     "agent_installed":     "Agent Installed",    # Full SSH — all tests
     "switch_router":       "Switch/Router",       # Ping target only — latency/MTU/traceroute
     "agent_not_installed": "Agent Not Installed", # iPerf3 assumed running — no SSH
+    "web_server":          "Web Server",          # No SSH — latency via TCP handshake if ICMP is filtered
     # Legacy names — auto-renamed on load
     "endpoint":            "agent_installed",
     "svi_adjacent":        "switch_router",
@@ -47,6 +48,17 @@ NO_SSH_TESTS = {"latency", "mtu", "traceroute", "throughput", "jitter", "latency
 
 # Tests that switch_router destinations support (ping only)
 SWITCH_ROUTER_TESTS = {"latency", "mtu", "traceroute"}
+
+# Tests that web_server destinations support. No MTU: path-MTU probing needs
+# ICMP replies, which a web server may filter.
+WEB_SERVER_TESTS = {"latency", "traceroute"}
+
+# How latency is measured for a web_server: auto = ICMP if the host answers
+# pings, otherwise TCP handshake timing to tcp_port.
+LATENCY_METHODS = ("auto", "tcp", "icmp")
+
+# Agent types with no SSH access — destination only, never a source or hop.
+NO_SSH_TYPES = {"switch_router", "agent_not_installed", "web_server"}
 
 # Tests that agent_not_installed destinations support (no server mgmt, iPerf assumed running)
 AGENT_NOT_INSTALLED_TESTS = {"latency", "mtu", "traceroute", "throughput", "jitter", "latency_under_load"}
@@ -59,7 +71,7 @@ class Agent:
     # Field names keep "_ip" for config compatibility, but both accept an
     # IPv4/IPv6 address or a DNS hostname/FQDN (see core/hostaddr.py).
     host_mgmt_ip: str                  # SSH management host — controller connects here
-    type: str                          # agent_installed | switch_router | agent_not_installed
+    type: str                          # agent_installed | switch_router | agent_not_installed | web_server
     host_test_ip: Optional[str] = None # Test traffic host — falls back to host_mgmt_ip
     iperf3_port: Optional[int] = None  # For agent_not_installed — port iPerf3 listens on
     # Which address family a hostname resolves to, and pins the test tools to
@@ -69,6 +81,10 @@ class Agent:
     # agents get an IP, no DNS needed on them) or "agent" (the source agent's
     # own resolver, for split-horizon DNS).
     resolve_on: str = "controller"
+    # web_server only: the TCP port latency/traceroute probes target, and how
+    # latency is measured (see LATENCY_METHODS).
+    tcp_port: Optional[int] = None
+    latency_method: str = "auto"
     # Per-agent SSH overrides (fall back to SSHDefaults if None)
     username: Optional[str] = None
     password: Optional[str] = None
@@ -95,6 +111,11 @@ class Agent:
     @property
     def is_ping_only(self) -> bool:
         return self.type == "switch_router"
+
+    @property
+    def probe_port(self) -> int:
+        """TCP port for web_server latency/traceroute probes."""
+        return self.tcp_port or 443
 
 THROUGHPUT_DIRECTIONS = {"upload", "download", "bidir"}
 
@@ -159,6 +180,10 @@ class LatencyParams:
     packet_count: int
     interval_ms: int
     packet_size_bytes: int
+    # TCP handshake probes for web_server latency. mtr sends at most one
+    # probe per second without root, so this is kept separate from (and
+    # much smaller than) packet_count.
+    tcp_probe_count: int = 20
 
 
 @dataclass
@@ -451,6 +476,17 @@ def agent_host_errors(a: dict) -> List[str]:
     ro = a.get("resolve_on")
     if ro not in (None, "") and ro not in RESOLVE_ON:
         errs.append(f"agent '{name}': resolve_on must be one of {', '.join(RESOLVE_ON)}")
+    tp = a.get("tcp_port")
+    if tp not in (None, ""):
+        try:
+            ok = 1 <= int(tp) <= 65535
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            errs.append(f"agent '{name}': tcp_port must be a number from 1 to 65535")
+    lm = a.get("latency_method")
+    if lm not in (None, "") and lm not in LATENCY_METHODS:
+        errs.append(f"agent '{name}': latency_method must be one of {', '.join(LATENCY_METHODS)}")
     return errs
 
 
@@ -480,6 +516,13 @@ def load_config(config_path: str = "config/config.yaml") -> ControllerConfig:
             agent_data["address_family"] = "ipv4"
         if agent_data.get("resolve_on") not in RESOLVE_ON:
             agent_data["resolve_on"] = "controller"
+        if agent_data.get("latency_method") not in LATENCY_METHODS:
+            agent_data["latency_method"] = "auto"
+        try:
+            tp = int(agent_data.get("tcp_port") or 0)
+            agent_data["tcp_port"] = tp if 1 <= tp <= 65535 else None
+        except (TypeError, ValueError):
+            agent_data["tcp_port"] = None
         agent = Agent(**agent_data)
         # Don't refuse to start over a bad host (the dashboard must stay up so
         # it can be fixed) — the path run reports it, and saves reject it.

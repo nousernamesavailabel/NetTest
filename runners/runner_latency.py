@@ -113,6 +113,105 @@ class LatencyRunner:
         )
 
 
+def icmp_reachable(src_ssh: SSHManager, dst_host: str, af: str = "") -> bool:
+    """Quick 3-ping check: does dst_host answer ICMP echo from the source?
+    Used by web_server destinations in latency_method 'auto' to choose
+    between ping and TCP handshake timing."""
+    try:
+        output = src_ssh.run(f"ping -c 3 -i 0.2 -W 1 {_target(af, dst_host)}",
+                             timeout=15)
+    except Exception:
+        return False
+    return _has_ping_rtt(output)
+
+
+# ── Latency (TCP handshake) ────────────────────────────────
+
+class TcpLatencyRunner:
+    """Latency to a host that filters ICMP, timed as TCP SYN → SYN-ACK (or
+    RST) round trips to tcp_port with `mtr --tcp`. mtr-tiny is already on
+    every agent and mtr-packet carries cap_net_raw, so no root or new package
+    is needed. The handshake is answered by the server's kernel, so this is
+    network RTT — application response time is not included."""
+
+    def __init__(self, params: LatencyParams, tcp_port: int = 443, af: str = ""):
+        self.params = params
+        self.tcp_port = tcp_port
+        self.af = af
+
+    def run(self, src_ssh: SSHManager, dst_host: str) -> LatencyResult:
+        count = max(1, int(self.params.tcp_probe_count))
+        # -n: only the destination hub matters, skip reverse DNS per hop.
+        # mtr won't go below a 1s interval without root, so this takes ~count s.
+        cmd = (f"mtr --tcp -P {int(self.tcp_port)} -r -n -c {count} --json "
+               f"{_target(self.af, dst_host)}")
+        output = src_ssh.run(cmd, timeout=count * 2 + 30)
+        return self._parse(output, dst_host, count)
+
+    def _parse(self, output: str, dst_host: str, count: int) -> LatencyResult:
+        clean = _strip_escapes(output)
+        json_start = clean.find("{")
+        if json_start == -1:
+            raise ValueError(
+                f"Could not read mtr TCP results — unexpected output:\n{clean[:400]}\n"
+                f"Is mtr installed on the source agent? (package mtr-tiny)")
+        try:
+            data, _ = json.JSONDecoder().raw_decode(clean[json_start:])
+        except ValueError as e:
+            raise ValueError(f"Could not parse mtr TCP JSON: {e}\n{clean[:400]}")
+        hubs = data.get("report", {}).get("hubs", []) or []
+
+        # The destination's hub: the one whose address is the target. When
+        # the source agent resolved a name itself we don't know the address,
+        # so take the last hop if it answered at all.
+        dest = None
+        target = (dst_host or "").strip("[]").lower()
+        for hub in hubs:
+            if str(hub.get("host", "")).lower() == target:
+                dest = hub
+        if dest is None and hubs and not _is_ip_literal(target):
+            last = hubs[-1]
+            if last.get("host") not in (None, "", "???") and last.get("Loss%", 100) < 100:
+                dest = last
+
+        port = self.tcp_port
+        if dest is None or dest.get("Loss%", 100) >= 100:
+            logger.warning(f"  No TCP handshake replies from {dst_host}:{port} — "
+                           f"all {count} probes lost (port filtered or host down)")
+            return LatencyResult(
+                rtt_min_ms=0, rtt_avg_ms=0, rtt_max_ms=0, rtt_mdev_ms=0,
+                packet_loss_pct=100.0, packets_sent=count, packets_received=0,
+                method="tcp", tcp_port=port,
+            )
+
+        sent     = int(dest.get("Snt", count) or count)
+        loss_pct = round(float(dest.get("Loss%", 0)), 2)
+        received = int(round(sent * (1 - loss_pct / 100)))
+        rtt_min  = round(float(dest.get("Best", 0)), 3)
+        rtt_avg  = round(float(dest.get("Avg", 0)), 3)
+        rtt_max  = round(float(dest.get("Wrst", 0)), 3)
+        rtt_mdev = round(float(dest.get("StDev", 0)), 3)
+
+        loss_note = f"  ⚠ {loss_pct}% packet loss" if loss_pct > 0 else ""
+        logger.info(f"  Latency result (TCP:{port}): avg={rtt_avg}ms  min={rtt_min}ms  "
+                    f"max={rtt_max}ms  loss={loss_pct}%{loss_note}")
+        return LatencyResult(
+            rtt_min_ms=rtt_min, rtt_avg_ms=rtt_avg, rtt_max_ms=rtt_max,
+            rtt_mdev_ms=rtt_mdev, packet_loss_pct=loss_pct,
+            packets_sent=sent, packets_received=received,
+            method="tcp", tcp_port=port,
+        )
+
+
+def _is_ip_literal(s: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
 # ── Jitter (iPerf3 UDP) ────────────────────────────────────
 
 class JitterRunner:

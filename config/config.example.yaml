@@ -203,6 +203,16 @@ agents:
   #   host_test_ip: 10.1.10.50
   #   type: svi_adjacent
 
+  # Example: Web Server — no SSH, destination only (latency + traceroute).
+  # Many web servers drop ping, so latency falls back to timing TCP
+  # handshakes (SYN → SYN-ACK) to tcp_port from the source agent.
+  # - id: intranet_web
+  #   label: "Intranet Web Server"
+  #   host_mgmt_ip: intranet.corp.example.com
+  #   type: web_server
+  #   tcp_port: 443            # default 443
+  #   latency_method: auto     # auto (ping, else TCP) | tcp | icmp
+
 
 # ── Test Paths ──────────────────────────────────────────────
 # Defines which source→destination pairs to test and what tests to run.
@@ -271,6 +281,10 @@ test_params:
 
     # ICMP payload size in bytes (not including headers)
     packet_size_bytes: 64
+
+    # TCP handshake probes for Web Server destinations that don't answer
+    # ping. Sent at 1/second (mtr's unprivileged minimum), so 20 ≈ 20s.
+    tcp_probe_count: 20
 
   latency_under_load:
     # Ping packets to send during each phase (idle and loaded)

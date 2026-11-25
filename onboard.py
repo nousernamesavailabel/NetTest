@@ -410,12 +410,15 @@ def onboard_agent(config_path: str,
         agent_id = (input(f"  Agent ID (no spaces) [{default_id}]: ").strip()
                     if interactive else "") or default_id
 
+    # Onboarding sets up SSH access and installs the agent tools, so only an
+    # installed agent can be onboarded. Switch/Router, Web Server and Agent
+    # Not Installed devices have no SSH — add those in the config editor.
     if not agent_type:
-        if interactive:
-            type_input = input("  Agent type [endpoint/svi_adjacent] (default: endpoint): ").strip()
-            agent_type = type_input if type_input in ("endpoint", "svi_adjacent") else "endpoint"
-        else:
-            agent_type = "endpoint"
+        agent_type = "endpoint"
+    if agent_type not in ("endpoint", "agent_installed"):
+        _err(f"'{agent_type}' devices have no SSH and aren't onboarded — "
+             f"add them in the web config editor instead")
+        return False
 
     if interactive:
         print()

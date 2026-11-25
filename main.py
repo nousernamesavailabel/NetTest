@@ -183,7 +183,8 @@ def main():
                         help="Agent ID for config.yaml (used with --onboard)")
     parser.add_argument("--agent-type", metavar="TYPE",
                         default="endpoint",
-                        help="Agent type: endpoint or svi_adjacent (used with --onboard)")
+                        help="Agent type (used with --onboard): only endpoint — "
+                             "devices without SSH are added in the web config editor")
     parser.add_argument("--admin-user", metavar="USER",
                         help="Admin SSH username on the new agent (used with --onboard)")
     parser.add_argument("--admin-port", metavar="PORT", type=int, default=22,

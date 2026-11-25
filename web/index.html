@@ -851,7 +851,7 @@ function updatePathFlowBanner(pathId) {
       const a = window._cachedAgents.find(a => a.id === agentId);
       if (a) {
         label = a.label || agentId;
-        isSvi = a.type === 'switch_router' || a.type === 'svi_adjacent';
+        isSvi = a.type === 'switch_router' || a.type === 'svi_adjacent' || a.type === 'web_server';
         ip = a.host_test_ip || a.host_mgmt_ip || a.host || '';
       }
     }
@@ -2023,7 +2023,7 @@ function renderTable(records) {
       <td>${fmt(t?.rx_mbps)}</td>
       <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.tx_mbps)}</td>
       <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.rx_mbps)}</td>
-      <td class="${latC}">${fmt(l?.rtt_avg_ms,'ms')}</td>
+      <td class="${latC}"${l?.method === 'tcp' ? ` title="Measured by TCP handshake to port ${l.tcp_port} — the destination does not answer ping"` : ''}>${fmt(l?.rtt_avg_ms,'ms')}${l?.method === 'tcp' ? ' <span style="font-size:9px;color:var(--mt)">TCP</span>' : ''}</td>
       <td>${fmt(l?.rtt_max_ms,'ms')}</td>
       <td class="${lssC}">${fmt(l?.packet_loss_pct,'%')}</td>
       <td class="${jitC}">${fmt(j?.jitter_ms,'ms',2)}</td>

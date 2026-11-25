@@ -9,9 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- **Web Server device type** (`type: web_server`). Like Switch/Router, it has no SSH and can only be a path destination; it supports Latency and Traceroute. Web servers often drop ping, so latency can be measured by timing TCP handshakes (SYN → SYN-ACK or RST) to the server's port with `mtr --tcp`. This uses the `mtr-tiny` package onboarding already installs and needs no root on the agent.
+  - Per-agent `tcp_port` (default 443) and `latency_method`: `auto` (ping if the server replies, otherwise TCP; the default), `tcp` or `icmp`.
+  - Traceroute to a web server uses TCP SYNs to the same port unless `latency_method` is `icmp`.
+  - New `test_params.latency.tcp_probe_count` (default 20). TCP probes go out at one per second, so 20 probes take about 20 seconds.
+  - Latency results now record `method` (`icmp`/`tcp`) and `tcp_port`. The dashboard marks TCP-measured latency with a "TCP" tag.
 - RADIUS logins now log how the account type was chosen: `auth` logs at INFO whether the admin value, the read-only value or the default role was applied, and which values arrived. With debug mode on, `debug-dashboard.log` also lists every attribute in the Access-Accept, and the raw hex and decoded string of each instance of the role attribute (`Class`/`Filter-Id`). Vendor-specific and unknown attributes are logged by type and length only, because they can carry key material such as MS-MPPE keys.
 
 ### Changed
+- Paths whose destination can't run Throughput (Switch/Router, Web Server) now show Throughput direction disabled, with the reason. Parallel streams is disabled too when neither Throughput nor Latency Under Load can run. The saved values are kept, in case the destination changes back.
+- The onboarding wizard adds Switch/Router, Web Server and Agent Not Installed devices directly to the config editor, without asking for admin credentials, since there's no SSH setup to do. `/api/onboard` and the CLI `--onboard` now refuse these types instead of trying to SSH in.
+- The ⚡ Test button on Switch/Router, Web Server and Agent Not Installed devices now checks from the controller that the test host is reachable. It pings Switch/Routers, pings Web Servers and connects to their TCP port, and connects to the iPerf3 port on Agent Not Installed devices. Before, it tried an SSH login, which can't work for these types.
 - RADIUS role values have trailing NUL padding stripped before they are compared.
 
 ### Fixed
@@ -24,6 +32,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - The Config page no longer shows "✓ done" and reloads after a failed update or rollback. After a successful one, it waits for the web service to come back before reloading, instead of reloading after a fixed 5 seconds.
   - Restarts use `sudo -n`, so a missing sudo rule fails at once instead of waiting for a password.
   - A failed scheduler restart after a config save is now logged with the command to run.
+- "Push key to all agents" now skips every device type the controller doesn't SSH to. It was meant to skip Switch/Routers but checked the old `svi_adjacent` type name, which is renamed when the config loads, so it skipped nothing. Pushing a key to a single device without SSH is now refused with an error.
+- Config export now includes each Agent Not Installed device's `iperf3_port`. Before, imported devices fell back to the default port.
 
 ---
 

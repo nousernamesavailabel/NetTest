@@ -33,7 +33,7 @@ from flask import Flask, jsonify, send_from_directory, send_file, abort, request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.config_loader import (load_config, agent_host_errors, parse_thresholds, THRESHOLD_DEFAULTS,
                                 parse_branding, Branding, ROLE_ADMIN, ROLE_READONLY, ROLES,
-                                RADIUS_ROLE_ATTRIBUTES, normalize_role)
+                                RADIUS_ROLE_ATTRIBUTES, normalize_role, NO_SSH_TYPES)
 from core.hostaddr import validate_host, resolve_all, is_ip, HostResolutionError
 from core.results import ResultStore
 from core.path_tester import PathTester
@@ -1152,6 +1152,9 @@ def api_onboard():
         agent_type    = agent.type
 
     if not agent_ip:   return jsonify({"error": "agent_ip is required"}), 400
+    if agent_type in NO_SSH_TYPES or agent_type == "svi_adjacent":
+        return jsonify({"error": f"{agent_type} devices have no SSH and aren't onboarded "
+                                 f"— add them in the config editor instead"}), 400
     for _what, _h in (("Management host", agent_ip), ("Test host", agent_test_ip)):
         _e = validate_host(_h) if _h else None
         if _e:
@@ -1352,10 +1355,16 @@ def api_ssh_push_key():
 
     # Get agents to push to
     if push_all:
-        agents = [a for a in _config.agents if a.type != "svi_adjacent"]
+        # Only agents with SSH — key push to a switch/router, web server or
+        # agent-not-installed host would just fail (or worse, succeed on a box
+        # the controller isn't meant to log into).
+        agents = [a for a in _config.agents if a.type not in NO_SSH_TYPES]
     else:
         agent = _config.get_agent(agent_id)
         if not agent: return jsonify({"error": f"Agent '{agent_id}' not found"}), 404
+        if agent.type in NO_SSH_TYPES:
+            return jsonify({"error": f"Agent '{agent_id}' is {agent.type} — the controller "
+                                     f"doesn't SSH to it, so there is no key to push"}), 400
         agents = [agent]
 
     # Read public key
@@ -1526,6 +1535,10 @@ def api_export():
             "type":         a.type,
             **({"address_family": a.address_family} if a.address_family != "ipv4" else {}),
             **({"resolve_on": a.resolve_on} if a.resolve_on != "controller" else {}),
+            **({"iperf3_port": a.iperf3_port} if a.iperf3_port else {}),
+            **({"tcp_port": a.tcp_port} if a.tcp_port else {}),
+            **({"latency_method": a.latency_method}
+               if a.type == "web_server" and a.latency_method != "auto" else {}),
             **({"username": a.username} if a.username else {}),
             **({"password": a.password} if a.password else {}),
             **({"key_file": a.key_file} if a.key_file else {}),
@@ -2945,6 +2958,8 @@ def api_agents():
             "type":         a.type,
             "address_family": a.address_family,
             "resolve_on":   a.resolve_on,
+            "tcp_port":     a.tcp_port,
+            "latency_method": a.latency_method,
         }
         for a in _config.agents
     ])
@@ -3220,6 +3235,11 @@ def api_config_save():
                 a.pop('address_family', None)
             if a.get('resolve_on') in (None, '', 'controller'):
                 a.pop('resolve_on', None)
+            # tcp_port / latency_method only mean something for a web_server
+            if a.get('type') != 'web_server' or not a.get('tcp_port'):
+                a.pop('tcp_port', None)
+            if a.get('type') != 'web_server' or a.get('latency_method') in (None, '', 'auto'):
+                a.pop('latency_method', None)
             errs.extend(agent_host_errors(a))
             agents_in.append(a)
         if errs:
@@ -3516,6 +3536,77 @@ def api_resolve_host():
     return jsonify({'ok': True, 'host': host, 'is_ip': False, 'addresses': addrs})
 
 
+def _tcp_connect_ms(addr: str, port: int, timeout: float = 3.0):
+    """Time a TCP connect from the controller: (ms, None) or (None, reason)."""
+    import socket
+    start = time.monotonic()
+    try:
+        with socket.create_connection((addr, port), timeout=timeout):
+            return round((time.monotonic() - start) * 1000, 1), None
+    except socket.timeout:
+        return None, "timed out"
+    except ConnectionRefusedError:
+        # The host answered (RST) — reachable, nothing listening on the port
+        return None, "connection refused"
+    except OSError as e:
+        return None, e.strerror or str(e)
+
+
+def _ping_ms(addr: str):
+    """Avg RTT of 3 pings from the controller (ping has cap_net_raw), or None."""
+    try:
+        out = subprocess.run(["ping", "-c", "3", "-i", "0.2", "-W", "1", addr],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    m = re.search(r"rtt min/avg/max/mdev = [\d.]+/([\d.]+)/", out)
+    return float(m.group(1)) if m else None
+
+
+def _reachability_check(body: dict, mgmt_host: str) -> dict:
+    """The ⚡ Test button for agents the controller doesn't SSH to: check the
+    test host answers what its tests will use — ping for a Switch/Router,
+    ping and/or the web port for a Web Server, the iPerf3 port for Agent Not
+    Installed. Checked from the controller, which may not have the same
+    path as the source agents."""
+    agent_type = body.get('type')
+    host = str(body.get('host_test') or '').strip() or mgmt_host
+    err = validate_host(host)
+    if err:
+        return {'ok': False, 'error': f'Test host {err}'}
+    try:
+        addr = resolve_all(host, body.get('address_family') or 'ipv4')[0]
+    except HostResolutionError as e:
+        return {'ok': False, 'error': str(e)}
+    shown = host if host == addr else f"{host} ({addr})"
+
+    parts, ok = [], False
+    if agent_type in ('switch_router', 'web_server'):
+        rtt = _ping_ms(addr)
+        parts.append(f"ping {rtt}ms" if rtt is not None else "no ping reply")
+        ok = rtt is not None
+    if agent_type == 'web_server':
+        port = int(body.get('tcp_port') or 443)
+        ms, why = _tcp_connect_ms(addr, port)
+        if ms is not None:
+            parts.append(f"TCP {port} open ({ms}ms)")
+            ok = True
+        else:
+            if why == "connection refused":
+                why = "refused — host is up but nothing listens there; check the TCP port"
+            parts.append(f"TCP {port} {why}")
+            ok = ok or why.startswith("refused")
+    if agent_type == 'agent_not_installed':
+        port = int(body.get('iperf3_port') or _config.test_params.throughput.iperf3_port)
+        ms, why = _tcp_connect_ms(addr, port)
+        parts.append(f"iPerf3 port {port} open ({ms}ms)" if ms is not None
+                     else f"iPerf3 port {port} {why}")
+        ok = ms is not None
+    summary = f"{shown}: " + " | ".join(parts) + " — checked from the controller"
+    return {'ok': ok, 'reachability': True, 'summary': summary,
+            **({} if ok else {'error': summary})}
+
+
 @app.route('/api/config/test-agent', methods=['POST'])
 @login_required
 def api_test_agent():
@@ -3532,6 +3623,9 @@ def api_test_agent():
     err = validate_host(host)
     if err:
         return jsonify({'ok': False, 'error': f'Host {err}'})
+
+    if body.get('type') in NO_SSH_TYPES:
+        return jsonify(_reachability_check(body, host))
 
     mgr = SSHManager(host=host, username=username, key_file=key_file,
                      port=port, timeout=8, retries=1)

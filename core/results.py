@@ -36,6 +36,10 @@ class LatencyResult:
     packet_loss_pct: float
     packets_sent: int
     packets_received: int
+    # "icmp" (ping) or "tcp" (handshake timing — web_server destinations that
+    # filter ICMP). TCP RTTs run slightly higher, so keep them apart in trends.
+    method: str = "icmp"
+    tcp_port: Optional[int] = None
 
 
 @dataclass

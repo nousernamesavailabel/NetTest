@@ -9,7 +9,10 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from typing import List
 
-from core.config_loader import ControllerConfig, TestPath, SWITCH_ROUTER_TESTS, AGENT_NOT_INSTALLED_TESTS
+from core.config_loader import (
+    ControllerConfig, TestPath, SWITCH_ROUTER_TESTS, AGENT_NOT_INSTALLED_TESTS,
+    WEB_SERVER_TESTS, NO_SSH_TYPES,
+)
 from core.results import PathTestResult, SegmentResult, make_result_id, utc_now_iso
 from runners.runner_traceroute import TracerouteRunner
 from core.ssh_manager import ssh_connection, SSHConnectionError
@@ -19,7 +22,8 @@ from core.hostaddr import (
 )
 from runners.runner_throughput import ThroughputRunner
 from runners.runner_latency import (
-    LatencyRunner, JitterRunner, LatencyUnderLoadRunner, MTURunner
+    LatencyRunner, JitterRunner, LatencyUnderLoadRunner, MTURunner,
+    TcpLatencyRunner, icmp_reachable,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,12 +87,12 @@ class PathTester:
             logger.error(f"Cannot run '{path.label}' — unknown hop agent ID(s): {missing_hops}")
             return self._error_result(path, f"Unknown hop agent ID(s): {missing_hops}")
 
-        # Validate source — agent_not_installed cannot be a source
-        if src_agent.type == "agent_not_installed":
+        # Validate source — agent_not_installed / web_server have no SSH
+        if src_agent.type in ("agent_not_installed", "web_server"):
             logger.error(f"Cannot run '{path.label}' — source agent "
-                         f"'{src_agent.label}' is agent_not_installed (no SSH access).")
+                         f"'{src_agent.label}' is {src_agent.type} (no SSH access).")
             return self._error_result(
-                path, f"agent_not_installed '{src_agent.label}' cannot be a path source"
+                path, f"{src_agent.type} '{src_agent.label}' cannot be a path source"
             )
 
         # Filter unsupported tests based on destination type
@@ -106,6 +110,19 @@ class PathTester:
                 logger.error(f"  No supported tests for Switch/Router destination '{dst_agent.label}'")
                 return self._error_result(
                     path, f"No supported tests for Switch/Router agent '{dst_agent.label}'"
+                )
+        elif dst_agent.type == "web_server":
+            filtered_tests = [t for t in path.tests if t in WEB_SERVER_TESTS]
+            for t in path.tests:
+                if t not in WEB_SERVER_TESTS:
+                    logger.warning(
+                        f"  Skipping '{TEST_LABELS.get(t, t)}' — destination "
+                        f"'{dst_agent.label}' is Web Server (latency/traceroute only).")
+            path = dc_replace(path, tests=filtered_tests)
+            if not path.tests:
+                logger.error(f"  No supported tests for Web Server destination '{dst_agent.label}'")
+                return self._error_result(
+                    path, f"No supported tests for Web Server agent '{dst_agent.label}'"
                 )
         elif dst_agent.type == "agent_not_installed":
             filtered_tests = [t for t in path.tests if t in AGENT_NOT_INSTALLED_TESTS]
@@ -178,8 +195,10 @@ class PathTester:
                     logger.info(f"── Segment {seg_idx+1}/{len(hop_agents)+1}: "
                                 f"{src_agent.label} → {hop_agent.label} ──")
 
-                    # Intermediate hops only support latency + mtu
-                    seg_tests = [t for t in ("latency", "mtu") if t in path.tests]
+                    # Intermediate hops only support latency + mtu (latency
+                    # only for a web server — MTU probing needs ICMP)
+                    seg_tests = [t for t in ("latency", "mtu") if t in path.tests
+                                 and not (t == "mtu" and hop_agent.type == "web_server")]
 
                     seg_result = SegmentResult(
                         segment_index=seg_idx,
@@ -209,12 +228,13 @@ class PathTester:
                             af=hop_af,
                             server_managed=False,
                             port_override=None,
+                            dst_agent=hop_agent,
                         )
 
                     result.segments.append(seg_result)
 
                 # ── Final segment: source → destination ────────────
-                no_ssh_dst = dst_agent.type in ("switch_router", "agent_not_installed")
+                no_ssh_dst = dst_agent.type in NO_SSH_TYPES
                 server_managed = dst_agent.type == "agent_installed"
                 # Per-agent iPerf3 port for agent_not_installed, else use test_params default
                 dst_iperf3_port = (
@@ -233,6 +253,10 @@ class PathTester:
                     if dst_agent.type == "switch_router":
                         logger.info(f"Destination {dst_agent.label} is Switch/Router — "
                                     f"no SSH (ping target only)")
+                    elif dst_agent.type == "web_server":
+                        logger.info(f"Destination {dst_agent.label} is Web Server — "
+                                    f"no SSH, latency method {dst_agent.latency_method} "
+                                    f"(TCP port {dst_agent.probe_port})")
                     else:
                         logger.info(f"Destination {dst_agent.label} is Agent Not Installed — "
                                     f"no SSH, iPerf3 assumed running on port {dst_iperf3_port}")
@@ -255,6 +279,7 @@ class PathTester:
                             server_managed=server_managed,
                             port_override=dst_iperf3_port,
                             directions=path.directions,
+                            dst_agent=dst_agent,
                             parallel_streams=path.parallel_streams,
                             abort_event=abort_event,
                         )
@@ -287,6 +312,7 @@ class PathTester:
                                 server_managed=server_managed,
                                 port_override=dst_iperf3_port,
                                 directions=path.directions,
+                                dst_agent=dst_agent,
                                 parallel_streams=path.parallel_streams,
                                 abort_event=abort_event,
                             )
@@ -316,6 +342,7 @@ class PathTester:
                                 server_managed=True,
                                 port_override=None,
                                 directions=path.directions,
+                                dst_agent=dst_agent,
                                 parallel_streams=path.parallel_streams,
                                 abort_event=abort_event,
                             )
@@ -349,6 +376,7 @@ class PathTester:
                                     server_managed=True,
                                     port_override=None,
                                     directions=path.directions,
+                                    dst_agent=dst_agent,
                                     parallel_streams=path.parallel_streams,
                                     abort_event=abort_event,
                                 )
@@ -419,7 +447,8 @@ class PathTester:
                   port_override: int = None,
                   directions: List[str] = None,
                   parallel_streams: int = 8,
-                  abort_event=None):
+                  abort_event=None,
+                  dst_agent=None):
         """Run a single test type. result can be PathTestResult or SegmentResult.
         server_managed=False skips iPerf3 server start (agent_not_installed destinations).
         port_override sets the iPerf3 port when not using test_params default.
@@ -486,10 +515,16 @@ class PathTester:
                                     f"{'; '.join(direction_errors)}").strip(" |")
 
             elif test_type == "latency":
-                logger.info(f"  Pinging {dst_host} — "
-                            f"{p.latency.packet_count} packets at "
-                            f"{p.latency.interval_ms}ms intervals...")
-                runner = LatencyRunner(p.latency, af=af)
+                if self._use_tcp_latency(src_ssh, dst_agent, dst_host, af):
+                    port = dst_agent.probe_port
+                    logger.info(f"  Timing TCP handshakes to {dst_host}:{port} — "
+                                f"{p.latency.tcp_probe_count} probes at 1s intervals...")
+                    runner = TcpLatencyRunner(p.latency, tcp_port=port, af=af)
+                else:
+                    logger.info(f"  Pinging {dst_host} — "
+                                f"{p.latency.packet_count} packets at "
+                                f"{p.latency.interval_ms}ms intervals...")
+                    runner = LatencyRunner(p.latency, af=af)
                 result.latency = runner.run(src_ssh, dst_host)
 
             elif test_type == "latency_under_load":
@@ -546,7 +581,14 @@ class PathTester:
                     resolve_dns=tr_cfg.resolve_dns,
                     af=af,
                 )
-                result.traceroute_forward = tr_runner.run_forward(src_ssh, dst_host)
+                if (dst_agent is not None and dst_agent.type == "web_server"
+                        and dst_agent.latency_method != "icmp"):
+                    # UDP traceroute probes rarely get past a web server's
+                    # firewall; SYNs to its web port must.
+                    result.traceroute_forward = tr_runner.run_forward_tcp(
+                        src_ssh, dst_host, dst_agent.probe_port)
+                else:
+                    result.traceroute_forward = tr_runner.run_forward(src_ssh, dst_host)
                 if dst_ssh is not None:
                     # Reverse targets the source's management host, as before,
                     # resolved by the controller (whose view SSH already used).
@@ -588,6 +630,24 @@ class PathTester:
                                f"after remaining tests complete")
         finally:
             held.close()
+
+    @staticmethod
+    def _use_tcp_latency(src_ssh, dst_agent, dst_host: str, af: str) -> bool:
+        """True if latency to dst_agent should be timed over TCP: always for a
+        web_server set to 'tcp'; for 'auto', only if it doesn't answer pings."""
+        if dst_agent is None or dst_agent.type != "web_server":
+            return False
+        method = dst_agent.latency_method or "auto"
+        if method == "icmp":
+            return False
+        if method == "tcp":
+            return True
+        if icmp_reachable(src_ssh, dst_host, af):
+            logger.info(f"  {dst_host} answers ICMP — measuring latency with ping")
+            return False
+        logger.info(f"  {dst_host} does not answer ICMP — falling back to "
+                    f"TCP handshake timing on port {dst_agent.probe_port}")
+        return True
 
     @staticmethod
     def _give_up_busy_retries(result):

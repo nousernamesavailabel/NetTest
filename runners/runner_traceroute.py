@@ -100,6 +100,72 @@ class TracerouteRunner:
                     f"{'reached destination' if result.completed else 'did not reach destination'}")
         return result
 
+    def run_forward_tcp(self, src_ssh: SSHManager, dst_host: str,
+                        tcp_port: int) -> TracerouteResult:
+        """Forward trace with TCP SYN probes to tcp_port (`mtr --tcp`), for
+        web_server destinations whose firewall drops UDP traceroute probes
+        but must pass the web port. Runs unprivileged via mtr-packet."""
+        logger.info(f"  Running TCP traceroute to {dst_host}:{tcp_port} "
+                    f"(max {self.max_hops} hops, {self.probes} probes)...")
+        dns_flag = '-b ' if self.resolve_dns else '-n '
+        af_flag  = f"{self.af} " if self.af else ''
+        cycles   = max(1, int(self.probes))
+        cmd = (f"mtr --tcp -P {int(tcp_port)} -r --json {af_flag}{dns_flag}"
+               f"-m {self.max_hops} -c {cycles} "
+               f"{shlex.quote(dst_host)} 2>&1")
+        timeout = cycles * 2 + self.max_hops + 30
+        try:
+            output = src_ssh.run(cmd, timeout=timeout)
+            result = self._parse_mtr(output, src_ssh.host, dst_host)
+        except Exception as e:
+            return TracerouteResult(
+                direction='forward', source_host=src_ssh.host,
+                dest_host=dst_host, error=str(e),
+            )
+        responding = sum(1 for h in result.hops if h.responding)
+        logger.info(f"  Traceroute forward (TCP:{tcp_port}): {len(result.hops)} hops, "
+                    f"{responding} responding, "
+                    f"{'reached destination' if result.completed else 'did not reach destination'}")
+        return result
+
+    @staticmethod
+    def _parse_mtr(output: str, source_host: str, dest_host: str) -> TracerouteResult:
+        import json
+        start = output.find("{")
+        if start == -1:
+            raise ValueError(f"mtr produced no JSON: {output.strip()[:300]}")
+        data, _ = json.JSONDecoder().raw_decode(output[start:])
+        dest = (dest_host or "").rstrip(".").lower()
+        hops, completed = [], False
+        for hub in data.get("report", {}).get("hubs", []) or []:
+            raw = str(hub.get("host", "") or "")
+            # -b gives "name (ip)", -n gives just the ip; "???" = no reply
+            m = re.match(r'^(\S+)\s+\(([^)]+)\)$', raw)
+            if m:
+                hostname, ip = m.group(1), m.group(2)
+            elif raw and raw != "???":
+                hostname, ip = (None, raw) if _is_ip(raw) else (raw, None)
+            else:
+                hostname, ip = None, None
+            if hostname and _is_ip(hostname):
+                hostname = None
+            responding = bool(ip or hostname) and float(hub.get("Loss%", 100)) < 100
+            hops.append(TracerouteHop(
+                hop=int(hub.get("count", len(hops) + 1)),
+                ip=ip, hostname=hostname,
+                rtt_ms=[round(float(hub.get("Avg", 0)), 3)] if responding else [],
+                responding=responding,
+            ))
+            if responding and ((ip and ip.lower() == dest)
+                               or (hostname and hostname.rstrip(".").lower() == dest)):
+                completed = True
+        # Name resolved by the agent: mtr reports the address it used as dst
+        # only by name, so count a responding last hop as the destination.
+        if not completed and hops and hops[-1].responding and not _is_ip(dest):
+            completed = True
+        return TracerouteResult(direction='forward', source_host=source_host,
+                                dest_host=dest_host, hops=hops, completed=completed)
+
     def run_reverse(self, dst_ssh: SSHManager,
                     src_host: str) -> TracerouteResult:
         """Run traceroute from destination agent back to source."""
