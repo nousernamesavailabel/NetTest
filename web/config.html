@@ -3584,30 +3584,87 @@ async function applyUpdate() {
     }
 
     applyStatus.textContent = '';
-    const es = new EventSource('/api/jobs/' + res.job_id + '/stream');
-    es.onmessage = (e) => {
-      const text = e.data;
-      if (text === '[STREAM END]' || text === '[STREAM TIMEOUT]') {
-        es.close();
-        jobStatus.textContent = '✓ done — reconnecting...';
-        jobStatus.style.color = 'var(--gn)';
-        // Reload after service restarts
-        setTimeout(() => { location.reload(); }, 5000);
-        return;
-      }
-      const div = document.createElement('div');
-      div.style.cssText = 'padding:1px 0;white-space:pre-wrap';
-      div.style.color = text.includes('✗') || text.includes('ERROR') ? 'var(--rd)'
-                      : text.includes('✓') ? 'var(--gn)' : 'var(--mt)';
-      div.textContent = text;
-      output.appendChild(div);
-      output.scrollTop = output.scrollHeight;
-    };
-    es.onerror = () => { es.close(); };
+    followServiceJob(res.job_id);
   } catch(e) {
     applyStatus.style.color = 'var(--rd)';
     applyStatus.textContent = '✗ ' + e.message;
   }
+}
+
+// Follow an update or rollback job's log. It ends one of two ways:
+//  - the job fails: the stream sends "✗ Finished with error" and ends, and
+//    the error stays on screen;
+//  - the web service restarts: the connection drops after the "Restarting
+//    web service" line. Wait for the dashboard to answer again, then reload.
+function followServiceJob(jobId, onFailed) {
+  const output    = document.getElementById('upd-output');
+  const jobStatus = document.getElementById('upd-job-status');
+  const setJobStatus = (text, color) => {
+    jobStatus.textContent = text;
+    jobStatus.style.color = color;
+  };
+  let failed = false, restarting = false, ended = false;
+
+  const es = new EventSource('/api/jobs/' + jobId + '/stream');
+  es.onmessage = (e) => {
+    const text = e.data;
+    if (text === '[STREAM END]') {
+      es.close();
+      ended = true;
+      if (failed) {
+        setJobStatus('✗ failed — see the output above', 'var(--rd)');
+        if (onFailed) onFailed();
+      } else {
+        setJobStatus('✓ done — reloading...', 'var(--gn)');
+        setTimeout(() => { location.reload(); }, 2000);
+      }
+      return;
+    }
+    if (text === '[STREAM TIMEOUT]') {
+      es.close();
+      ended = true;
+      setJobStatus('No output for 2 minutes — refresh the page to check the result', 'var(--yw)');
+      return;
+    }
+    if (text.startsWith('✗ Finished with error')) failed = true;
+    if (text.includes('Restarting web service')) restarting = true;
+    const div = document.createElement('div');
+    div.style.cssText = 'padding:1px 0;white-space:pre-wrap';
+    div.style.color = text.includes('✗') || text.includes('ERROR') ? 'var(--rd)'
+                    : text.includes('⚠') ? 'var(--yw)'
+                    : text.includes('✓') ? 'var(--gn)' : 'var(--mt)';
+    div.textContent = text;
+    output.appendChild(div);
+    output.scrollTop = output.scrollHeight;
+  };
+  es.onerror = () => {
+    es.close();
+    if (ended) return;
+    if (restarting) {
+      setJobStatus('restarting web service — reconnecting...', 'var(--cy)');
+      waitForDashboard(setJobStatus);
+    } else {
+      setJobStatus('✗ lost connection — refresh the page to check the result', 'var(--rd)');
+      if (onFailed) onFailed();
+    }
+  };
+}
+
+// Poll until the restarted web service answers, then reload the page.
+async function waitForDashboard(setJobStatus) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const deadline = Date.now() + 180000;
+  await sleep(3000);
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch('/api/version', { cache: 'no-store' });
+      // 401: back up, but the session didn't survive — reload shows the login.
+      if (r.ok || r.status === 401) { location.reload(); return; }
+    } catch (e) { /* still down */ }
+    await sleep(2000);
+  }
+  setJobStatus("✗ the web service didn't come back within 3 minutes — "
+             + 'check its status on the controller with systemctl', 'var(--rd)');
 }
 
 async function doRollback(snapshot, btn) {
@@ -3631,25 +3688,9 @@ async function doRollback(snapshot, btn) {
     });
     if (!res.job_id) { alert(res.error || 'Failed'); return; }
 
-    const es = new EventSource('/api/jobs/' + res.job_id + '/stream');
-    es.onmessage = (e) => {
-      const text = e.data;
-      if (text === '[STREAM END]' || text === '[STREAM TIMEOUT]') {
-        es.close();
-        jobStatus.textContent = '✓ done — reconnecting...';
-        jobStatus.style.color = 'var(--gn)';
-        setTimeout(() => { location.reload(); }, 5000);
-        return;
-      }
-      const div = document.createElement('div');
-      div.style.cssText = 'padding:1px 0;white-space:pre-wrap';
-      div.style.color = text.includes('✗') ? 'var(--rd)'
-                      : text.includes('✓') ? 'var(--gn)' : 'var(--mt)';
-      div.textContent = text;
-      output.appendChild(div);
-      output.scrollTop = output.scrollHeight;
-    };
-    es.onerror = () => { es.close(); };
+    followServiceJob(res.job_id, () => {
+      if (btn) { btn.disabled = false; btn.textContent = '↩ Rollback'; }
+    });
   } catch(e) {
     alert('Rollback failed: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '↩ Rollback'; }

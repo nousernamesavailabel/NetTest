@@ -84,9 +84,36 @@ _restart_lock  = threading.Lock()
 _restart_timer = None
 
 
+def _restart_service(name: str, timeout: int = 120):
+    """Restart a systemd service through sudo. Returns None on success, or a
+    short description of what went wrong.
+
+    -n makes sudo fail at once instead of waiting for a password it can never
+    get. The timeout is generous because stopping a service waits for it to
+    shut down (the web service waits up to gunicorn's graceful timeout for
+    open streams). It doesn't cancel the restart: systemd carries on with it.
+    """
+    try:
+        r = subprocess.run(["sudo", "-n", "systemctl", "restart", name],
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"didn't finish within {timeout}s"
+    except OSError as exc:
+        return str(exc)
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip().replace("\n", " ")[:300]
+        return f"exit code {r.returncode}" + (f": {detail}" if detail else "")
+    return None
+
+
 def _restart_linkstate_scheduler():
-    subprocess.run(["sudo", "systemctl", "restart", branding.SCHEDULER_SERVICE],
-                   capture_output=True, timeout=15)
+    err = _restart_service(branding.SCHEDULER_SERVICE)
+    if err:
+        logging.getLogger(__name__).error(
+            "Couldn't restart %s after a config change (%s). Changes to paths, "
+            "agents or the schedule take effect once it restarts: "
+            "sudo systemctl restart %s", branding.SCHEDULER_SERVICE, err,
+            branding.SCHEDULER_SERVICE)
 
 
 def schedule_linkstate_restart():
@@ -1882,6 +1909,52 @@ def _pip_install_cmd() -> list:
     return cmd
 
 
+def _restart_services_for_job(job_id: str, _log, done_msg: str) -> None:
+    """Last step of an update or rollback: restart the scheduler, then the web
+    service, which ends this process when it works.
+
+    The job stays "running" until then, so the browser keeps streaming the log.
+    A failed restart marks the job as an error with the command to run, rather
+    than reporting success while the old code keeps running.
+    """
+    sched, web = branding.SCHEDULER_SERVICE, branding.WEB_SERVICE
+
+    def finish(error: Optional[str] = None) -> None:
+        with _jobs_lock:
+            _jobs[job_id]["status"]   = "error" if error else "done"
+            _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
+            _jobs[job_id]["success"]  = not error
+            _jobs[job_id]["error"]    = error
+
+    def fail(what: str, err: str, still_running: str) -> None:
+        manual = f"sudo systemctl restart {still_running}"
+        _log.error(f"  ✗ Couldn't restart {what}: {err}")
+        _log.error(f"  The new files are in place, but {what} is still running the "
+                   f"old code. Run on the controller: {manual}")
+        finish(f"{what} restart failed ({err}). Run: {manual}")
+
+    _log.info("  Restarting scheduler...")
+    err = _restart_service(sched)
+    if err:
+        # Stop here, before the web restart, so the error stays on screen.
+        fail(f"the scheduler ({sched})", err, f"{sched} {web}")
+        return
+    _log.info("  ✓ Scheduler restarted")
+    _log.info(f"  ✓ {done_msg}")
+    _log.info("  Restarting web service — this page reconnects when it's back...")
+    time.sleep(1)   # let open log streams send the lines above first
+
+    err = _restart_service(web, timeout=150)
+    # Still here: a working restart would have stopped this process.
+    if err:
+        fail(f"the web service ({web})", err, web)
+        return
+    _log.warning(f"  ⚠ systemd restarted {web}, but this dashboard process "
+                 "wasn't stopped, so it isn't the one systemd runs. Restart it "
+                 "yourself to load the new code.")
+    finish()
+
+
 def _read_version(path: str = None) -> str:
     """Read version from version.txt."""
     vpath = path or os.path.join(_APP_DIR, "version.txt")
@@ -2097,9 +2170,13 @@ def api_update_apply():
 
             # Step 4: Sync new code
             _log.info("  Syncing new code files...")
+            # Only config.yaml is the user's. The release also ships other
+            # files in config/ (config.example.yaml), so they must be
+            # updated — same as install.sh, which excludes only
+            # config/config.yaml.
             result = subprocess.run([
                 "rsync", "-a",
-                "--exclude=config/",
+                "--exclude=config/config.yaml",
                 "--exclude=logs/",
                 "--exclude=results/",
                 "--exclude=packages/",
@@ -2161,36 +2238,19 @@ def api_update_apply():
             else:
                 _log.warning(f"  ⚠ pip warning: {result.stderr[:200]}")
 
-            # Step 5: Restart services
-            _log.info("  Restarting services...")
-            subprocess.run(["sudo", "systemctl", "restart", branding.SCHEDULER_SERVICE],
-                           capture_output=True, timeout=15)
-            _log.info("  ✓ Scheduler restarted")
-            # Web service restart — do last since it kills this process
-            _log.info(f"  ✓ Update to v{version} complete!")
-            if branding.LEGACY_INSTALL:
-                _log.info("")
-                _log.warning(f"  ⚠ {branding.MIGRATE_HINT}")
-            _log.info("")
-            _log.info("  Restarting web service — reconnect in a few seconds...")
-
-            with _jobs_lock:
-                _jobs[job_id]["status"]   = "done"
-                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
-                _jobs[job_id]["success"]  = True
-
-            # Clean up
+            # Clean up before restarting: a successful web restart ends this
+            # process.
             import shutil
             shutil.rmtree(extract_dir, ignore_errors=True)
             os.unlink(tmp_path)
             with _update_cache_lock:
                 _update_cache.pop(update_id, None)
 
-            # Delay web restart so SSE can finish
-            import time as _time
-            _time.sleep(2)
-            subprocess.run(["sudo", "systemctl", "restart", branding.WEB_SERVICE],
-                           capture_output=True, timeout=15)
+            if branding.LEGACY_INSTALL:
+                _log.warning(f"  ⚠ {branding.MIGRATE_HINT}")
+
+            # Step 5: Restart services
+            _restart_services_for_job(job_id, _log, f"v{version} installed")
 
         except Exception as e:
             _log.error(f"  ✗ Update failed: {e}")
@@ -2278,20 +2338,7 @@ def api_update_rollback():
                            capture_output=True, timeout=120)
             _log.info("  ✓ Dependencies synced")
 
-            subprocess.run(["sudo", "systemctl", "restart", branding.SCHEDULER_SERVICE],
-                           capture_output=True, timeout=15)
-            _log.info(f"  ✓ Rollback to v{snap_ver} complete!")
-            _log.info("  Restarting web service...")
-
-            with _jobs_lock:
-                _jobs[job_id]["status"]   = "done"
-                _jobs[job_id]["finished"] = datetime.now(timezone.utc).isoformat()
-                _jobs[job_id]["success"]  = True
-
-            import time as _time
-            _time.sleep(2)
-            subprocess.run(["sudo", "systemctl", "restart", branding.WEB_SERVICE],
-                           capture_output=True, timeout=15)
+            _restart_services_for_job(job_id, _log, f"v{snap_ver} restored")
 
         except Exception as e:
             _log.error(f"  ✗ Rollback failed: {e}")

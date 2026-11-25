@@ -50,7 +50,6 @@ RELEASE_FILES=(
   web
   systemd
   config/config.example.yaml
-  config/radius_dictionary
   install.sh
   uninstall.sh
   rollback.sh

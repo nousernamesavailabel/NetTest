@@ -8,6 +8,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- RADIUS logins now log how the account type was chosen: `auth` logs at INFO whether the admin value, the read-only value or the default role was applied, and which values arrived. With debug mode on, `debug-dashboard.log` also lists every attribute in the Access-Accept, and the raw hex and decoded string of each instance of the role attribute (`Class`/`Filter-Id`). Vendor-specific and unknown attributes are logged by type and length only, because they can carry key material such as MS-MPPE keys.
+
+### Changed
+- RADIUS role values have trailing NUL padding stripped before they are compared.
+
+### Fixed
+- **Controllers upgraded to 2.2.0 from the web UI gave every RADIUS user admin rights, whatever `Class` or `Filter-Id` the server returned.** The web updater skipped the whole `config/` directory, so the controller kept the old RADIUS dictionary, which doesn't define `Class` or `Filter-Id`. The role attribute was never found and every user got the default account type. Upgrades with `install.sh` weren't affected.
+  - The RADIUS dictionary now lives in `core/radius_dictionary`, which every updater replaces, so this release fixes affected controllers however it's installed.
+  - The web updater now skips only `config/config.yaml`, as `install.sh` does, so other files the release ships in `config/` (such as `config.example.yaml`) are updated too.
+- Web updates and rollbacks now check that the services actually restarted. Previously the result of `systemctl restart` was ignored, so a refused `sudo` or a missing unit still showed "✓ done" while the old code kept running.
+  - If the scheduler can't be restarted, the job stops before restarting the web service. It shows the error and the command to run on the controller.
+  - If the web service can't be restarted, the job fails with the error and the command to run.
+  - The Config page no longer shows "✓ done" and reloads after a failed update or rollback. After a successful one, it waits for the web service to come back before reloading, instead of reloading after a fixed 5 seconds.
+  - Restarts use `sudo -n`, so a missing sudo rule fails at once instead of waiting for a password.
+  - A failed scheduler restart after a config save is now logged with the command to run.
+
 ---
 
 ## [2.2.0] - 2026-11-24
