@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [2.3.0] - 2026-11-25
+
 ### Added
 - **Web Server device type** (`type: web_server`). Like Switch/Router, it has no SSH and can only be a path destination; it supports Latency and Traceroute. Web servers often drop ping, so latency can be measured by timing TCP handshakes (SYN → SYN-ACK or RST) to the server's port with `mtr --tcp`. This uses the `mtr-tiny` package onboarding already installs and needs no root on the agent.
   - Per-agent `tcp_port` (default 443) and `latency_method`: `auto` (ping if the server replies, otherwise TCP; the default), `tcp` or `icmp`.

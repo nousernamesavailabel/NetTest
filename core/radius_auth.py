@@ -116,7 +116,7 @@ def authenticate_radius(username: str, password: str, auth_config) -> Optional[s
         raise RadiusAuthError("pyrad is not installed. Run: pip install -r requirements.txt") from exc
 
     # Lives in core/, not config/: every updater syncs core/, but web updaters
-    # before 2.2.1 skipped config/ and left a stale dictionary (without Class
+    # before 2.3.0 skipped config/ and left a stale dictionary (without Class
     # or Filter-Id) behind, so every RADIUS user got the default role.
     dict_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radius_dictionary")
 
