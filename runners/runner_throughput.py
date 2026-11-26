@@ -10,7 +10,7 @@ import time
 
 from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
 from core import iperf_service
-from core.results import ThroughputResult
+from core.results import ThroughputResult, iperf3_tcp_rates
 from core.config_loader import ThroughputParams
 
 logger = logging.getLogger(__name__)
@@ -145,35 +145,16 @@ class ThroughputRunner:
         if "error" in data:
             raise RuntimeError(f"iPerf3 error: {iperf3_error_text(data['error'], limit_sec)}")
 
-        end         = data.get("end", {})
-        sum_sent    = end.get("sum_sent", end.get("streams", [{}])[0].get("sender", {}))
-        sent_mbps   = round(sum_sent.get("bits_per_second", 0) / 1_000_000, 2)
-        # Retransmits are inherently a sender-side stat, regardless of direction.
-        retransmits = sum_sent.get("retransmits", 0)
+        tx_mbps, rx_mbps, retransmits = iperf3_tcp_rates(data, direction)
 
-        sum_received = end.get("sum_received", {})
-        rx_bps       = sum_received.get("bits_per_second", 0)
-        recv_mbps    = round(rx_bps / 1_000_000, 2) if rx_bps else None
-
-        # Only report a number for the direction that was actually tested —
-        # mirroring it onto the untested direction (an earlier "symmetric link
-        # estimate") reads as if both directions were measured, which is
-        # misleading. The untested direction is None (not 0 — 0 would read as
-        # "measured zero throughput", a real failure state, not "not tested").
-        if direction == "download":
-            # -R: the local agent is the receiver of the one flow. sum_sent
-            # reports the remote server's send rate (fallback only), sum_received
-            # is what the local agent itself measured receiving — the real "RX".
-            rx_mbps = recv_mbps if recv_mbps is not None else sent_mbps
-            tx_mbps = None
-        elif direction == "upload":
-            tx_mbps = sent_mbps
-            rx_mbps = None
-        else:  # bidir — both directions genuinely ran; fall back to tx only if
-               # iperf3's JSON is missing sum_received (parsing edge case, not
-               # an untested direction).
-            tx_mbps = sent_mbps
-            rx_mbps = recv_mbps if recv_mbps is not None else tx_mbps
+        # A direction that moved no data stalled — None, never 0 Mbps, so it
+        # can't be graphed or averaged as a measurement.
+        if direction == "bidir":
+            if tx_mbps is None and rx_mbps is None:
+                raise RuntimeError("iPerf3 connected but no data moved in either "
+                                   "direction — the path stalled")
+        elif (rx_mbps if direction == "download" else tx_mbps) is None:
+            raise RuntimeError("iPerf3 connected but no data moved — the path stalled")
 
         retr_note = f"  ({retransmits} retransmits — possible congestion)" if retransmits > 10 else \
                     f"  ({retransmits} retransmits)" if retransmits else ""

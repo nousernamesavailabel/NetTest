@@ -27,6 +27,91 @@ class ThroughputResult:
     raw: Optional[dict] = None         # Full iPerf3 JSON for debugging
 
 
+def _iperf3_flow_mbps(received: Optional[dict], sent: Optional[dict]) -> Optional[float]:
+    """Rate of one iPerf3 TCP flow in Mbps, or None if it moved no data.
+
+    Prefers the receiver's figure (what actually arrived). The sender's
+    figure counts bytes written into socket buffers, so it overstates a flow
+    that stalled. Falls back to the sender only when there is no receiver
+    summary. A flow that moved 0 bytes stalled; it was not measured as 0 Mbps.
+    """
+    summary = received if received else sent
+    if not summary:
+        return None
+    bps = summary.get("bits_per_second") or 0
+    if bps <= 0 or summary.get("bytes") == 0:
+        return None
+    return round(bps / 1_000_000, 2)
+
+
+def iperf3_tcp_rates(data: dict, direction: str):
+    """(tx_mbps, rx_mbps, retransmits) from an iPerf3 TCP client's -J output.
+
+    The direction that wasn't tested is None, and so is a direction whose
+    flow stalled and moved no data.
+
+    With --bidir, end.sum_sent/sum_received describe only the forward
+    (client→server) flow. The reverse flow is in sum_*_bidir_reverse.
+    Records from before 2.3.3 took RX from sum_received, which is the
+    forward flow, so their bidir RX was wrong.
+    """
+    end = data.get("end") or {}
+    sum_sent = end.get("sum_sent") or ((end.get("streams") or [{}])[0].get("sender") or {})
+    sum_received = end.get("sum_received") or {}
+    retransmits = sum_sent.get("retransmits", 0) or 0
+    forward = _iperf3_flow_mbps(sum_received, sum_sent)
+
+    if direction == "download":
+        # -R: the one flow runs server→client; sum_received is what the
+        # local agent itself received.
+        return None, forward, retransmits
+    if direction == "bidir":
+        reverse = _iperf3_flow_mbps(end.get("sum_received_bidir_reverse"),
+                                    end.get("sum_sent_bidir_reverse"))
+        return forward, reverse, retransmits
+    return forward, None, retransmits
+
+
+def _repair_throughput_entry(t: dict) -> dict:
+    """Recompute stored rates from the saved iPerf3 JSON so older records
+    graph the same way new ones do: the right bidir RX, and None instead of
+    0 for a stalled direction."""
+    raw = t.get("raw")
+    if isinstance(raw, dict) and raw.get("end") and "error" not in raw:
+        tx, rx, _ = iperf3_tcp_rates(raw, t.get("direction") or "upload")
+        t["tx_mbps"], t["rx_mbps"] = tx, rx
+    else:
+        # No raw JSON to recompute from: a 0 can only be a stall.
+        for k in ("tx_mbps", "rx_mbps"):
+            if t.get(k) == 0:
+                t[k] = None
+    return t
+
+
+def repair_record(record: dict) -> dict:
+    """Fix up values that older code stored wrongly, in place."""
+    t = record.get("throughput")
+    if isinstance(t, list):
+        for entry in t:
+            if isinstance(entry, dict):
+                _repair_throughput_entry(entry)
+    elif isinstance(t, dict):
+        _repair_throughput_entry(t)
+    j = record.get("jitter")
+    # Before 2.3.3 a jitter run where no UDP packet arrived was stored as
+    # 0 ms jitter, which reads as a perfect link.
+    if isinstance(j, dict) and j.get("packets_sent") and j.get("packets_received", 1) <= 0:
+        record["jitter"] = None
+    # Likewise MTR hops that never replied were stored with 0.0 timings.
+    lul = record.get("latency_under_load")
+    if isinstance(lul, dict):
+        for h in lul.get("mtr_hops") or []:
+            if isinstance(h, dict) and (h.get("loss_pct") or 0) >= 100:
+                for k in ("avg_ms", "best_ms", "worst_ms", "stddev_ms"):
+                    h[k] = None
+    return record
+
+
 def measured_rtt(latency: Optional[dict], key: str = "rtt_avg_ms") -> Optional[float]:
     """RTT from a serialized LatencyResult, or None if nothing was measured.
 
@@ -220,7 +305,7 @@ class ResultStore:
             for line in f:
                 line = line.strip()
                 if line:
-                    results.append(json.loads(line))
+                    results.append(repair_record(json.loads(line)))
         return results
 
     def load_file(self, date_str: str) -> List[dict]:
@@ -233,7 +318,7 @@ class ResultStore:
             for line in f:
                 line = line.strip()
                 if line:
-                    results.append(json.loads(line))
+                    results.append(repair_record(json.loads(line)))
         return results
 
     def list_result_files(self) -> List[str]:

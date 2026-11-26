@@ -107,10 +107,12 @@ def print_result_record(r: dict):
     ts = r["timestamp_utc"][:19].replace("T", " ")
     print(f"\n{status} [{ts}] {r['path_label']}")
 
-    if r.get("throughput"):
-        t = r["throughput"]
-        print(f"   Throughput:  TX={t['tx_mbps']} Mbps  RX={t['rx_mbps']} Mbps  "
-              f"Retransmits={t['retransmits']}")
+    t_raw = r.get("throughput") or []
+    for t in (t_raw if isinstance(t_raw, list) else [t_raw]):
+        tx = f"{t['tx_mbps']} Mbps" if t.get("tx_mbps") is not None else "—"
+        rx = f"{t['rx_mbps']} Mbps" if t.get("rx_mbps") is not None else "—"
+        print(f"   Throughput ({t.get('direction', 'upload')}):  TX={tx}  RX={rx}  "
+              f"Retransmits={t.get('retransmits', 0)}")
 
     if r.get("latency"):
         l = r["latency"]

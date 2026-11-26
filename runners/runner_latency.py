@@ -299,6 +299,11 @@ class JitterRunner:
         lost        = udp_sum.get("lost_packets", 0)
         sent        = udp_sum.get("packets", 0)
         received    = sent - lost
+        if sent > 0 and received <= 0:
+            # iperf3 reports jitter_ms 0 when nothing arrived — that would
+            # graph as a perfect link instead of a dead one.
+            raise RuntimeError(f"all {sent} UDP packets lost — no jitter to measure "
+                               f"(UDP to {dst_host} is dropped)")
         loss_pct    = round((lost / sent * 100) if sent > 0 else 0, 2)
         latency_avg = round(
             data.get("intervals", [{}])[-1]
@@ -584,14 +589,17 @@ def _parse_mtr(output: str) -> list:
         data, _ = decoder.raw_decode(output[json_start:])
         hops = []
         for hub in data.get("report", {}).get("hubs", []):
+            # mtr reports 0.0 timings for a hop that never replied — store
+            # None so it isn't drawn as a 0 ms hop.
+            dead = hub.get("Loss%", 0) >= 100
             hops.append({
                 "hop":       hub.get("count"),
                 "host":      hub.get("host"),
                 "loss_pct":  hub.get("Loss%", 0),
-                "avg_ms":    hub.get("Avg", 0),
-                "best_ms":   hub.get("Best", 0),
-                "worst_ms":  hub.get("Wrst", 0),
-                "stddev_ms": hub.get("StDev", 0),
+                "avg_ms":    None if dead else hub.get("Avg", 0),
+                "best_ms":   None if dead else hub.get("Best", 0),
+                "worst_ms":  None if dead else hub.get("Wrst", 0),
+                "stddev_ms": None if dead else hub.get("StDev", 0),
             })
         return hops
     except Exception as e:

@@ -94,7 +94,11 @@ def throughput_summary(record: dict) -> Optional[dict]:
     raw = record.get("throughput")
     if not raw:
         return None
-    entries = raw if isinstance(raw, list) else [raw]
+    # Bidir figures are measured with both directions contending, so they
+    # aren't comparable to upload/download runs — the web dashboard keeps
+    # them separate too.
+    entries = [e for e in (raw if isinstance(raw, list) else [raw])
+               if e.get("direction") != "bidir"]
     if not entries:
         return None
     tx_vals = [v for e in entries if (v := e.get("tx_mbps")) is not None]
@@ -262,21 +266,24 @@ def make_hop_table(records: List[dict], path_filter: Optional[str]) -> Optional[
     table.add_column("Worst",  justify="right",  min_width=8)
     table.add_column("StDev",  justify="right",  min_width=8)
 
+    def ms(v):
+        return f"{v:.2f}" if v is not None else "—"
+
     for h in hops:
         loss_c = health_colour(h.get("loss_pct", 0),
                                THRESHOLDS["loss_warn_pct"],
                                THRESHOLDS["loss_crit_pct"], invert=True)
-        avg_c  = health_colour(h.get("avg_ms", 0),
+        avg_c  = health_colour(h.get("avg_ms") or 0,
                                THRESHOLDS["latency_warn_ms"],
                                THRESHOLDS["latency_crit_ms"], invert=True)
         table.add_row(
             str(h.get("hop", "?")),
             h.get("host", "???"),
             f"[{loss_c}]{h.get('loss_pct', 0):.1f}%[/]",
-            f"[{avg_c}]{h.get('avg_ms', 0):.2f}[/]",
-            f"{h.get('best_ms', 0):.2f}",
-            f"{h.get('worst_ms', 0):.2f}",
-            f"{h.get('stddev_ms', 0):.2f}",
+            f"[{avg_c}]{ms(h.get('avg_ms'))}[/]",
+            ms(h.get("best_ms")),
+            ms(h.get("worst_ms")),
+            ms(h.get("stddev_ms")),
         )
     return table
 

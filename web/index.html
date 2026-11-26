@@ -2509,7 +2509,7 @@ async function renderHops(pathId) {
       ${data.hops.map(h => {
         const lssC = cssColour(health(h.loss_pct, T.lossWarn, T.lossCrit));
         const avgC = cssColour(health(h.avg_ms,   T.latWarn,  T.latCrit));
-        const barW = maxAvg > 0 ? Math.round((h.avg_ms / maxAvg) * 120) : 4;
+        const barW = maxAvg > 0 && h.avg_ms != null ? Math.round((h.avg_ms / maxAvg) * 120) : 4;
         return `
         <div class="hop-grid hop-row">
           <div style="color:var(--mt)">${h.hop}</div>

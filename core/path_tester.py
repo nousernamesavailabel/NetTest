@@ -493,14 +493,23 @@ class PathTester:
                     if len(directions) > 1:
                         logger.info(f"  [{i+1}/{len(directions)}] Direction: {dir_label}")
                     try:
-                        throughput_results.append(runner.run(
+                        t = runner.run(
                             src_ssh, dst_ssh, dst_host,
                             server_managed=server_managed,
                             port_override=port_override,
                             busy_retry_seconds=p.iperf3_busy_retry_seconds if not server_managed else 0,
                             direction=direction,
                             parallel_streams=parallel_streams,
-                        ))
+                        )
+                        throughput_results.append(t)
+                        # A bidir run can stall in one direction only; keep
+                        # the side that moved data and report the other.
+                        stalled = [side for side, v in (("TX", t.tx_mbps), ("RX", t.rx_mbps))
+                                   if direction == "bidir" and v is None]
+                        if stalled:
+                            msg = f"{'/'.join(stalled)} moved no data (stalled)"
+                            logger.error(f"  Throughput ({dir_label}) {msg}")
+                            direction_errors.append(f"{dir_label}: {msg}")
                     except Exception as e:
                         # Busy server → let the outer handler queue a full
                         # throughput retry. Any other failure only loses this
