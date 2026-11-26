@@ -10,6 +10,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.3.3] - 2026-11-26
+
+### Fixed
+- **Bidirectional throughput reported the wrong RX.** With `--bidir`, the RX figure came from the upload flow's receive rate instead of the download flow, so every bidir run's RX was wrong. A run whose upload stalled showed RX 0 Mbps when the download flow had carried 14 Mbps. RX now comes from the download flow.
+- **A direction that moved no data was graphed as 0 Mbps.** When iPerf3 connects but a flow stalls and transfers nothing, that direction is now stored as empty (`null`) and the run's error says it stalled, so it is no longer plotted or averaged as a measurement. If only one side of a bidir run stalls, the other side is kept.
+- **Upload throughput overstated stalled or lossy links.** Upload (and bidir TX) used the sender's figure, which counts data written out but never delivered. It now uses what the receiving end got, as download already did. On healthy links this lowers figures by about 2%; on lossy links by much more.
+- **Jitter runs where every UDP packet was lost stored 0 ms jitter**, which read as a perfect link. They now fail with an error saying UDP to the host is dropped.
+- **MTR hops with no replies were stored as 0 ms**, which drew them at 0 ms on the compare page's hop chart. They are now stored as empty and shown as "—" in the hop tables.
+- The TUI's throughput summary no longer mixes bidir figures into the upload/download columns, matching the web dashboard.
+- The CLI results summary no longer crashes on runs that tested more than one direction.
+
+Results recorded before this release are corrected when read, using the raw iPerf3 output saved with each run. Nothing on disk is rewritten.
+
+---
+
 ## [2.3.2] - 2026-11-26
 
 ### Fixed
