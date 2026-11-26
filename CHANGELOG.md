@@ -10,6 +10,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.3.1] - 2026-11-26
+
+### Fixed
+- **Latency runs where every ping (or TCP probe) was lost pulled average RTT down.** These runs were stored with an RTT of 0 ms, which was then counted in average latency (dashboard summary, per-segment averages, TUI) and plotted as 0 ms on the latency chart. They now store no RTT (`null`) and are left out of RTT averages and charts. They still count as 100% loss in packet-loss averages. Results recorded before this release with a 0 ms RTT and 100% loss are handled the same way.
+  - The run tables show "—" instead of 0.0ms for these runs. The per-hop "Δ from prev" is shown only when both hops returned an RTT; before, a hop with no replies counted as 0 ms, which inflated the next hop's delta.
+  - The CLI prints "no replies" for these runs, and the path log reports a hop with no replies instead of a delta.
+
+---
+
 ## [2.3.0] - 2026-11-25
 
 ### Added
