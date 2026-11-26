@@ -38,9 +38,15 @@ IPERF_CLIENT_GRACE_SEC = 20    # remote timeout = test duration + this
 IPERF_KILL_AFTER_SEC   = 5     # SIGKILL if iperf3 ignores the SIGINT
 IPERF_READ_MARGIN_SEC  = 15    # netmiko waits this much longer than the remote limit
 IPERF_INTERRUPT_ERROR  = "interrupt - the client has terminated"
+# A UDP client sends one datagram after the TCP control connection is up and
+# waits (hard-coded 30s in iperf3) for the server's UDP reply. The remote limit
+# must outlast that wait, or iperf3 is killed before it can report why.
+IPERF_UDP_HANDSHAKE_SEC = 30
+IPERF_UDP_MIN_LIMIT_SEC = IPERF_UDP_HANDSHAKE_SEC + 10
+IPERF_UDP_NO_REPLY_ERROR = "unable to read from stream socket"
 
 
-def guard_iperf3_client(cmd: str, duration_sec: int):
+def guard_iperf3_client(cmd: str, duration_sec: int, min_limit_sec: int = 0):
     """Return (command, read_timeout, limit_sec) for a foreground `iperf3 -J` client.
 
     The command is wrapped so iperf3 is stopped `limit_sec` after it starts; the
@@ -49,7 +55,7 @@ def guard_iperf3_client(cmd: str, duration_sec: int):
     No `$` may appear in the wrapper: send_command's expect_string is r"\\$" and
     it is matched against the command echo too.
     """
-    limit_sec    = duration_sec + IPERF_CLIENT_GRACE_SEC
+    limit_sec    = max(duration_sec + IPERF_CLIENT_GRACE_SEC, min_limit_sec)
     read_timeout = limit_sec + IPERF_KILL_AFTER_SEC + IPERF_READ_MARGIN_SEC
     wrapped = f"timeout -s INT -k {IPERF_KILL_AFTER_SEC} {limit_sec} {cmd}"
     return wrapped, read_timeout, limit_sec
@@ -63,6 +69,19 @@ def iperf3_error_text(error: str, limit_sec: int = None) -> str:
         return (f"iperf3 did not finish{after} and was stopped by the controller "
                 f"(no result exchange — the server or path stopped responding)")
     return error
+
+
+def iperf3_udp_error_text(error: str, host: str, port: int,
+                          limit_sec: int = None) -> str:
+    """iperf3_error_text() for a UDP client, naming the case where the TCP
+    control connection worked but no UDP reply came back — UDP filtered on the
+    path, or a port-forward/firewall rule that only covers TCP."""
+    if IPERF_UDP_NO_REPLY_ERROR in error:
+        return (f"UDP to {host}:{port} is blocked — the iPerf3 server accepted the "
+                f"test over TCP {port}, but no UDP reply came back within "
+                f"{IPERF_UDP_HANDSHAKE_SEC}s. Allow UDP {port} (not just TCP) on any "
+                f"firewall or port-forward in the path. (iperf3: {error.strip()})")
+    return iperf3_error_text(error, limit_sec)
 
 
 class SSHManager:

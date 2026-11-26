@@ -9,7 +9,8 @@ import logging
 import shlex
 import time
 
-from core.ssh_manager import SSHManager, guard_iperf3_client, iperf3_error_text
+from core.ssh_manager import (SSHManager, guard_iperf3_client,
+                               iperf3_udp_error_text, IPERF_UDP_MIN_LIMIT_SEC)
 from core import iperf_service
 from core.results import LatencyResult, JitterResult, LatencyUnderLoadResult
 from core.config_loader import LatencyParams, JitterParams, LatencyUnderLoadParams
@@ -246,7 +247,10 @@ class JitterRunner:
             f"-J"
         )
         # iperf3 -J is silent until it exits — see guard_iperf3_client().
-        cmd, timeout_sec, limit_sec = guard_iperf3_client(cmd, duration_sec)
+        # Outlast iperf3's UDP handshake wait so a blocked UDP path is reported
+        # by iperf3 itself instead of being cut off with no output.
+        cmd, timeout_sec, limit_sec = guard_iperf3_client(
+            cmd, duration_sec, min_limit_sec=IPERF_UDP_MIN_LIMIT_SEC)
         # Retry loop for agent_not_installed
         deadline = time.time() + (busy_retry_seconds if not server_managed else 0)
         attempt  = 0
@@ -271,9 +275,10 @@ class JitterRunner:
         # Log jitter summary from JSON result only
         # (raw output is too noisy with OSC sequences and JSON fragments)
         # Will log after parse below
-        return self._parse_output(output, limit_sec)
+        return self._parse_output(output, limit_sec, dst_host, port)
 
-    def _parse_output(self, raw_output: str, limit_sec: int = None) -> JitterResult:
+    def _parse_output(self, raw_output: str, limit_sec: int = None,
+                      dst_host: str = "", port: int = 0) -> JitterResult:
         json_start = raw_output.find("{")
         if json_start == -1:
             raise ValueError(
@@ -284,7 +289,8 @@ class JitterRunner:
         decoder = json.JSONDecoder()
         data, _ = decoder.raw_decode(raw_output[json_start:])
         if "error" in data:
-            raise RuntimeError(f"iPerf3 UDP error: {iperf3_error_text(data['error'], limit_sec)}")
+            raise RuntimeError("iPerf3 UDP error: " + iperf3_udp_error_text(
+                data['error'], dst_host, port or self.params.iperf3_port, limit_sec))
 
         end     = data.get("end", {})
         udp_sum = end.get("sum", {})
