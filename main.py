@@ -26,7 +26,7 @@ import time
 from dataclasses import asdict
 
 from core.config_loader import load_config
-from core.results import ResultStore
+from core.results import ResultStore, measured_rtt
 from core.scheduler import Scheduler
 
 
@@ -114,8 +114,11 @@ def print_result_record(r: dict):
 
     if r.get("latency"):
         l = r["latency"]
-        print(f"   Latency:     avg={l['rtt_avg_ms']}ms  max={l['rtt_max_ms']}ms  "
-              f"loss={l['packet_loss_pct']}%")
+        if measured_rtt(l) is None:
+            print(f"   Latency:     no replies  loss={l['packet_loss_pct']}%")
+        else:
+            print(f"   Latency:     avg={l['rtt_avg_ms']}ms  max={l['rtt_max_ms']}ms  "
+                  f"loss={l['packet_loss_pct']}%")
 
     if r.get("latency_under_load"):
         lu = r["latency_under_load"]

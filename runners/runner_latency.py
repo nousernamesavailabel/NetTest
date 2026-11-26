@@ -88,7 +88,7 @@ class LatencyRunner:
         if not rtt_match:
             logger.warning(f"  No RTT data returned — all {sent} packets lost")
             return LatencyResult(
-                rtt_min_ms=0, rtt_avg_ms=0, rtt_max_ms=0, rtt_mdev_ms=0,
+                rtt_min_ms=None, rtt_avg_ms=None, rtt_max_ms=None, rtt_mdev_ms=None,
                 packet_loss_pct=100.0,
                 packets_sent=sent, packets_received=0,
             )
@@ -179,7 +179,7 @@ class TcpLatencyRunner:
             logger.warning(f"  No TCP handshake replies from {dst_host}:{port} — "
                            f"all {count} probes lost (port filtered or host down)")
             return LatencyResult(
-                rtt_min_ms=0, rtt_avg_ms=0, rtt_max_ms=0, rtt_mdev_ms=0,
+                rtt_min_ms=None, rtt_avg_ms=None, rtt_max_ms=None, rtt_mdev_ms=None,
                 packet_loss_pct=100.0, packets_sent=count, packets_received=0,
                 method="tcp", tcp_port=port,
             )

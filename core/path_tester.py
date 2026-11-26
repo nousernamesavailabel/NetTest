@@ -420,7 +420,9 @@ class PathTester:
                 for seg in result.segments:
                     hop_agent = self.config.get_agent(seg.destination_agent_id)
                     hop_label = hop_agent.label if hop_agent else seg.destination_agent_id
-                    if seg.latency:
+                    if seg.latency and seg.latency.rtt_avg_ms is None:
+                        logger.info(f"    → {hop_label}: no replies (100% loss)")
+                    elif seg.latency:
                         delta = round(seg.latency.rtt_avg_ms - prev_lat, 3)
                         sign = "+" if delta >= 0 else ""
                         logger.info(f"    → {hop_label}: "

@@ -805,6 +805,13 @@ function cssColour(cls) {
        : '#64748b';
 }
 
+// RTT that was actually measured, or null. A run with 100% loss stores
+// rtt_*_ms null (0 in older records) - show a dash, not a perfect 0.0ms.
+function rttOf(l, key='rtt_avg_ms') {
+  if (!l || l[key] == null) return null;
+  if (l.packets_received === 0 || (l.packet_loss_pct ?? 0) >= 100) return null;
+  return l[key];
+}
 function round2(v) { return Math.round(v * 100) / 100; }
 function fmt(v, unit='', dec=1) {
   if (v == null || v === undefined) return '—';
@@ -1082,10 +1089,11 @@ async function updateSegPanel(pathId, results) {
         ${allSegsPlus.map((seg, si) => {
           const sl    = seg.latency;
           const sm    = seg.mtu;
-          const prev  = si > 0 ? allSegsPlus[si-1].latency?.rtt_avg_ms || 0 : 0;
-          const delta = sl ? round2(sl.rtt_avg_ms - prev) : null;
+          // Δ only when this hop and the previous one both measured an RTT.
+          const prev  = si > 0 ? rttOf(allSegsPlus[si-1].latency) : 0;
+          const delta = (rttOf(sl) != null && prev != null) ? round2(rttOf(sl) - prev) : null;
           const dSign = delta !== null ? (delta >= 0 ? '+' : '') : '';
-          const latC  = sl ? health(sl.rtt_avg_ms, T.latWarn, T.latCrit) : 'c-muted';
+          const latC  = health(rttOf(sl), T.latWarn, T.latCrit);
           const mtuW  = sm?.fragmentation_detected ? 'c-yellow' : '';
           const label = agentMap[seg.destination_agent_id] || seg.destination_agent_id;
           const isFinal = seg.isFinal;
@@ -1095,8 +1103,8 @@ async function updateSegPanel(pathId, results) {
                 ? `<span style="color:var(--tx)">→ ${label}</span> <span style="font-size:9px;color:var(--cy);margin-left:4px">final</span>`
                 : `→ ${label}`}
             </td>
-            <td style="padding:7px 14px;text-align:right" class="${latC}">${fmt(sl?.rtt_avg_ms,'ms')}</td>
-            <td style="padding:7px 14px;text-align:right">${fmt(sl?.rtt_max_ms,'ms')}</td>
+            <td style="padding:7px 14px;text-align:right" class="${latC}">${fmt(rttOf(sl),'ms')}</td>
+            <td style="padding:7px 14px;text-align:right">${fmt(rttOf(sl,'rtt_max_ms'),'ms')}</td>
             <td style="padding:7px 14px;text-align:right">${fmt(sl?.packet_loss_pct,'%')}</td>
             <td style="padding:7px 14px;text-align:right" class="${mtuW}">${sm ? sm.effective_mtu_bytes : '—'}</td>
             <td style="padding:7px 14px;text-align:right;color:var(--mt)">
@@ -1981,7 +1989,7 @@ function renderTable(records) {
     const segs = r.segments || [];
 
     const txC  = health(t?.tx_mbps,         T.tputWarn, T.tputCrit, false);
-    const latC = health(l?.rtt_avg_ms,       T.latWarn,  T.latCrit);
+    const latC = health(rttOf(l),           T.latWarn,  T.latCrit);
     const lssC = health(l?.packet_loss_pct,  T.lossWarn, T.lossCrit);
     const jitC = health(j?.jitter_ms,        T.jitWarn,  T.jitCrit);
     const bbC  = health(lu?.delta_ms,        T.bbWarn,   T.bbCrit);
@@ -2023,8 +2031,8 @@ function renderTable(records) {
       <td>${fmt(t?.rx_mbps)}</td>
       <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.tx_mbps)}</td>
       <td class="c-cyan" title="${tb ? tb.retransmits + ' retransmits (bidir)' : ''}">${fmt(tb?.rx_mbps)}</td>
-      <td class="${latC}"${l?.method === 'tcp' ? ` title="Measured by TCP handshake to port ${l.tcp_port} — the destination does not answer ping"` : ''}>${fmt(l?.rtt_avg_ms,'ms')}${l?.method === 'tcp' ? ' <span style="font-size:9px;color:var(--mt)">TCP</span>' : ''}</td>
-      <td>${fmt(l?.rtt_max_ms,'ms')}</td>
+      <td class="${latC}"${l?.method === 'tcp' ? ` title="Measured by TCP handshake to port ${l.tcp_port} — the destination does not answer ping"` : ''}>${fmt(rttOf(l),'ms')}${l?.method === 'tcp' ? ' <span style="font-size:9px;color:var(--mt)">TCP</span>' : ''}</td>
+      <td>${fmt(rttOf(l,'rtt_max_ms'),'ms')}</td>
       <td class="${lssC}">${fmt(l?.packet_loss_pct,'%')}</td>
       <td class="${jitC}">${fmt(j?.jitter_ms,'ms',2)}</td>
       <td class="${bbC}">${lu ? '+'+fmt(lu.delta_ms,'ms') : '—'}</td>
@@ -2046,12 +2054,12 @@ function renderTable(records) {
             ${segs.map(seg => {
               const sl = seg.latency;
               const sm = seg.mtu;
-              const sLatC = health(sl?.rtt_avg_ms, T.latWarn, T.latCrit);
+              const sLatC = health(rttOf(sl), T.latWarn, T.latCrit);
               const sMtuW = sm?.fragmentation_detected ? 'c-yellow' : 'c-green';
               return `<tr style="border-top:1px solid var(--bdr)">
                 <td style="padding:4px 8px;color:var(--mt)">→ ${seg.destination_agent_id}</td>
-                <td style="padding:4px 8px;text-align:right" class="${sLatC}">${fmt(sl?.rtt_avg_ms,'ms')}</td>
-                <td style="padding:4px 8px;text-align:right">${fmt(sl?.rtt_max_ms,'ms')}</td>
+                <td style="padding:4px 8px;text-align:right" class="${sLatC}">${fmt(rttOf(sl),'ms')}</td>
+                <td style="padding:4px 8px;text-align:right">${fmt(rttOf(sl,'rtt_max_ms'),'ms')}</td>
                 <td style="padding:4px 8px;text-align:right">${fmt(sl?.packet_loss_pct,'%')}</td>
                 <td style="padding:4px 8px;text-align:right" class="${sMtuW}">${sm ? sm.effective_mtu_bytes : '—'}</td>
               </tr>`;

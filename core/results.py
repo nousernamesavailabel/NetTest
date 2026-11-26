@@ -27,12 +27,30 @@ class ThroughputResult:
     raw: Optional[dict] = None         # Full iPerf3 JSON for debugging
 
 
+def measured_rtt(latency: Optional[dict], key: str = "rtt_avg_ms") -> Optional[float]:
+    """RTT from a serialized LatencyResult, or None if nothing was measured.
+
+    Runs with 100% loss store rtt_*_ms=None; records written before that
+    change stored 0 instead, which is also treated as not measured.
+    """
+    if not latency:
+        return None
+    val = latency.get(key)
+    if val is None:
+        return None
+    if latency.get("packets_received") == 0 or (latency.get("packet_loss_pct") or 0) >= 100:
+        return None
+    return val
+
+
 @dataclass
 class LatencyResult:
-    rtt_min_ms: float
-    rtt_avg_ms: float
-    rtt_max_ms: float
-    rtt_mdev_ms: float                 # Standard deviation
+    # All four are None when no probe got a reply (100% loss) — nothing was
+    # measured, and a 0 would read as a perfect link.
+    rtt_min_ms: Optional[float]
+    rtt_avg_ms: Optional[float]
+    rtt_max_ms: Optional[float]
+    rtt_mdev_ms: Optional[float]       # Standard deviation
     packet_loss_pct: float
     packets_sent: int
     packets_received: int

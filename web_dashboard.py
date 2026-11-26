@@ -35,7 +35,7 @@ from core.config_loader import (load_config, agent_host_errors, parse_thresholds
                                 parse_branding, Branding, ROLE_ADMIN, ROLE_READONLY, ROLES,
                                 RADIUS_ROLE_ATTRIBUTES, normalize_role, NO_SSH_TYPES)
 from core.hostaddr import validate_host, resolve_all, is_ip, HostResolutionError
-from core.results import ResultStore
+from core.results import ResultStore, measured_rtt
 from core.path_tester import PathTester
 from core.annotations import AnnotationStore
 from core import debug_mode
@@ -414,7 +414,8 @@ def _summarise(records: List[dict]) -> dict:
     # error) — count those as partial, not successful.
     successful  = [r for r in records if r.get("success") and not r.get("error")]
     partial     = [r for r in records if r.get("success") and r.get("error")]
-    lat_vals    = [r["latency"]["rtt_avg_ms"]     for r in records if r.get("latency")]
+    # Runs with 100% loss have no RTT (None, or 0 in older records) — skip them.
+    lat_vals    = [v for r in records if (v := measured_rtt(r.get("latency"))) is not None]
     # A record can hold multiple throughput entries (one per direction run:
     # upload/download/bidir). tx_mbps/rx_mbps are None on whichever entry
     # didn't test that side — excluded here rather than averaged in, so
@@ -487,8 +488,9 @@ def api_summary_by_path():
                 hop_order = [sg.get("destination_agent_id") for sg in segs]
             for sg in segs:
                 aid = sg.get("destination_agent_id")
-                if sg.get("latency") and sg["latency"].get("rtt_avg_ms") is not None:
-                    seg_lat.setdefault(aid, []).append(sg["latency"]["rtt_avg_ms"])
+                seg_rtt = measured_rtt(sg.get("latency"))
+                if seg_rtt is not None:
+                    seg_lat.setdefault(aid, []).append(seg_rtt)
                 if sg.get("mtu") and sg["mtu"].get("effective_mtu_bytes"):
                     seg_mtu.setdefault(aid, []).append(sg["mtu"])
 
@@ -576,8 +578,8 @@ def api_timeseries(metric: str):
         ts  = r["timestamp_utc"]
         val = None
 
-        if metric == "latency"      and r.get("latency"):
-            val = r["latency"]["rtt_avg_ms"]
+        if metric == "latency":
+            val = measured_rtt(r.get("latency"))
         elif metric == "throughput":
             # A record may hold multiple direction entries (upload/download/
             # bidir) — this chart is upload-only, so bidir entries (which

@@ -34,7 +34,7 @@ from rich import print as rprint
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.config_loader import load_config, THRESHOLD_DEFAULTS
-from core.results import ResultStore
+from core.results import ResultStore, measured_rtt
 
 console = Console()
 
@@ -120,8 +120,8 @@ def make_summary_cards(records: List[dict]) -> Columns:
 
     avg_latency = None
     avg_tput    = None
-    lat_vals    = [r["latency"]["rtt_avg_ms"]
-                   for r in records if r.get("latency")]
+    lat_vals    = [v for r in records
+                   if (v := measured_rtt(r.get("latency"))) is not None]
     tput_vals   = [ts["tx_mbps"] for r in records
                    if (ts := throughput_summary(r)) and ts["tx_mbps"]]
     if lat_vals:
@@ -208,8 +208,9 @@ def make_results_table(records: List[dict], path_filter: Optional[str] = None) -
         rx_mbps  = f"{t['rx_mbps']:.1f}"  if t and t['rx_mbps'] is not None else "[dim]—[/dim]"
         retr     = f"[{'red' if t and t['retransmits'] > 10 else 'default'}]{t['retransmits']}[/]" if t else "[dim]—[/dim]"
 
-        rtt_avg  = f"[{health_colour(l['rtt_avg_ms'], THRESHOLDS['latency_warn_ms'], THRESHOLDS['latency_crit_ms'], invert=True)}]{l['rtt_avg_ms']:.1f}ms[/]" if l else "[dim]—[/dim]"
-        rtt_max  = f"{l['rtt_max_ms']:.1f}ms" if l else "[dim]—[/dim]"
+        l_rtt    = measured_rtt(l)
+        rtt_avg  = f"[{health_colour(l_rtt, THRESHOLDS['latency_warn_ms'], THRESHOLDS['latency_crit_ms'], invert=True)}]{l_rtt:.1f}ms[/]" if l_rtt is not None else "[dim]—[/dim]"
+        rtt_max  = f"{l['rtt_max_ms']:.1f}ms" if l_rtt is not None else "[dim]—[/dim]"
         loss_pct = f"[{health_colour(l['packet_loss_pct'], THRESHOLDS['loss_warn_pct'], THRESHOLDS['loss_crit_pct'], invert=True)}]{l['packet_loss_pct']:.1f}%[/]" if l else "[dim]—[/dim]"
 
         jitter   = f"[{health_colour(j['jitter_ms'], THRESHOLDS['jitter_warn_ms'], THRESHOLDS['jitter_crit_ms'], invert=True)}]{j['jitter_ms']:.2f}ms[/]" if j else "[dim]—[/dim]"
