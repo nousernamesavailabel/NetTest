@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.3.2] - 2026-11-26
+
+### Fixed
+- **Jitter tests where UDP was blocked failed with a misleading error.** When the iPerf3 server accepted the test over TCP but no UDP reply came back (for example, a firewall or port-forward that only allows TCP 5201), the jitter test reported "iPerf3 UDP produced no JSON … Is iperf3 installed?". iperf3 waits 30 seconds for that UDP reply, and the controller stopped the client at the same moment, before it could report why. The jitter client now gets at least 40 seconds, and the error says that UDP to the host and port is blocked even though TCP worked, and to allow UDP on the port. Throughput time limits are unchanged.
+
+---
+
 ## [2.3.1] - 2026-11-26
 
 ### Fixed
