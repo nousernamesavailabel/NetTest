@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.3.4] - 2026-11-27
+
+### Fixed
+- **The dashboard's Next Run countdown was wrong.** It guessed from the newest result plus the interval and stagger, but the scheduler runs on fixed clock times (:00, :15, :30…) in the configured timezone. The server now works out the actual next run, including business hours and both schedule tiers, and the card shows which tier is next.
+- **Full-suite runs lost most of their paths when both tiers were due at once.** The full suite and latency-only runs raced for each path, and the full suite skipped every path latency-only reached first, so most throughput tests never ran. Latency-only now skips those times, since the full suite runs the latency tests too.
+
+---
+
 ## [2.3.3] - 2026-11-26
 
 ### Fixed
