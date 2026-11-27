@@ -3197,9 +3197,30 @@ def api_schedule():
     """Schedule only — what the dashboard's next-run countdown needs, without
     the rest of the config (which read-only accounts can't see)."""
     import yaml
+    from core.config_loader import Schedule
+    from core.scheduler import next_scheduled_run
     with open(_config_path, 'r') as f:
         raw = yaml.safe_load(f) or {}
-    return jsonify(raw.get('schedule') or {})
+    sched = dict(raw.get('schedule') or {})
+    # The scheduler fires on wall-clock boundaries in its own timezone, so
+    # work out the next run here rather than guessing from past results.
+    # remaining_sec (not the timestamp) drives the countdown so a browser
+    # clock that differs from the server's doesn't skew it.
+    try:
+        nxt = next_scheduled_run(Schedule(**sched))
+    except Exception as e:
+        logging.getLogger(__name__).warning("Couldn't compute next scheduled run: %s", e)
+        nxt = None
+    if nxt:
+        at, tier = nxt
+        sched['next_run'] = {
+            'at_utc':        at.astimezone(timezone.utc).isoformat(),
+            'tier':          tier,
+            'remaining_sec': max(0, int((at - datetime.now(timezone.utc)).total_seconds())),
+        }
+    else:
+        sched['next_run'] = None
+    return jsonify(sched)
 
 
 @app.route('/api/thresholds')

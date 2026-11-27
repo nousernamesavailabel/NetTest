@@ -1329,30 +1329,33 @@ async function updateNextRun() {
       el('s-nextrun').className = 'stat-value c-muted';
       return;
     }
-    const intervalMin = schedule.full_test_interval_minutes || 60;
-    const staggerSec  = (schedule.stagger_seconds || 0) * (paths.length || 1);
-    const totalCycleSec = intervalMin * 60 + staggerSec;
-
-    // Get the most recent result timestamp across all paths
-    const latest = Object.values(latestMap);
-    if (!latest.length) {
+    // The server works out the next wall-clock boundary the scheduler will
+    // fire on (timezone, both tiers and business hours included).
+    if (_nextRunTimer) clearInterval(_nextRunTimer);
+    _nextRunTimer = null;
+    const next = schedule.next_run;
+    if (!next) {
       el('s-nextrun').textContent = '—';
-      el('s-nextrun-sub').textContent = 'no runs yet';
+      el('s-nextrun-sub').textContent = 'none within business hours';
       el('s-nextrun').className = 'stat-value c-muted';
       return;
     }
-
-    const lastRunTs = Math.max(
-      ...latest.map(r => r.timestamp_utc ? Date.parse(r.timestamp_utc) : 0)
-    );
-    const nextRunTs = lastRunTs + totalCycleSec * 1000;
-
-    // Clear previous ticker
-    if (_nextRunTimer) clearInterval(_nextRunTimer);
+    // Count down from the server's remaining_sec against the local monotonic
+    // clock, so a browser clock that's off doesn't skew it.
+    const nextRunTs = performance.now() + next.remaining_sec * 1000;
+    const tierLabel = next.tier === 'full-suite'
+      ? `full suite · every ${schedule.full_test_interval_minutes}m`
+      : `latency only · every ${schedule.latency_only_interval_minutes}m`;
+    const fmtDur = sec => {
+      const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600);
+      const m = Math.floor(sec % 3600 / 60), s = sec % 60;
+      if (d) return `${d}d ${h}h`;
+      if (h) return `${h}h ${m}m`;
+      return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    };
 
     function tick() {
-      const nowMs = Date.now();
-      const diffSec = Math.round((nextRunTs - nowMs) / 1000);
+      const diffSec = Math.round((nextRunTs - performance.now()) / 1000);
 
       const card = el('s-nextrun');
       const sub  = el('s-nextrun-sub');
@@ -1360,7 +1363,13 @@ async function updateNextRun() {
       if (diffSec <= 0) {
         card.textContent = 'now';
         card.className   = 'stat-value c-cyan';
-        sub.textContent  = 'running or overdue';
+        sub.textContent  = tierLabel;
+        // A few seconds after this run starts, fetch the one after it.
+        if (diffSec <= -5) {
+          clearInterval(_nextRunTimer);
+          _nextRunTimer = null;
+          updateNextRun();
+        }
         return;
       }
 
@@ -1368,12 +1377,10 @@ async function updateNextRun() {
         card.textContent = `${diffSec}s`;
         card.className   = 'stat-value c-green';
       } else {
-        const m = Math.floor(diffSec / 60);
-        const s = diffSec % 60;
-        card.textContent = s > 0 ? `${m}m ${s}s` : `${m}m`;
+        card.textContent = fmtDur(diffSec);
         card.className   = diffSec < 300 ? 'stat-value c-yellow' : 'stat-value c-muted';
       }
-      sub.textContent = `every ${intervalMin}m`;
+      sub.textContent = tierLabel;
     }
 
     tick();
@@ -1909,11 +1916,6 @@ function updateStats(s) {
   const total = s.total_runs || 0;
   const ok    = s.successful || 0;
   const fail  = s.failed     || 0;
-
-  el('s-nextrun').textContent = '—';
-  el('s-nextrun').className   = 'stat-value c-muted';
-  el('s-nextrun-sub').textContent = 'calculating...';
-  updateNextRun();
 
   el('s-lat').textContent = fmt(s.avg_latency_ms,'ms');
   el('s-lat').className   = 'stat-value ' + health(s.avg_latency_ms, T.latWarn, T.latCrit);

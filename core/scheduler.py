@@ -35,16 +35,64 @@ logger = logging.getLogger(__name__)
 ResultCallback = Callable[[PathTestResult], None]
 
 
-def _seconds_until_next_boundary(interval_minutes: int, tz) -> float:
-    """Seconds from now until the next wall-clock boundary that's a multiple
-    of interval_minutes past midnight, in the given timezone (e.g. 30 ->
-    next :00 or :30; 15 -> next :00/:15/:30/:45)."""
-    now = datetime.now(tz)
-    minutes_since_midnight = now.hour * 60 + now.minute + now.second / 60
+def _next_boundary(interval_minutes: int, tz, now: datetime = None):
+    """Next wall-clock boundary that's a multiple of interval_minutes past
+    midnight, in the given timezone (e.g. 30 -> next :00 or :30; 15 -> next
+    :00/:15/:30/:45). Returns (seconds_until_it, minutes_past_midnight) —
+    the latter may be 1440 for the coming midnight."""
+    now = now or datetime.now(tz)
+    minutes_since_midnight = now.hour * 60 + now.minute + now.second / 60 + now.microsecond / 6e7
     next_boundary_minutes = (int(minutes_since_midnight // interval_minutes) + 1) * interval_minutes
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     next_run = midnight + timedelta(minutes=next_boundary_minutes)
-    return (next_run - now).total_seconds()
+    return (next_run - now).total_seconds(), next_boundary_minutes
+
+
+def _in_business_hours(sched, dt: datetime) -> bool:
+    if not sched.business_hours_only:
+        return True
+    start_h, start_m = map(int, sched.business_hours_start.split(":"))
+    end_h, end_m     = map(int, sched.business_hours_end.split(":"))
+    now_mins = dt.hour * 60 + dt.minute
+    return start_h * 60 + start_m <= now_mins <= end_h * 60 + end_m
+
+
+def _latency_yields_to_full(sched, boundary_minutes: int) -> bool:
+    """True when a latency-only boundary is also a full-suite boundary. The
+    full suite runs the latency tests too, so the latency tier sits that one
+    out. Otherwise both tiers race for each path and whichever grabs it first
+    wins, which used to cost the full suite most of its throughput tests."""
+    full = max(1, sched.full_test_interval_minutes)
+    return boundary_minutes % full == 0
+
+
+def next_scheduled_run(sched, now: datetime = None):
+    """When the scheduler will next start a run, as (aware datetime in the
+    schedule's timezone, tier label), or None if scheduled runs are off or
+    nothing falls inside business hours in the next 8 days. Mirrors what
+    _schedule_loop does, so the dashboard countdown matches reality."""
+    if not getattr(sched, "enabled", True):
+        return None
+    tz = pytz.timezone(sched.timezone)
+    now = now.astimezone(tz) if now else datetime.now(tz)
+    full_m = max(1, sched.full_test_interval_minutes)
+    lat_m  = max(1, sched.latency_only_interval_minutes)
+    t = now
+    horizon = now + timedelta(days=8)
+    while t < horizon:
+        full_s, _ = _next_boundary(full_m, tz, t)
+        lat_s, lat_b = _next_boundary(lat_m, tz, t)
+        if full_s <= lat_s or _latency_yields_to_full(sched, lat_b):
+            secs, tier = full_s, "full-suite"
+        else:
+            secs, tier = lat_s, "latency-only"
+        # Boundaries are computed in naive wall-clock minutes; normalize
+        # so a DST change lands on the real instant.
+        at = tz.normalize(t + timedelta(seconds=secs))
+        if _in_business_hours(sched, at):
+            return at, tier
+        t = at + timedelta(seconds=1)
+    return None
 
 
 class Scheduler:
@@ -172,11 +220,15 @@ class Scheduler:
         logger.info(f"[{label}] Schedule loop started "
                     f"(every {interval_minutes}m, aligned to the wall clock)")
 
+        yields_to_full = test_filter is not None
         while not self._stop_event.is_set():
-            wait_sec = _seconds_until_next_boundary(interval_minutes, tz)
+            wait_sec, boundary = _next_boundary(interval_minutes, tz)
             logger.debug(f"[{label}] Next run in {wait_sec:.0f}s")
             if self._stop_event.wait(timeout=wait_sec):
                 break
+            if yields_to_full and _latency_yields_to_full(self.config.schedule, boundary):
+                logger.debug(f"[{label}] Full suite runs at this boundary — skipping")
+                continue
             if self._should_run_now():
                 self._run_all_paths(test_filter, label)
             else:
@@ -186,17 +238,7 @@ class Scheduler:
 
     def _should_run_now(self) -> bool:
         sched = self.config.schedule
-        if not sched.business_hours_only:
-            return True
-
-        tz = pytz.timezone(sched.timezone)
-        now = datetime.now(tz)
-        start_h, start_m = map(int, sched.business_hours_start.split(":"))
-        end_h, end_m     = map(int, sched.business_hours_end.split(":"))
-        start_mins = start_h * 60 + start_m
-        end_mins   = end_h   * 60 + end_m
-        now_mins   = now.hour * 60 + now.minute
-        return start_mins <= now_mins <= end_mins
+        return _in_business_hours(sched, datetime.now(pytz.timezone(sched.timezone)))
 
     def _run_all_paths(self, test_filter: List[str] = None, label: str = ""):
         """
